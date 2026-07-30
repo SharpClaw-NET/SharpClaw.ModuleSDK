@@ -16,7 +16,7 @@ public sealed class OutOfProcessLifecycleTests
         var sourceDirectory = AppContext.BaseDirectory;
         var moduleDirectory = Path.Combine(
             Path.GetTempPath(),
-            "sharpclaw-module-host-smoke-" + Guid.NewGuid().ToString("N"));
+            "sharpclaw-outofprocess-smoke-" + Guid.NewGuid().ToString("N"));
         var hostAssemblyPath = Environment.GetEnvironmentVariable("SHARPCLAW_SMOKE_HOST_ASSEMBLY")
             ?? typeof(OutOfProcessHost).Assembly.Location;
         var moduleAssemblyName = Path.GetFileName(typeof(LifecycleSmokeModule).Assembly.Location);
