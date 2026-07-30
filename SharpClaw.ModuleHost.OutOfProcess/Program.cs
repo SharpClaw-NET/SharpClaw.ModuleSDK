@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Contracts.Modules.Foreign;
 using SharpClaw.Contracts.Providers;
+using SharpClaw.ModuleHost.OutOfProcess;
 using SharpClaw.Providers.Common;
 
 var process = await OutOfProcessHost.CreateAsync(args);
