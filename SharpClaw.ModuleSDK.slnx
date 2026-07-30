@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="SharpClaw.ModuleHost.OutOfProcess/SharpClaw.ModuleHost.OutOfProcess.csproj" />
   <Project Path="SharpClaw.ModuleHost.OutOfProcess.Tests/SharpClaw.ModuleHost.OutOfProcess.Tests.csproj" />
+  <Project Path="SharpClaw.ModuleHost.InProcess/SharpClaw.ModuleHost.InProcess.csproj" />
   <Folder Name="/Solution Items/">
     <File Path="Directory.Build.props" />
     <File Path="global.json" />
