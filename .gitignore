@@ -9,10 +9,5 @@
 **/*.suo
 **/*.nupkg
 **/*.snupkg
-**/__pycache__/
-**/*.py[cod]
-**/node_modules/
-**/*.tgz
-
 /artifacts/
 /docs/internal

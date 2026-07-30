@@ -12,9 +12,7 @@ storage, and agent operations back to the parent SharpClaw runtime.
 A practical .NET module package is a module DLL plus `module.json` in the module
 directory. The manifest names the module, declares its tool prefix, points at
 the entry assembly, and selects the out-of-process .NET host mode. SharpClaw
-then runs the module through this host process. In-process hosting exists only
-as an opt-in, limited mode for hosts that explicitly enable it; module authors
-should expect out-of-process hosting to be the normal execution model.
+then runs the module through this host process.
 
 ```json
 {

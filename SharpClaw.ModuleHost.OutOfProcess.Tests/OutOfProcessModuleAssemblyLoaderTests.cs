@@ -15,8 +15,8 @@ public sealed class OutOfProcessModuleAssemblyLoaderTests
         var manifest = Manifest("loader_other_module");
         var runtimeInfo = new ModuleManifestRuntimeInfo(
             ModuleManifestRuntimeInfo.DotNet,
-            Entrypoint: null,
-            ModuleType: typeof(LoaderSampleModule).FullName);
+            typeof(LoaderSampleModule).FullName,
+            ModuleManifestRuntimeInfo.HostModeSidecar);
 
         var module = OutOfProcessModuleAssemblyLoader.CreateModuleInstance(
             Assembly.GetExecutingAssembly(),

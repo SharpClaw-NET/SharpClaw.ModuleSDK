@@ -1,26 +1,24 @@
 using System.Reflection;
 using System.Runtime.Loader;
 
-namespace SharpClaw.ModuleHost.InProcess;
+namespace SharpClaw.ModuleHost.OutOfProcess;
 
 /// <summary>
-/// Collectible <see cref="AssemblyLoadContext"/> for external modules.
+/// Collectible <see cref="AssemblyLoadContext"/> for external .NET modules.
 /// Each external module directory gets its own context, enabling assembly
 /// unloading when the module is removed or replaced at runtime.
 /// <para>
 /// The resolver prefers the module's own dependencies next to its DLL,
 /// falling back to the default context for shared types
-/// (<c>SharpClaw.Contracts</c>, <c>Microsoft.Extensions.*</c>, etc.).
+/// (<c>SharpClaw.Contracts</c>, <c>Microsoft.Extensions.*</c>, and similar
+/// host-owned assemblies).
 /// </para>
 /// </summary>
-public sealed class ModuleLoadContext : AssemblyLoadContext
+internal sealed class ModuleLoadContext : AssemblyLoadContext
 {
     /// <summary>
-    /// Names/prefixes that must always resolve from the default ALC so the host and
-    /// every module share the same <see cref="Type"/> identity. If any of these were
-    /// resolved by <see cref="AssemblyDependencyResolver"/> from the module directory,
-    /// the runtime would load a second copy and casts like
-    /// <c>obj is ISharpClawCoreModule</c> would silently fail with a type mismatch.
+    /// Names and prefixes that must always resolve from the default load context.
+    /// This keeps host and module contract types identical.
     /// </summary>
     private static readonly string[] HostSharedPrefixes =
     {
@@ -29,7 +27,6 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
         "SharpClaw.Application.Core",
         "SharpClaw.Application.Infrastructure",
         "SharpClaw.Gateway.Abstractions",
-        "SharpClaw.ModuleHost.InProcess",
         "Microsoft.Extensions.",
         "Microsoft.AspNetCore.",
         "Microsoft.EntityFrameworkCore",
@@ -41,7 +38,7 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
     private readonly AssemblyDependencyResolver _resolver;
 
     /// <summary>
-    /// Creates a new collectible load context anchored at the module's main DLL path.
+    /// Creates a collectible load context anchored at the module DLL path.
     /// </summary>
     public ModuleLoadContext(string mainDllPath)
         : base(name: Path.GetFileNameWithoutExtension(mainDllPath), isCollectible: true)
@@ -52,9 +49,6 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
     /// <inheritdoc />
     protected override Assembly? Load(AssemblyName name)
     {
-        // Always delegate host-shared assemblies to the default ALC. Without this
-        // guard, AssemblyDependencyResolver would happily return a copy that the
-        // module ships next to itself, causing type identity mismatches.
         if (name.Name is { Length: > 0 } shortName)
         {
             for (var i = 0; i < HostSharedPrefixes.Length; i++)
@@ -71,10 +65,7 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
         }
 
         var path = _resolver.ResolveAssemblyToPath(name);
-        if (path is not null)
-            return LoadFromAssemblyPath(path);
-
-        return null;
+        return path is not null ? LoadFromAssemblyPath(path) : null;
     }
 
     /// <inheritdoc />
