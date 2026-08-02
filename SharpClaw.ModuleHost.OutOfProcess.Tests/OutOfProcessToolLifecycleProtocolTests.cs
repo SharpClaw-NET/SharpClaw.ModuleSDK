@@ -3,8 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleHost.InProcess;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -17,6 +19,10 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
     private string _controlToken = null!;
     private OutOfProcessModuleServer _server = null!;
     private SidecarHostDescriptorCatalog _catalog = null!;
+    private ToolLifecycleSmokeModule _inProcessModule = null!;
+    private ServiceProvider _inProcessServices = null!;
+    private ModuleContributionGraph _inProcessGraph = null!;
+    private InProcessModuleInvoker _inProcessInvoker = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -58,6 +64,24 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             [],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
+
+        _inProcessModule = new ToolLifecycleSmokeModule();
+        _inProcessGraph = SharpClawModuleCompiler.Compile(
+            _inProcessModule,
+            InProcessManifest(),
+            new ModuleCompilationOptions { HostingMode = ModuleHostingMode.InProcess });
+        IServiceCollection services = new ServiceCollection();
+        foreach (var descriptor in _inProcessGraph.Services)
+            services.Add(descriptor);
+        services.AddSingleton<ISharpClawModule>(_inProcessModule);
+        services.AddSingleton(_inProcessModule);
+        services.AddSingleton(_inProcessGraph);
+        _inProcessServices = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        _inProcessInvoker = new InProcessModuleInvoker(_inProcessGraph, _inProcessServices);
     }
 
     [OneTimeTearDown]
@@ -67,6 +91,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
+        if (_inProcessServices is not null)
+            await _inProcessServices.DisposeAsync();
     }
 
     [Test, CancelAfter(15000)]
@@ -117,6 +143,32 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             .Content.Should().Be("stopped");
     }
 
+    [TestCase(ModuleHostingMode.InProcess)]
+    [TestCase(ModuleHostingMode.OutOfProcess)]
+    [Category("ModuleHostHandlerConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsReturnTheSameToolResult(ModuleHostingMode hostingMode)
+    {
+        var result = await InvokeToolConformanceAsync(hostingMode, "echo", "hello");
+
+        result.Should().Be("hello");
+    }
+
+    [TestCase(ModuleHostingMode.InProcess)]
+    [TestCase(ModuleHostingMode.OutOfProcess)]
+    [Category("ModuleHostHandlerConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsExposeTheSameLifecycleState(ModuleHostingMode hostingMode)
+    {
+        await InvokeLifecycleConformanceAsync(hostingMode, SidecarLifecycleCallKind.Start);
+        var started = await InvokeToolConformanceAsync(hostingMode, "state", null);
+        await InvokeLifecycleConformanceAsync(hostingMode, SidecarLifecycleCallKind.Stop);
+        var stopped = await InvokeToolConformanceAsync(hostingMode, "state", null);
+
+        started.Should().Be("started");
+        stopped.Should().Be("stopped");
+    }
+
     [Test, CancelAfter(15000)]
     public async Task ForgedLifecycleHandlerFailsBeforeModuleCodeRuns()
     {
@@ -130,6 +182,62 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
 
         (await act.Should().ThrowAsync<OutOfProcessProtocolException>())
             .Which.Code.Should().Be(SidecarProtocolErrors.UnknownHostDescriptor);
+    }
+
+    private async ValueTask<string> InvokeToolConformanceAsync(
+        ModuleHostingMode hostingMode,
+        string mode,
+        string? text)
+    {
+        if (hostingMode == ModuleHostingMode.OutOfProcess)
+        {
+            await using var client = await CreateClientAsync();
+            var terminal = await client.InvokeToolAsync(CreateToolStart(client, mode, text));
+            return terminal.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
+                .Content;
+        }
+
+        var invocationId = Guid.NewGuid();
+        var result = await _inProcessInvoker.InvokeToolAsync(
+            ToolLifecycleSmokeModule.ToolName,
+            new ToolInvocation(
+                invocationId,
+                null,
+                invocationId.ToString("D"),
+                ToolLifecycleSmokeModule.ToolName,
+                JsonSerializer.SerializeToElement(
+                    new { mode, text },
+                    OutOfProcessProtocolCodec.JsonOptions),
+                new RequestPrincipal("test-user"),
+                ExtensionFeatureSet.Empty),
+            CancellationToken.None);
+        return result.Content;
+    }
+
+    private async ValueTask InvokeLifecycleConformanceAsync(
+        ModuleHostingMode hostingMode,
+        SidecarLifecycleCallKind call)
+    {
+        if (hostingMode == ModuleHostingMode.OutOfProcess)
+        {
+            await using var client = await CreateClientAsync();
+            await client.InvokeLifecycleAsync(CreateLifecycleStart(client, call));
+            return;
+        }
+
+        if (call == SidecarLifecycleCallKind.Start)
+        {
+            await _inProcessModule.StartAsync(
+                new ModuleStartContext(
+                    _inProcessGraph.Identity,
+                    "test-host",
+                    _inProcessGraph.ContractHash,
+                    ExtensionFeatureSet.Empty),
+                CancellationToken.None);
+            return;
+        }
+
+        await _inProcessModule.StopAsync(CancellationToken.None);
     }
 
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
@@ -191,6 +299,18 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                 handlerId ?? definition.HandlerId,
                 input));
     }
+
+    private static ModuleManifest InProcessManifest() =>
+        new(
+            ToolLifecycleSmokeModule.Id,
+            "Tool Lifecycle Smoke",
+            "0.5.0-beta.2",
+            "smoke",
+            "ToolLifecycleSmokeModule.dll",
+            "0.5.0-beta.2",
+            Runtime: ModuleManifestRuntimeInfo.DotNet,
+            ModuleType: typeof(ToolLifecycleSmokeModule).FullName,
+            HostMode: ModuleManifestRuntimeInfo.HostModeInProcess);
 
     private static async Task<Uri> FindFreeAddressAsync()
     {
