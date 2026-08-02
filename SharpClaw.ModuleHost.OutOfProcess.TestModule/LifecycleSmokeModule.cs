@@ -1,8 +1,7 @@
-using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
 
-namespace SharpClaw.ModuleHost.OutOfProcess.Tests;
+namespace SharpClaw.ModuleHost.OutOfProcess.TestModule;
 
 public sealed record SmokeAction(string Mode, string Value);
 

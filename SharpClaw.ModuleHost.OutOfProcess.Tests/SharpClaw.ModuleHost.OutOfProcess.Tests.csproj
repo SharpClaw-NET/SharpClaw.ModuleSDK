@@ -13,5 +13,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SharpClaw.ModuleHost.OutOfProcess\SharpClaw.ModuleHost.OutOfProcess.csproj" />
+    <ProjectReference Include="..\SharpClaw.ModuleHost.OutOfProcess.TestModule\SharpClaw.ModuleHost.OutOfProcess.TestModule.csproj" />
   </ItemGroup>
 </Project>

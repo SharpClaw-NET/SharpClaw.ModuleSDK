@@ -5,6 +5,7 @@ using System.Text.Json;
 using FluentAssertions;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess.Tests;
@@ -25,8 +26,12 @@ public sealed class OutOfProcessActionProtocolTests
             ?? throw new InvalidOperationException(
                 "SHARPCLAW_MODULESDK_TEST_ROOT must identify the D: test root.");
         _moduleDirectory = Path.Combine(root, "action-protocol-" + Guid.NewGuid().ToString("N"));
-        CopyDirectory(AppContext.BaseDirectory, _moduleDirectory);
+        Directory.CreateDirectory(_moduleDirectory);
         var moduleAssemblyName = Path.GetFileName(typeof(LifecycleSmokeModule).Assembly.Location);
+        File.Copy(
+            typeof(LifecycleSmokeModule).Assembly.Location,
+            Path.Combine(_moduleDirectory, moduleAssemblyName),
+            overwrite: true);
         await File.WriteAllTextAsync(
             Path.Combine(_moduleDirectory, "module.json"),
             $$"""
@@ -76,7 +81,7 @@ public sealed class OutOfProcessActionProtocolTests
         if (_server is not null)
             await _server.DisposeAsync();
         if (Directory.Exists(_moduleDirectory))
-            Directory.Delete(_moduleDirectory, recursive: true);
+            await DeleteDirectoryAsync(_moduleDirectory);
     }
 
     [Test, CancelAfter(15000)]
@@ -225,14 +230,18 @@ public sealed class OutOfProcessActionProtocolTests
     {
         var expires = deadline ?? DateTimeOffset.UtcNow.AddSeconds(10);
         var invocationId = Guid.NewGuid();
-        var descriptor = UntypedDescriptor();
+        var baseDescriptor = UntypedDescriptor();
         var capabilities = hookId == LifecycleSmokeModule.ExactHookId
             ? ActionInterceptionCapabilities.Inspect
               | ActionInterceptionCapabilities.Wrap
               | ActionInterceptionCapabilities.ReplaceResult
             : ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap;
         var grant = client.Authorization.ActionGrants.Single(item =>
-            item.ActionKey == descriptor.Key && item.Capabilities == capabilities);
+            item.ActionKey == baseDescriptor.Key && item.Capabilities == capabilities);
+        var descriptor = baseDescriptor with
+        {
+            AcceptsUnknownNonSensitiveSchemas = grant.AcceptUnknownSchemas,
+        };
         return SidecarMessageHeaderFactory.CreateMeasured(
             OutOfProcessModuleHostProtocol.Version,
             sequence,
@@ -337,16 +346,21 @@ public sealed class OutOfProcessActionProtocolTests
         }
     }
 
-    private static void CopyDirectory(string source, string destination)
+    private static async Task DeleteDirectoryAsync(string path)
     {
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.EnumerateFiles(source))
-            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
-        foreach (var directory in Directory.EnumerateDirectories(source))
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            CopyDirectory(
-                directory,
-                Path.Combine(destination, Path.GetFileName(directory)));
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                await Task.Delay(100);
+            }
         }
     }
 }

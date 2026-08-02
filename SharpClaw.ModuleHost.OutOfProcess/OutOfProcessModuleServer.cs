@@ -289,6 +289,24 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                     context.RequestAborted);
             }
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _app.Logger.LogError(ex, "The module exchange failed.");
+            var protocolError = new OutOfProcessProtocolException(
+                "module_exchange_failed",
+                "The module exchange failed.");
+            await TrySendProtocolErrorAsync(protocol, protocolError, context.RequestAborted);
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await socket.CloseAsync(
+                    WebSocketCloseStatus.InternalServerError,
+                    protocolError.Code,
+                    context.RequestAborted);
+            }
+        }
     }
 
     private static async Task TrySendProtocolErrorAsync(

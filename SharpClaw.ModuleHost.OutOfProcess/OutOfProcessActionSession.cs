@@ -503,7 +503,7 @@ internal static class OutOfProcessActionSession
             && type.GetGenericTypeDefinition() == typeof(IActionInterceptor<,>));
         var arguments = interceptor.GetGenericArguments();
         var adapterType = typeof(TypedActionHookAdapter<,>).MakeGenericType(arguments);
-        var adapter = (ITypedActionHookAdapter)(Activator.CreateInstance(adapterType)
+        var adapter = (ITypedActionHookAdapter)(Activator.CreateInstance(adapterType, nonPublic: true)
             ?? throw new InvalidOperationException("The typed action adapter could not be created."));
         return await adapter.InvokeAsync(
             runtime,

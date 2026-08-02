@@ -4,6 +4,7 @@
   <Project Path="SharpClaw.ModuleSDK.Testing/SharpClaw.ModuleSDK.Testing.csproj" />
   <Project Path="SharpClaw.ModuleSDK.Testing.Tests/SharpClaw.ModuleSDK.Testing.Tests.csproj" />
   <Project Path="SharpClaw.ModuleHost.OutOfProcess/SharpClaw.ModuleHost.OutOfProcess.csproj" />
+  <Project Path="SharpClaw.ModuleHost.OutOfProcess.TestModule/SharpClaw.ModuleHost.OutOfProcess.TestModule.csproj" />
   <Project Path="SharpClaw.ModuleHost.OutOfProcess.Tests/SharpClaw.ModuleHost.OutOfProcess.Tests.csproj" />
   <Project Path="SharpClaw.ModuleHost.InProcess/SharpClaw.ModuleHost.InProcess.csproj" />
   <Project Path="SharpClaw.ModuleHost.InProcess.Tests/SharpClaw.ModuleHost.InProcess.Tests.csproj" />
