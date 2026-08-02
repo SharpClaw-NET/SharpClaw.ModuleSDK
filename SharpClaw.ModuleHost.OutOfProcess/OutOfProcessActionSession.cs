@@ -236,7 +236,7 @@ internal sealed class SidecarActionControl<TAction, TResult>(
             ct));
     }
 
-    private static IActionOutcome<TResult> FromContinuation(ContinuationOutcome outcome)
+    private IActionOutcome<TResult> FromContinuation(ContinuationOutcome outcome)
     {
         var result = outcome.Result.HasValue
             ? outcome.Result.Value.Deserialize<TResult>(payloadJsonOptions)
