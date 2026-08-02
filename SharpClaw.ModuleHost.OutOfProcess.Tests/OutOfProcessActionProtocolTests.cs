@@ -105,7 +105,8 @@ public sealed class OutOfProcessActionProtocolTests
 
         continuationCalled.Should().BeFalse();
         result.Kind.Should().Be(ActionOutcomeKind.Completed);
-        result.Result!.Value.Deserialize<SmokeResult>()!.Value.Should().Be("sidecar:value");
+        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Value.Should().Be("sidecar:value");
     }
 
     [Test, CancelAfter(15000)]
@@ -142,7 +143,8 @@ public sealed class OutOfProcessActionProtocolTests
 
         calls.Should().Be(1);
         result.Kind.Should().Be(ActionOutcomeKind.Completed);
-        result.Result!.Value.Deserialize<SmokeResult>()!.Value.Should().Be("host:value");
+        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Value.Should().Be("host:value");
     }
 
     [Test, CancelAfter(15000)]
@@ -261,7 +263,9 @@ public sealed class OutOfProcessActionProtocolTests
                 descriptor.Key,
                 descriptor.Version,
                 typed ? SidecarPayloadMode.Typed : SidecarPayloadMode.Untyped,
-                JsonSerializer.SerializeToElement(new SmokeAction(mode, "value")),
+                JsonSerializer.SerializeToElement(
+                    new SmokeAction(mode, "value"),
+                    OutOfProcessProtocolCodec.JsonOptions),
                 descriptor,
                 grant,
                 RequestPrincipal.Anonymous,
@@ -301,7 +305,9 @@ public sealed class OutOfProcessActionProtocolTests
                 ActionOutcomeKind.Completed,
                 ActionOutcomeCertainty.Certain,
                 ActionSafePoint.BeforeTerminal,
-                JsonSerializer.SerializeToElement(new SmokeResult(value))));
+                JsonSerializer.SerializeToElement(
+                    new SmokeResult(value),
+                    OutOfProcessProtocolCodec.JsonOptions)));
         return (accepted, outcome);
     }
 
