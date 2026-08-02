@@ -136,7 +136,8 @@ internal sealed class SidecarActionControlSession(OutOfProcessProtocolSession pr
 }
 
 internal sealed class SidecarActionControl<TAction, TResult>(
-    SidecarActionControlSession session)
+    SidecarActionControlSession session,
+    JsonSerializerOptions payloadJsonOptions)
     : IActionControl<TAction, TResult>
 {
     public async ValueTask<IActionOutcome<TResult>> ProceedAsync(CancellationToken ct) =>
@@ -157,7 +158,7 @@ internal sealed class SidecarActionControl<TAction, TResult>(
         ArgumentNullException.ThrowIfNull(replacement);
         return FromContinuation(await session.ContinueAsync(
             SidecarContinuationCommand.ContinueReplacement,
-            JsonSerializer.SerializeToElement(replacement.Value, OutOfProcessProtocolCodec.JsonOptions),
+            JsonSerializer.SerializeToElement(replacement.Value, payloadJsonOptions),
             replacement.Reason,
             null,
             null,
@@ -169,7 +170,7 @@ internal sealed class SidecarActionControl<TAction, TResult>(
     public IActionOutcome<TResult> ReplaceResult(TResult result, string reason)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        var value = JsonSerializer.SerializeToElement(result, OutOfProcessProtocolCodec.JsonOptions);
+        var value = JsonSerializer.SerializeToElement(result, payloadJsonOptions);
         return new SidecarActionOutcome<TResult>(
             new SidecarActionCompletion(SidecarActionCompletionKind.ReplaceResult, value, reason),
             result,
@@ -226,7 +227,7 @@ internal sealed class SidecarActionControl<TAction, TResult>(
         ArgumentNullException.ThrowIfNull(request);
         return FromContinuation(await session.ContinueAsync(
             SidecarContinuationCommand.Repeat,
-            JsonSerializer.SerializeToElement(request.Value, OutOfProcessProtocolCodec.JsonOptions),
+            JsonSerializer.SerializeToElement(request.Value, payloadJsonOptions),
             request.Reason,
             null,
             null,
@@ -238,7 +239,7 @@ internal sealed class SidecarActionControl<TAction, TResult>(
     private static IActionOutcome<TResult> FromContinuation(ContinuationOutcome outcome)
     {
         var result = outcome.Result.HasValue
-            ? outcome.Result.Value.Deserialize<TResult>(OutOfProcessProtocolCodec.JsonOptions)
+            ? outcome.Result.Value.Deserialize<TResult>(payloadJsonOptions)
             : default;
         return new SidecarActionOutcome<TResult>(
             new SidecarActionCompletion(
@@ -611,7 +612,9 @@ internal static class OutOfProcessActionSession
                 hook.HandlerType) as IActionInterceptor<TAction, TResult>
                 ?? throw new InvalidOperationException(
                     $"Handler '{hook.HandlerType.FullName}' has an invalid typed action contract.");
-            var action = start.Input.Deserialize<TAction>(OutOfProcessProtocolCodec.JsonOptions)
+            var payloadJsonOptions = new JsonSerializerOptions(
+                OutOfProcessProtocolCodec.JsonOptions);
+            var action = start.Input.Deserialize<TAction>(payloadJsonOptions)
                 ?? throw new OutOfProcessProtocolException(
                     SidecarProtocolErrors.UnsupportedSchema,
                     "The typed action input could not be deserialized.");
@@ -635,7 +638,9 @@ internal static class OutOfProcessActionSession
                 snapshot);
             var outcome = await handler.InvokeAsync(
                 context,
-                new SidecarActionControl<TAction, TResult>(controlSession),
+                new SidecarActionControl<TAction, TResult>(
+                    controlSession,
+                    payloadJsonOptions),
                 ct);
             return GetCompletion(outcome);
         }
