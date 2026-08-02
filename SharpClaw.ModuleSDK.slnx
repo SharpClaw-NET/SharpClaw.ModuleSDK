@@ -1,4 +1,6 @@
 <Solution>
+  <Project Path="SharpClaw.ModuleSDK/SharpClaw.ModuleSDK.csproj" />
+  <Project Path="SharpClaw.ModuleSDK.Tests/SharpClaw.ModuleSDK.Tests.csproj" />
   <Project Path="SharpClaw.ModuleHost.OutOfProcess/SharpClaw.ModuleHost.OutOfProcess.csproj" />
   <Project Path="SharpClaw.ModuleHost.OutOfProcess.Tests/SharpClaw.ModuleHost.OutOfProcess.Tests.csproj" />
   <Project Path="SharpClaw.ModuleHost.InProcess/SharpClaw.ModuleHost.InProcess.csproj" />
