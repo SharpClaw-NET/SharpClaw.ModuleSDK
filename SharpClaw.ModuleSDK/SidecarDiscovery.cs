@@ -177,6 +177,101 @@ public static class SidecarDiscoveryFactory
     }
 }
 
+/// <summary>Creates exact host grants for one validated sidecar discovery.</summary>
+public static class SidecarAuthorizationFactory
+{
+    /// <summary>Validates discovery and creates immutable action and event grants.</summary>
+    public static SidecarHostAuthorization Create(
+        SidecarDiscoveryEnvelope discovery,
+        SidecarHostDescriptorCatalog hostCatalog)
+    {
+        ArgumentNullException.ThrowIfNull(discovery);
+        ArgumentNullException.ThrowIfNull(hostCatalog);
+        var validation = SidecarDiscoveryValidator.Validate(discovery, hostCatalog);
+        if (!validation.Accepted)
+        {
+            throw new SidecarDiscoveryAuthorizationException(
+                validation.ErrorCode ?? SidecarProtocolErrors.UnsupportedCapability,
+                validation.ErrorMessage ?? "The sidecar discovery was rejected.");
+        }
+
+        var actionGrants = discovery.Actions
+            .SelectMany(subscription => hostCatalog.Actions
+                .Where(descriptor => Matches(subscription, descriptor))
+                .Select(descriptor => new ActionCapabilityGrant(
+                    descriptor.ActionKey,
+                    descriptor.Version,
+                    subscription.Capabilities,
+                    SensitiveApproved: descriptor.ContainsSensitiveData,
+                    AcceptUnknownSchemas: subscription.AcceptUnknownNonSensitiveSchemas
+                        && !descriptor.ContainsSensitiveData)))
+            .Distinct()
+            .ToArray();
+        var eventGrants = discovery.Events
+            .SelectMany(subscription => hostCatalog.Events
+                .Where(descriptor => Matches(subscription, descriptor))
+                .Select(descriptor => new EventCapabilityGrant(
+                    descriptor.EventKey,
+                    descriptor.Version,
+                    subscription.Capabilities,
+                    SensitiveApproved: descriptor.ContainsSensitiveData,
+                    AcceptUnknownSchemas: subscription.AcceptUnknownNonSensitiveSchemas
+                        && !descriptor.ContainsSensitiveData)))
+            .Distinct()
+            .ToArray();
+        return new SidecarHostAuthorization(
+            discovery.ModuleId,
+            Array.AsReadOnly(actionGrants),
+            Array.AsReadOnly(eventGrants),
+            hostCatalog.SensitiveWildcardApproval);
+    }
+
+    private static bool Matches(
+        SidecarActionSubscription subscription,
+        SidecarHostActionDescriptor descriptor) =>
+        subscription.VersionRange.Contains(descriptor.Version)
+        && subscription.TargetKind switch
+        {
+            SidecarHookTargetKind.Exact => subscription.ActionKey == descriptor.ActionKey,
+            SidecarHookTargetKind.Category => string.Equals(
+                subscription.Category,
+                descriptor.Category,
+                StringComparison.Ordinal),
+            SidecarHookTargetKind.Wildcard => true,
+            _ => false,
+        };
+
+    private static bool Matches(
+        SidecarEventSubscription subscription,
+        SidecarHostEventDescriptor descriptor) =>
+        subscription.VersionRange.Contains(descriptor.Version)
+        && subscription.TargetKind switch
+        {
+            SidecarHookTargetKind.Exact => subscription.EventKey == descriptor.EventKey,
+            SidecarHookTargetKind.Category => string.Equals(
+                subscription.Category,
+                descriptor.Category,
+                StringComparison.Ordinal),
+            SidecarHookTargetKind.Wildcard => true,
+            _ => false,
+        };
+}
+
+/// <summary>Reports a rejected sidecar discovery authorization.</summary>
+public sealed class SidecarDiscoveryAuthorizationException : Exception
+{
+    /// <summary>Initializes one discovery authorization error.</summary>
+    public SidecarDiscoveryAuthorizationException(string code, string message)
+        : base(message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        Code = code;
+    }
+
+    /// <summary>Gets the stable discovery error code.</summary>
+    public string Code { get; }
+}
+
 /// <summary>Adds discovery creation to a compiled module graph.</summary>
 public static class ModuleContributionGraphSidecarExtensions
 {

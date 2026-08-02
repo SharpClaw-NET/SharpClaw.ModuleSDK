@@ -1,0 +1,298 @@
+using System.Net.Http.Json;
+using System.Net.WebSockets;
+using System.Text.Json;
+using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
+
+namespace SharpClaw.ModuleHost.OutOfProcess;
+
+/// <summary>Invokes one authorized .NET module sidecar.</summary>
+public sealed class OutOfProcessModuleClient : IAsyncDisposable
+{
+    private readonly Uri _controlAddress;
+    private readonly string _controlToken;
+    private readonly HttpClient _httpClient;
+
+    private OutOfProcessModuleClient(
+        Uri controlAddress,
+        string controlToken,
+        HttpClient httpClient,
+        SidecarDiscoveryEnvelope discovery,
+        SidecarHostAuthorization authorization,
+        SidecarPayloadLimits hostLimits)
+    {
+        _controlAddress = controlAddress;
+        _controlToken = controlToken;
+        _httpClient = httpClient;
+        Discovery = discovery;
+        Authorization = authorization;
+        HostLimits = hostLimits;
+    }
+
+    /// <summary>Gets the validated module discovery.</summary>
+    public SidecarDiscoveryEnvelope Discovery { get; }
+
+    /// <summary>Gets the exact grants issued for this client.</summary>
+    public SidecarHostAuthorization Authorization { get; }
+
+    /// <summary>Gets the host payload limits.</summary>
+    public SidecarPayloadLimits HostLimits { get; }
+
+    /// <summary>Discovers and authorizes one sidecar against immutable host descriptors.</summary>
+    public static async Task<OutOfProcessModuleClient> CreateAuthorizedAsync(
+        Uri controlAddress,
+        string controlToken,
+        SidecarHostDescriptorCatalog hostCatalog,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(controlAddress);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        ArgumentNullException.ThrowIfNull(hostCatalog);
+        var http = new HttpClient
+        {
+            BaseAddress = controlAddress,
+            Timeout = TimeSpan.FromSeconds(30),
+        };
+        http.DefaultRequestHeaders.Add(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            controlToken);
+        try
+        {
+            var discovery = await http.GetFromJsonAsync<SidecarDiscoveryEnvelope>(
+                OutOfProcessModuleHostProtocol.DiscoveryPath,
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct)
+                ?? throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar returned no discovery envelope.");
+            var authorization = SidecarAuthorizationFactory.Create(discovery, hostCatalog);
+            var decision = SidecarMessageHeaderFactory.CreateMeasured(
+                hostCatalog.NegotiatedProtocolVersion,
+                sequence: 2,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                hostCatalog.PayloadLimits.ProtocolMessageBytes,
+                header => new SidecarDiscoveryDecision(
+                    header,
+                    discovery.ModuleId,
+                    Accepted: true,
+                    authorization));
+            using var response = await http.PostAsJsonAsync(
+                OutOfProcessModuleHostProtocol.AuthorizationPath,
+                decision,
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct);
+            response.EnsureSuccessStatusCode();
+            return new OutOfProcessModuleClient(
+                controlAddress,
+                controlToken,
+                http,
+                discovery,
+                authorization,
+                hostCatalog.PayloadLimits);
+        }
+        catch
+        {
+            http.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Runs one action hook exchange with one host-owned continuation callback.</summary>
+    public async ValueTask<HookCompleted> InvokeActionAsync(
+        HookInvokeStart start,
+        Func<
+            SidecarEffectRequest,
+            CancellationToken,
+            ValueTask<(ContinuationAccepted Accepted, ContinuationOutcome Outcome)>> continuation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+        ArgumentNullException.ThrowIfNull(continuation);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), ct);
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.ActionHook,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            start.Header.Deadline,
+            start.Header.ProtocolVersion,
+            HostLimits,
+            HostAuthorization: Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        try
+        {
+            await protocol.SendAsync(start, ct: ct);
+            ContinuationOutcome? hostOutcome = null;
+            var frame = await protocol.ReceiveAsync(ct);
+            if (frame.Message is SidecarEffectRequest request)
+            {
+                var response = await continuation(request, ct);
+                await protocol.SendAsync(response.Accepted, ct: ct);
+                await protocol.SendAsync(response.Outcome, ct: ct);
+                hostOutcome = response.Outcome;
+                frame = await protocol.ReceiveAsync(ct);
+            }
+
+            if (frame.Message is SidecarProtocolError protocolError)
+                throw Error(protocolError);
+
+            SidecarResultReplacement? replacement = null;
+            HookOutcome? sidecarOutcome = null;
+            switch (frame.Message)
+            {
+                case SidecarResultReplacement directReplacement:
+                    replacement = directReplacement;
+                    break;
+                case HookOutcome hookOutcome:
+                    sidecarOutcome = hookOutcome;
+                    if (frame.HasFollowingMessage)
+                    {
+                        var replacementFrame = await protocol.ReceiveAsync(ct);
+                        replacement = replacementFrame.Message as SidecarResultReplacement
+                            ?? throw new OutOfProcessProtocolException(
+                                SidecarProtocolErrors.MalformedMessage,
+                                "The sidecar declared a missing result replacement.");
+                    }
+                    break;
+                default:
+                    throw new OutOfProcessProtocolException(
+                        SidecarProtocolErrors.MalformedMessage,
+                        "The sidecar did not return an action hook outcome.");
+            }
+
+            var completed = CreateCompleted(protocol, hostOutcome, sidecarOutcome, replacement);
+            await protocol.SendAsync(completed, ct: ct);
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+            return completed;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryCancelAsync(protocol, socket);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public ValueTask DisposeAsync()
+    {
+        _httpClient.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private static HookCompleted CreateCompleted(
+        OutOfProcessProtocolSession protocol,
+        ContinuationOutcome? hostOutcome,
+        HookOutcome? sidecarOutcome,
+        SidecarResultReplacement? replacement)
+    {
+        var kind = hostOutcome?.Kind ?? ActionOutcomeKind.Completed;
+        var certainty = hostOutcome?.Certainty ?? ActionOutcomeCertainty.Certain;
+        var result = hostOutcome?.Result;
+        var error = hostOutcome?.Error;
+        var uncertainty = hostOutcome?.Uncertainty;
+        if (sidecarOutcome?.Kind == SidecarHookOutcomeKind.Failed)
+        {
+            kind = ActionOutcomeKind.Failed;
+            certainty = ActionOutcomeCertainty.Certain;
+            result = null;
+            error = sidecarOutcome.Error;
+            uncertainty = null;
+        }
+        else if (sidecarOutcome?.Kind == SidecarHookOutcomeKind.Cancelled)
+        {
+            kind = ActionOutcomeKind.Cancelled;
+            certainty = ActionOutcomeCertainty.Certain;
+            result = null;
+            error = sidecarOutcome.Error;
+            uncertainty = null;
+        }
+
+        if (replacement is not null)
+        {
+            kind = ActionOutcomeKind.Completed;
+            certainty = ActionOutcomeCertainty.Certain;
+            result = replacement.Result;
+            error = null;
+            uncertainty = null;
+        }
+
+        if (hostOutcome is null && sidecarOutcome is null && replacement is null)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The action exchange has no terminal outcome.");
+        }
+
+        return protocol.Create(
+            SidecarProtocolMessageKind.HookCompleted,
+            header => new HookCompleted(
+                header,
+                protocol.State.ContinuationHandleId,
+                kind,
+                certainty,
+                result,
+                error,
+                uncertainty));
+    }
+
+    private static async Task TryCancelAsync(
+        OutOfProcessProtocolSession protocol,
+        ClientWebSocket socket)
+    {
+        if (socket.State != WebSocketState.Open
+            || !SidecarProtocolStateMachine.CanApply(
+                protocol.State.Phase,
+                SidecarProtocolMessageKind.HostTerminalCancellation))
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try
+        {
+            var cancellation = protocol.Create(
+                SidecarProtocolMessageKind.HostTerminalCancellation,
+                header => new SidecarHostTerminalCancellation(
+                    header,
+                    protocol.State.ContinuationHandleId,
+                    ActionSafePoint.BeforeTerminal,
+                    "operation_cancelled",
+                    "The host cancelled the sidecar exchange."));
+            await protocol.SendAsync(cancellation, ct: timeout.Token);
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "cancelled",
+                timeout.Token);
+        }
+        catch (Exception) when (timeout.IsCancellationRequested)
+        {
+        }
+        catch (WebSocketException)
+        {
+        }
+    }
+
+    private Uri ExchangeUri()
+    {
+        var builder = new UriBuilder(new Uri(
+            _controlAddress,
+            OutOfProcessModuleHostProtocol.ExchangePath))
+        {
+            Scheme = string.Equals(_controlAddress.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
+                ? "wss"
+                : "ws",
+        };
+        return builder.Uri;
+    }
+
+    private static OutOfProcessProtocolException Error(SidecarProtocolError error) =>
+        new(error.Code, error.Message);
+}
