@@ -99,8 +99,8 @@ public sealed class OutOfProcessActionProtocolTests
             });
 
         continuationCalled.Should().BeFalse();
-        result.Kind.Should().Be(ActionOutcomeKind.Completed);
-        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
+        result.Completion.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
             .Value.Should().Be("sidecar:value");
     }
 
@@ -113,8 +113,8 @@ public sealed class OutOfProcessActionProtocolTests
             CreateStart(client, LifecycleSmokeModule.ExactHookId, "fail", typed: true),
             (_, _) => throw new AssertionException("The direct failure used the continuation."));
 
-        result.Kind.Should().Be(ActionOutcomeKind.Failed);
-        result.Error!.Code.Should().Be("smoke_failed");
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Failed);
+        result.Completion.Error!.Code.Should().Be("smoke_failed");
     }
 
     [TestCase(LifecycleSmokeModule.ExactHookId, true)]
@@ -137,8 +137,8 @@ public sealed class OutOfProcessActionProtocolTests
             });
 
         calls.Should().Be(1);
-        result.Kind.Should().Be(ActionOutcomeKind.Completed);
-        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
+        result.Completion.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
             .Value.Should().Be("host:value");
     }
 
@@ -151,8 +151,8 @@ public sealed class OutOfProcessActionProtocolTests
             CreateStart(client, LifecycleSmokeModule.ExactHookId, "double", typed: true),
             (request, ct) => ValueTask.FromResult(CreateContinuation(request, "host")));
 
-        result.Kind.Should().Be(ActionOutcomeKind.Failed);
-        result.Error!.Code.Should().Be(SidecarProtocolErrors.ContinuationAlreadyUsed);
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Failed);
+        result.Completion.Error!.Code.Should().Be(SidecarProtocolErrors.ContinuationAlreadyUsed);
     }
 
     [TestCase("input", SidecarContinuationCommand.ContinueReplacement, ActionOutcomeKind.Completed, "replacement")]
@@ -179,14 +179,14 @@ public sealed class OutOfProcessActionProtocolTests
 
         observed.Should().NotBeNull();
         observed!.Command.Should().Be(expectedCommand);
-        result.Kind.Should().Be(expectedKind);
+        result.Completion.Kind.Should().Be(expectedKind);
         if (expectedValue is not null)
         {
-            result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            result.Completion.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
                 .Value.Should().Be(expectedValue);
         }
         if (expectedKind == ActionOutcomeKind.Cancelled)
-            result.Error!.Code.Should().Be("smoke_cancelled");
+            result.Completion.Error!.Code.Should().Be("smoke_cancelled");
         if (expectedKind == ActionOutcomeKind.Deferred)
             result.Continuation.Should().NotBeNull();
     }
@@ -206,8 +206,8 @@ public sealed class OutOfProcessActionProtocolTests
             });
 
         continuationCalled.Should().BeFalse();
-        result.Kind.Should().Be(ActionOutcomeKind.Completed);
-        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
+        result.Completion.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
             .Value.Should().Be("sidecar:untyped");
     }
 
@@ -226,8 +226,8 @@ public sealed class OutOfProcessActionProtocolTests
             });
 
         observed!.Command.Should().Be(SidecarContinuationCommand.Cancel);
-        result.Kind.Should().Be(ActionOutcomeKind.Cancelled);
-        result.Error!.Code.Should().Be("smoke_cancelled");
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Cancelled);
+        result.Completion.Error!.Code.Should().Be("smoke_cancelled");
     }
 
     [Test]

@@ -6,6 +6,11 @@ using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
+/// <summary>Contains one completed action exchange and its optional durable continuation.</summary>
+public sealed record OutOfProcessActionResult(
+    HookCompleted Completion,
+    ContinuationToken? Continuation);
+
 /// <summary>Invokes one authorized .NET module sidecar.</summary>
 public sealed class OutOfProcessModuleClient : IAsyncDisposable
 {
@@ -98,7 +103,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     }
 
     /// <summary>Runs one action hook exchange with one host-owned continuation callback.</summary>
-    public async ValueTask<HookCompleted> InvokeActionAsync(
+    public async ValueTask<OutOfProcessActionResult> InvokeActionAsync(
         HookInvokeStart start,
         Func<
             SidecarEffectRequest,
@@ -166,7 +171,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             }
 
             var completed = CreateCompleted(protocol, hostOutcome, sidecarOutcome, replacement);
-            await protocol.SendAsync(completed, ct: ct);
+            await protocol.SendAsync(completed.Completion, ct: ct);
             await protocol.CloseAsync(
                 WebSocketCloseStatus.NormalClosure,
                 "completed",
@@ -401,7 +406,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
-    private static HookCompleted CreateCompleted(
+    private static OutOfProcessActionResult CreateCompleted(
         OutOfProcessProtocolSession protocol,
         ContinuationOutcome? hostOutcome,
         HookOutcome? sidecarOutcome,
@@ -445,7 +450,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 "The action exchange has no terminal outcome.");
         }
 
-        return protocol.Create(
+        var completed = protocol.Create(
             SidecarProtocolMessageKind.HookCompleted,
             header => new HookCompleted(
                 header,
@@ -455,6 +460,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 result,
                 error,
                 uncertainty));
+        return new OutOfProcessActionResult(completed, hostOutcome?.Continuation);
     }
 
     private static async Task TryCancelAsync(
