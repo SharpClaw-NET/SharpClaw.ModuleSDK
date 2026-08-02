@@ -108,7 +108,11 @@ public sealed class EventSmokeModule : ISharpClawModule
             if (string.Equals(mode, "replace", StringComparison.Ordinal))
             {
                 var replacement = JsonSerializer.SerializeToElement(
-                    new SmokeEvent("replaced", "sidecar:untyped"));
+                    new
+                    {
+                        mode = "replaced",
+                        value = "sidecar:untyped",
+                    });
                 return ValueTask.FromResult(control.Replace(replacement, "untyped replacement"));
             }
 
