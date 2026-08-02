@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -78,15 +79,18 @@ public sealed class OutOfProcessActionProtocolTests
     [OneTimeTearDown]
     public async Task StopServer()
     {
+        DisposeServer();
+        if (Directory.Exists(_moduleDirectory))
+            await DeleteDirectoryAsync(_moduleDirectory);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void DisposeServer()
+    {
         OutOfProcessModuleServer? server = _server;
         _server = null!;
         if (server is not null)
-            await server.DisposeAsync();
-        server = null;
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        if (Directory.Exists(_moduleDirectory))
-            await DeleteDirectoryAsync(_moduleDirectory);
+            server.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     [Test, CancelAfter(15000)]
@@ -359,18 +363,19 @@ public sealed class OutOfProcessActionProtocolTests
 
     private static async Task DeleteDirectoryAsync(string path)
     {
-        for (var attempt = 0; attempt < 5; attempt++)
+        for (var attempt = 0; attempt < 10; attempt++)
         {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
             try
             {
                 Directory.Delete(path, recursive: true);
                 return;
             }
-            catch (UnauthorizedAccessException) when (attempt < 4)
+            catch (UnauthorizedAccessException) when (attempt < 9)
             {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                await Task.Delay(100);
+                await Task.Delay(25);
             }
         }
     }
