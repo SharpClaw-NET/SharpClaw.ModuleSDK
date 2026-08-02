@@ -13,6 +13,8 @@ public sealed class ModuleTestHostTests
     {
         await using var host = new SharpClawModuleTestBuilder()
             .AddModule(new TestModule(), Manifest())
+            .AddHostAction(TestModule.Action)
+            .ApproveSensitiveContributions("test_module")
             .Build();
 
         var result = await host.Action(TestModule.Action, new TestAction("start"))
@@ -78,7 +80,6 @@ public sealed class ModuleTestHostTests
             module.Services.AddTransient<TypedHook>();
             module.Services.AddTransient<CategoryHook>();
             module.Services.AddTransient<WildcardHook>();
-            module.Actions.Add(Action);
             module.Hooks.For(Action).Use<TypedHook>(
                 ActionInterceptionCapabilities.Inspect
                 | ActionInterceptionCapabilities.ReplaceInput
@@ -99,7 +100,8 @@ public sealed class ModuleTestHostTests
             module.Hooks.AnyAction(
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedAction("input", "*"),
-                    ModuleSchemaIdentity.UntypedAction("result", "*"))
+                    ModuleSchemaIdentity.UntypedAction("result", "*"),
+                    sensitiveApprovalRequired: true)
                 .UseAny<WildcardHook>(
                     ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                     new HookOrdering("test.wildcard", HookPriority.Low));

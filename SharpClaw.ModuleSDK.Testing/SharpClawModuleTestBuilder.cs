@@ -7,6 +7,9 @@ namespace SharpClaw.ModuleSDK.Testing;
 public sealed class SharpClawModuleTestBuilder
 {
     private readonly List<(ISharpClawModule Module, ModuleManifest Manifest)> _modules = [];
+    private readonly List<ModuleTestHostAction> _hostActions = [];
+    private readonly List<ModuleTestHostEvent> _hostEvents = [];
+    private readonly HashSet<string> _sensitiveApprovals = new(StringComparer.Ordinal);
     private IServiceProvider? _hostServices;
     private KernelGraphCompileOptions _coreOptions = new();
     private RequestPrincipal _caller = RequestPrincipal.Anonymous;
@@ -20,6 +23,31 @@ public sealed class SharpClawModuleTestBuilder
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(manifest);
         _modules.Add((module, manifest));
+        return this;
+    }
+
+    /// <summary>Adds one host-owned action definition for module hook tests.</summary>
+    public SharpClawModuleTestBuilder AddHostAction<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        _hostActions.Add(ModuleTestHostAction.Create(descriptor));
+        return this;
+    }
+
+    /// <summary>Adds one host-owned event definition for module hook tests.</summary>
+    public SharpClawModuleTestBuilder AddHostEvent<TEvent>(EventDescriptor<TEvent> descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        _hostEvents.Add(ModuleTestHostEvent.Create(descriptor));
+        return this;
+    }
+
+    /// <summary>Approves exact sensitive contributions selected by one module.</summary>
+    public SharpClawModuleTestBuilder ApproveSensitiveContributions(string moduleId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
+        _sensitiveApprovals.Add(moduleId);
         return this;
     }
 
@@ -57,12 +85,25 @@ public sealed class SharpClawModuleTestBuilder
             SharpClawModuleCompiler.Compile(
                 item.Module,
                 item.Manifest,
-                new ModuleCompilationOptions { HostingMode = ModuleHostingMode.InProcess }))
+                new ModuleCompilationOptions
+                {
+                    HostingMode = ModuleHostingMode.InProcess,
+                    HostActions = _hostActions.Select(action => action.SidecarDescriptor).ToArray(),
+                    HostEvents = _hostEvents.Select(evt => evt.SidecarDescriptor).ToArray(),
+                }))
             .ToArray();
         var registry = new KernelModuleRegistry();
+        if (_hostActions.Count > 0 || _hostEvents.Count > 0)
+            registry.Add(new ModuleTestHostDefinitionModule(_hostActions, _hostEvents));
         foreach (var item in _modules)
             registry.Add(item.Module);
-        var coreGraph = registry.Compile(_hostServices, _coreOptions);
+        var coreOptions = ModuleTestKernelOptions.Create(
+            _coreOptions,
+            moduleGraphs,
+            _hostActions,
+            _hostEvents,
+            _sensitiveApprovals);
+        var coreGraph = registry.Compile(_hostServices, coreOptions);
         var execution = new KernelActionExecutionContext(
             _caller,
             _features,
