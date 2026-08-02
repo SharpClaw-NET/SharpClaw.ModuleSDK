@@ -13,7 +13,7 @@ public sealed class EventSmokeModule : ISharpClawModule
     public const string CategoryInterceptorId = "smoke.event.category";
     public const string WildcardInterceptorId = "smoke.event.wildcard";
     public const string ExactListenerId = "smoke.event.listener.exact";
-    public const string WildcardListenerId = "smoke.event.listener.wildcard";
+    public const string CategoryListenerId = "smoke.event.listener.category";
 
     public static EventDescriptor<SmokeEvent> HostEvent { get; } = new(
         new SharpClawEventKey("host.smoke.event"),
@@ -29,6 +29,18 @@ public sealed class EventSmokeModule : ISharpClawModule
     {
         ProtocolVersionRange = ContractVersionRange.Exact(1),
         DeliveryClasses = [EventDelivery.Inline, EventDelivery.Queued],
+    };
+
+    public static EventDescriptor<SmokeEvent> HostListenerEvent { get; } = new(
+        new SharpClawEventKey("host.smoke.listener"),
+        1,
+        "listen",
+        EventInterceptionCapabilities.Observe,
+        DurableByDefault: false,
+        ContainsSensitiveData: false)
+    {
+        ProtocolVersionRange = ContractVersionRange.Exact(1),
+        DeliveryClasses = [EventDelivery.Queued],
     };
 
     public ModuleIdentity Identity { get; } = new(Id, "Event Smoke", "eventsmoke");
@@ -56,16 +68,17 @@ public sealed class EventSmokeModule : ISharpClawModule
             .InterceptAny<SmokeUntypedInterceptor>(
                 EventInterceptionCapabilities.Inspect,
                 new HookOrdering(WildcardInterceptorId));
-        module.Events.For(HostEvent).Listen<SmokeTypedListener>(
+        module.Events.For(HostListenerEvent).Listen<SmokeTypedListener>(
             EventDelivery.Queued,
             new HookOrdering(ExactListenerId));
-        module.Events.AnyEvent(
+        module.Events.Category(
+                "listen",
                 ContractVersionRange.Exact(1),
-                ModuleSchemaIdentity.UntypedEvent("*"),
+                ModuleSchemaIdentity.UntypedEvent("listen.*"),
                 acceptUnknownNonSensitiveSchemas: true)
             .ListenAny<SmokeUntypedListener>(
                 EventDelivery.Queued,
-                new HookOrdering(WildcardListenerId));
+                new HookOrdering(CategoryListenerId));
     }
 
     public sealed class SmokeTypedInterceptor : IEventInterceptor<SmokeEvent>

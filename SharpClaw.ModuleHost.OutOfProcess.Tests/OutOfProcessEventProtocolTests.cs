@@ -60,12 +60,12 @@ public sealed class OutOfProcessEventProtocolTests
                   "effects": ["inspect"]
                 },
                 {
-                  "target": "host.smoke.event",
+                  "target": "host.smoke.listener",
                   "delivery": "Queued",
                   "effects": ["observe"]
                 },
                 {
-                  "target": "*",
+                  "target": "listen.*",
                   "delivery": "Queued",
                   "effects": ["observe"]
                 }
@@ -82,7 +82,10 @@ public sealed class OutOfProcessEventProtocolTests
         await _server.StartAsync();
         _catalog = new SidecarHostDescriptorCatalog(
             [],
-            [HostDescriptor()],
+            [
+                HostDescriptor(EventSmokeModule.HostEvent),
+                HostDescriptor(EventSmokeModule.HostListenerEvent),
+            ],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
     }
@@ -139,7 +142,7 @@ public sealed class OutOfProcessEventProtocolTests
     }
 
     [TestCase(EventSmokeModule.ExactListenerId, true)]
-    [TestCase(EventSmokeModule.WildcardListenerId, false)]
+    [TestCase(EventSmokeModule.CategoryListenerId, false)]
     [CancelAfter(15000)]
     public async Task TypedAndUntypedListenersCompleteWithDeclaredAcknowledgement(
         string listenerId,
@@ -227,7 +230,8 @@ public sealed class OutOfProcessEventProtocolTests
         bool requiresAcknowledgement)
     {
         var descriptor = UntypedDescriptor(
-            listenerId == EventSmokeModule.WildcardListenerId);
+            EventSmokeModule.HostListenerEvent,
+            listenerId == EventSmokeModule.CategoryListenerId);
         var envelope = new UntypedEventEnvelope(
             descriptor,
             Guid.NewGuid(),
@@ -252,9 +256,9 @@ public sealed class OutOfProcessEventProtocolTests
                 requiresAcknowledgement));
     }
 
-    private static SidecarHostEventDescriptor HostDescriptor()
+    private static SidecarHostEventDescriptor HostDescriptor(
+        EventDescriptor<SmokeEvent> descriptor)
     {
-        var descriptor = EventSmokeModule.HostEvent;
         return new SidecarHostEventDescriptor(
             descriptor.Key,
             descriptor.Version,
@@ -269,8 +273,13 @@ public sealed class OutOfProcessEventProtocolTests
     }
 
     private static UntypedEventDescriptor UntypedDescriptor(bool acceptsUnknown)
+        => UntypedDescriptor(EventSmokeModule.HostEvent, acceptsUnknown);
+
+    private static UntypedEventDescriptor UntypedDescriptor(
+        EventDescriptor<SmokeEvent> typed,
+        bool acceptsUnknown)
     {
-        var descriptor = HostDescriptor();
+        var descriptor = HostDescriptor(typed);
         return new UntypedEventDescriptor(
             descriptor.EventKey,
             descriptor.Version,
