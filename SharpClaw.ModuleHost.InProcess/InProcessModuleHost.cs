@@ -77,7 +77,7 @@ public sealed class InProcessModuleHost : IAsyncDisposable
                 module,
                 manifest,
                 new ModuleCompilationOptions { HostingMode = ModuleHostingMode.InProcess });
-            var services = new ServiceCollection();
+            IServiceCollection services = new ServiceCollection();
             configureHostCapabilities?.Invoke(services);
             foreach (var descriptor in graph.Services)
                 services.Add(descriptor);

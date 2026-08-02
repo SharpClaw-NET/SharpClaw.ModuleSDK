@@ -37,7 +37,7 @@ public sealed class InProcessModuleHostTests
             module,
             ControlManifest(),
             new ModuleCompilationOptions { HostingMode = ModuleHostingMode.InProcess });
-        var serviceCollection = new ServiceCollection();
+        IServiceCollection serviceCollection = new ServiceCollection();
         foreach (var descriptor in graph.Services)
             serviceCollection.Add(descriptor);
         await using var services = serviceCollection.BuildServiceProvider();
