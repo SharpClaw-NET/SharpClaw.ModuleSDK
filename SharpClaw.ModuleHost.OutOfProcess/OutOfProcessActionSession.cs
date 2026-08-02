@@ -612,8 +612,7 @@ internal static class OutOfProcessActionSession
                 hook.HandlerType) as IActionInterceptor<TAction, TResult>
                 ?? throw new InvalidOperationException(
                     $"Handler '{hook.HandlerType.FullName}' has an invalid typed action contract.");
-            var payloadJsonOptions = new JsonSerializerOptions(
-                OutOfProcessProtocolCodec.JsonOptions);
+            var payloadJsonOptions = OutOfProcessProtocolCodec.CreatePayloadJsonOptions();
             var action = start.Input.Deserialize<TAction>(payloadJsonOptions)
                 ?? throw new OutOfProcessProtocolException(
                     SidecarProtocolErrors.UnsupportedSchema,

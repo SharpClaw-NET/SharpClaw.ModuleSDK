@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
@@ -16,6 +17,13 @@ internal static class OutOfProcessProtocolCodec
     private const int FrameOverheadBytes = 65_536;
 
     internal static JsonSerializerOptions JsonOptions { get; } = CreateJsonOptions();
+
+    internal static JsonSerializerOptions CreatePayloadJsonOptions()
+    {
+        var options = CreateJsonOptions();
+        options.TypeInfoResolver = new DefaultJsonTypeInfoResolver();
+        return options;
+    }
 
     public static async ValueTask SendAsync(
         WebSocket socket,
