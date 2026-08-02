@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -81,20 +82,45 @@ public sealed class InProcessModuleHostTests
                 Path.Combine(moduleDirectory, "module.json"),
                 JsonSerializer.Serialize(manifest));
 
-            await using var host = await InProcessModuleHost.LoadAsync(moduleDirectory);
-            host.Graph.HostingMode.Should().Be(ModuleHostingMode.InProcess);
-            host.Module.Should().BeAssignableTo<ISharpClawModule>();
-            GetStarted(host.Module).Should().BeFalse();
-
-            await host.StartAsync("test-host");
-            GetStarted(host.Module).Should().BeTrue();
-
-            await host.StopAsync();
-            GetStarted(host.Module).Should().BeFalse();
+            await RunLifecycleAsync(moduleDirectory);
         }
         finally
         {
-            Directory.Delete(moduleDirectory, recursive: true);
+            await DeleteModuleDirectoryAsync(moduleDirectory);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task RunLifecycleAsync(string moduleDirectory)
+    {
+        await using var host = await InProcessModuleHost.LoadAsync(moduleDirectory);
+        host.Graph.HostingMode.Should().Be(ModuleHostingMode.InProcess);
+        host.Module.Should().BeAssignableTo<ISharpClawModule>();
+        GetStarted(host.Module).Should().BeFalse();
+
+        await host.StartAsync("test-host");
+        GetStarted(host.Module).Should().BeTrue();
+
+        await host.StopAsync();
+        GetStarted(host.Module).Should().BeFalse();
+    }
+
+    private static async Task DeleteModuleDirectoryAsync(string moduleDirectory)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            try
+            {
+                Directory.Delete(moduleDirectory, recursive: true);
+                return;
+            }
+            catch (UnauthorizedAccessException) when (attempt < 9)
+            {
+                await Task.Delay(25);
+            }
         }
     }
 
@@ -194,6 +220,7 @@ public sealed class InProcessModuleHostTests
         {
             module.Services.AddSingleton<ControlCapture>();
             module.Services.AddTransient<CapturingActionHook>();
+            module.Actions.Add(Action);
             module.Hooks.For(Action).Use<CapturingActionHook>(
                 ActionInterceptionCapabilities.ReplaceResult,
                 new HookOrdering("inprocess.control.capture"));
