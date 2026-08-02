@@ -47,15 +47,15 @@ public sealed class OutOfProcessActionProtocolTests
               "requestedHooks": [
                 {
                   "target": "host.smoke",
-                  "effects": ["inspect", "wrap", "replaceResult"]
+                  "effects": ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]
                 },
                 {
                   "target": "smoke.*",
-                  "effects": ["inspect", "wrap"]
+                  "effects": ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]
                 },
                 {
                   "target": "*",
-                  "effects": ["inspect", "wrap"]
+                  "effects": ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]
                 }
               ]
             }
@@ -155,6 +155,81 @@ public sealed class OutOfProcessActionProtocolTests
         result.Error!.Code.Should().Be(SidecarProtocolErrors.ContinuationAlreadyUsed);
     }
 
+    [TestCase("input", SidecarContinuationCommand.ContinueReplacement, ActionOutcomeKind.Completed, "replacement")]
+    [TestCase("cancel", SidecarContinuationCommand.Cancel, ActionOutcomeKind.Cancelled, null)]
+    [TestCase("defer", SidecarContinuationCommand.Defer, ActionOutcomeKind.Deferred, null)]
+    [TestCase("repeat", SidecarContinuationCommand.Repeat, ActionOutcomeKind.Completed, "repeat")]
+    [CancelAfter(15000)]
+    public async Task TypedEffectsUseOneExactContinuationCommand(
+        string mode,
+        SidecarContinuationCommand expectedCommand,
+        ActionOutcomeKind expectedKind,
+        string? expectedValue)
+    {
+        await using var client = await CreateClientAsync();
+        SidecarEffectRequest? observed = null;
+
+        var result = await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.ExactHookId, mode, typed: true),
+            (request, ct) =>
+            {
+                observed = request;
+                return ValueTask.FromResult(CreateContinuation(request, "host"));
+            });
+
+        observed.Should().NotBeNull();
+        observed!.Command.Should().Be(expectedCommand);
+        result.Kind.Should().Be(expectedKind);
+        if (expectedValue is not null)
+        {
+            result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+                .Value.Should().Be(expectedValue);
+        }
+        if (expectedKind == ActionOutcomeKind.Cancelled)
+            result.Error!.Code.Should().Be("smoke_cancelled");
+        if (expectedKind == ActionOutcomeKind.Deferred)
+            result.Continuation.Should().NotBeNull();
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task UntypedWildcardReplacesWithoutContinuation()
+    {
+        await using var client = await CreateClientAsync();
+        var continuationCalled = false;
+
+        var result = await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.WildcardHookId, "replace", typed: false),
+            (request, ct) =>
+            {
+                continuationCalled = true;
+                return ValueTask.FromResult(CreateContinuation(request, "host"));
+            });
+
+        continuationCalled.Should().BeFalse();
+        result.Kind.Should().Be(ActionOutcomeKind.Completed);
+        result.Result!.Value.Deserialize<SmokeResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Value.Should().Be("sidecar:untyped");
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task UntypedWildcardCancellationUsesHostContinuation()
+    {
+        await using var client = await CreateClientAsync();
+        SidecarEffectRequest? observed = null;
+
+        var result = await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.WildcardHookId, "cancel", typed: false),
+            (request, ct) =>
+            {
+                observed = request;
+                return ValueTask.FromResult(CreateContinuation(request, "host"));
+            });
+
+        observed!.Command.Should().Be(SidecarContinuationCommand.Cancel);
+        result.Kind.Should().Be(ActionOutcomeKind.Cancelled);
+        result.Error!.Code.Should().Be("smoke_cancelled");
+    }
+
     [Test]
     public async Task InvalidSequenceAndExpiredDeadlineFailBeforeTransport()
     {
@@ -233,13 +308,11 @@ public sealed class OutOfProcessActionProtocolTests
         var expires = deadline ?? DateTimeOffset.UtcNow.AddSeconds(10);
         var invocationId = Guid.NewGuid();
         var baseDescriptor = UntypedDescriptor();
-        var capabilities = hookId == LifecycleSmokeModule.ExactHookId
-            ? ActionInterceptionCapabilities.Inspect
-              | ActionInterceptionCapabilities.Wrap
-              | ActionInterceptionCapabilities.ReplaceResult
-            : ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap;
+        var acceptsUnknown = hookId != LifecycleSmokeModule.ExactHookId;
         var grant = client.Authorization.ActionGrants.Single(item =>
-            item.ActionKey == baseDescriptor.Key && item.Capabilities == capabilities);
+            item.ActionKey == baseDescriptor.Key
+            && item.Capabilities == LifecycleSmokeModule.HostCapabilities
+            && item.AcceptUnknownSchemas == acceptsUnknown);
         var descriptor = baseDescriptor with
         {
             AcceptsUnknownNonSensitiveSchemas = grant.AcceptUnknownSchemas,
@@ -289,6 +362,20 @@ public sealed class OutOfProcessActionProtocolTests
                 request.Command,
                 ActionSafePoint.BeforeContinuation,
                 ContinuationState.Claimed));
+        var kind = request.Command switch
+        {
+            SidecarContinuationCommand.Cancel => ActionOutcomeKind.Cancelled,
+            SidecarContinuationCommand.Defer => ActionOutcomeKind.Deferred,
+            _ => ActionOutcomeKind.Completed,
+        };
+        var resultValue = request.Command switch
+        {
+            SidecarContinuationCommand.ContinueReplacement or SidecarContinuationCommand.Repeat =>
+                request.Value is { } replacement
+                    ? replacement.GetProperty("value").GetString()
+                    : null,
+            _ => value,
+        };
         var outcome = SidecarMessageHeaderFactory.CreateMeasured(
             request.Header.ProtocolVersion,
             request.Header.Sequence + 2,
@@ -297,12 +384,22 @@ public sealed class OutOfProcessActionProtocolTests
             header => new ContinuationOutcome(
                 header,
                 request.ContinuationHandleId,
-                ActionOutcomeKind.Completed,
+                kind,
                 ActionOutcomeCertainty.Certain,
                 ActionSafePoint.BeforeTerminal,
-                JsonSerializer.SerializeToElement(
-                    new SmokeResult(value),
-                    OutOfProcessProtocolCodec.JsonOptions)));
+                kind == ActionOutcomeKind.Completed
+                    ? JsonSerializer.SerializeToElement(
+                        new SmokeResult(resultValue!),
+                        OutOfProcessProtocolCodec.JsonOptions)
+                    : null,
+                Error: kind == ActionOutcomeKind.Cancelled
+                    ? new ExecutionError(
+                        request.Code ?? "cancelled",
+                        request.Message ?? "The action was cancelled.")
+                    : null,
+                Continuation: kind == ActionOutcomeKind.Deferred
+                    ? new ContinuationToken(Guid.NewGuid(), "test-secret")
+                    : null));
         return (accepted, outcome);
     }
 

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
 
@@ -14,21 +15,31 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
     public const string CategoryHookId = "smoke.action.category";
     public const string WildcardHookId = "smoke.action.wildcard";
 
+    public const ActionInterceptionCapabilities HostCapabilities =
+        ActionInterceptionCapabilities.Inspect
+        | ActionInterceptionCapabilities.ReplaceInput
+        | ActionInterceptionCapabilities.Cancel
+        | ActionInterceptionCapabilities.ReplaceResult
+        | ActionInterceptionCapabilities.Defer
+        | ActionInterceptionCapabilities.Repeat
+        | ActionInterceptionCapabilities.Wrap;
+
     public static ActionDescriptor<SmokeAction, SmokeResult> HostAction { get; } = new(
         new SharpClawActionKey("host.smoke"),
         1,
         "smoke",
-        ActionInterceptionCapabilities.Inspect
-        | ActionInterceptionCapabilities.Wrap
-        | ActionInterceptionCapabilities.ReplaceResult,
+        HostCapabilities,
         ContainsSensitiveData: false,
         HasIrreversibleEffects: false,
         new ActionRepeatPolicy(
-            ActionRepeatKind.None,
-            1,
+            ActionRepeatKind.Idempotent,
+            3,
             TimeSpan.Zero,
             "host.smoke"),
-        ContinuationPolicy: null,
+        new ActionContinuationPolicy(
+            TimeSpan.FromMinutes(5),
+            Durable: true,
+            SingleClaim: true),
         TimeSpan.FromSeconds(5))
     {
         ProtocolVersionRange = ContractVersionRange.Exact(1),
@@ -45,9 +56,7 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Hooks.For(HostAction).Use<SmokeTypedHook>(
-            ActionInterceptionCapabilities.Inspect
-            | ActionInterceptionCapabilities.Wrap
-            | ActionInterceptionCapabilities.ReplaceResult,
+            HostCapabilities,
             new HookOrdering(ExactHookId, Before: [CategoryHookId]));
         module.Hooks.Category(
                 "smoke",
@@ -56,7 +65,7 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
                 ModuleSchemaIdentity.UntypedAction("result", "smoke.*"),
                 acceptUnknownNonSensitiveSchemas: true)
             .UseAny<SmokeUntypedHook>(
-                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
+                HostCapabilities,
                 new HookOrdering(CategoryHookId, Before: [WildcardHookId]));
         module.Hooks.AnyAction(
                 ContractVersionRange.Exact(1),
@@ -64,7 +73,7 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
                 ModuleSchemaIdentity.UntypedAction("result", "*"),
                 acceptUnknownNonSensitiveSchemas: true)
             .UseAny<SmokeUntypedHook>(
-                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
+                HostCapabilities,
                 new HookOrdering(WildcardHookId));
     }
 
@@ -82,6 +91,24 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
                 "fail" => control.Fail(new ExecutionError(
                     "smoke_failed",
                     "The smoke hook failed.")),
+                "input" => await control.ProceedWithInputAsync(
+                    new ActionReplacement<SmokeAction>(
+                        new SmokeAction("proceed", "replacement"),
+                        "smoke input replacement"),
+                    ct),
+                "cancel" => control.Cancel(
+                    "smoke_cancelled",
+                    "The smoke action was cancelled."),
+                "defer" => await control.DeferAsync(
+                    new ActionDeferRequest(
+                        DateTimeOffset.UtcNow.AddMinutes(1),
+                        "smoke deferment"),
+                    ct),
+                "repeat" => await control.RepeatAsync(
+                    new ActionRepeatRequest<SmokeAction>(
+                        new SmokeAction("proceed", "repeat"),
+                        "smoke repetition"),
+                    ct),
                 "double" => await UseTwiceAsync(control, ct),
                 _ => await control.ProceedAsync(ct),
             };
@@ -97,9 +124,44 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
 
     public sealed class SmokeUntypedHook : IAnyActionInterceptor
     {
-        public ValueTask<IUntypedActionOutcome> InvokeAsync(
+        public async ValueTask<IUntypedActionOutcome> InvokeAsync(
             UntypedActionContext context,
             IUntypedActionControl control,
-            CancellationToken ct) => control.ProceedAsync(ct);
+            CancellationToken ct)
+        {
+            var mode = context.Input.GetProperty("mode").GetString();
+            return mode switch
+            {
+                "replace" => control.ReplaceResult(
+                    JsonSerializer.SerializeToElement(new { value = "sidecar:untyped" }),
+                    "untyped replacement"),
+                "cancel" => control.Cancel(
+                    "smoke_cancelled",
+                    "The smoke action was cancelled."),
+                "input" => await control.ProceedWithInputAsync(
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        mode = "proceed",
+                        value = "replacement",
+                    }),
+                    "untyped input replacement",
+                    ct),
+                "defer" => await control.DeferAsync(
+                    new ActionDeferRequest(
+                        DateTimeOffset.UtcNow.AddMinutes(1),
+                        "untyped deferment"),
+                    ct),
+                "repeat" => await control.RepeatAsync(
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        mode = "proceed",
+                        value = "repeat",
+                    }),
+                    "untyped repetition",
+                    backoff: null,
+                    ct),
+                _ => await control.ProceedAsync(ct),
+            };
+        }
     }
 }
