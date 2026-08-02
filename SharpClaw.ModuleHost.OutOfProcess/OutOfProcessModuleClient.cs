@@ -180,6 +180,115 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Runs one event interceptor exchange.</summary>
+    public async ValueTask<EventInterceptOutcome> InterceptEventAsync(
+        EventInterceptStart start,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), ct);
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.EventIntercept,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            start.Header.Deadline,
+            start.Header.ProtocolVersion,
+            HostLimits,
+            HostAuthorization: Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        try
+        {
+            await protocol.SendAsync(start, ct: ct);
+            var frame = await protocol.ReceiveAsync(ct);
+            if (frame.Message is SidecarProtocolError protocolError)
+                throw Error(protocolError);
+            if (frame.Message is not EventInterceptOutcome outcome)
+            {
+                throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar did not return an event interception outcome.");
+            }
+
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+            return outcome;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryCancelAsync(protocol, socket);
+            throw;
+        }
+    }
+
+    /// <summary>Delivers one event to one selected module listener.</summary>
+    public async ValueTask<SidecarEventListenerAcknowledgement?> DeliverEventAsync(
+        SidecarEventListenerDelivery delivery,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), ct);
+        var descriptor = delivery.Envelope.Descriptor;
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.EventListener,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            delivery.Header.Deadline,
+            delivery.Header.ProtocolVersion,
+            HostLimits,
+            DeliveryId: delivery.DeliveryId,
+            ListenerId: delivery.ListenerId,
+            Delivery: delivery.Delivery,
+            EventKey: descriptor.Key,
+            EventVersion: descriptor.Version,
+            EventDescriptor: descriptor,
+            HostAuthorization: Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        try
+        {
+            await protocol.SendAsync(delivery, ct: ct);
+            if (!delivery.RequiresAcknowledgement)
+            {
+                await WaitForCompletedCloseAsync(protocol, socket, ct);
+                return null;
+            }
+
+            var frame = await protocol.ReceiveAsync(ct);
+            if (frame.Message is SidecarProtocolError protocolError)
+                throw Error(protocolError);
+            if (frame.Message is not SidecarEventListenerAcknowledgement acknowledgement)
+            {
+                throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar did not return an event listener acknowledgement.");
+            }
+
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+            return acknowledgement;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryCloseAsync(socket, "cancelled");
+            throw;
+        }
+    }
+
     /// <inheritdoc />
     public ValueTask DisposeAsync()
     {
@@ -270,6 +379,51 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             await protocol.CloseAsync(
                 WebSocketCloseStatus.NormalClosure,
                 "cancelled",
+                timeout.Token);
+        }
+        catch (Exception) when (timeout.IsCancellationRequested)
+        {
+        }
+        catch (WebSocketException)
+        {
+        }
+    }
+
+    private static async Task WaitForCompletedCloseAsync(
+        OutOfProcessProtocolSession protocol,
+        ClientWebSocket socket,
+        CancellationToken ct)
+    {
+        try
+        {
+            var frame = await protocol.ReceiveAsync(ct);
+            if (frame.Message is SidecarProtocolError protocolError)
+                throw Error(protocolError);
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The sidecar sent a message for an event delivery that requires no acknowledgement.");
+        }
+        catch (OutOfProcessProtocolException ex) when (
+            socket.State == WebSocketState.CloseReceived
+            && string.Equals(ex.Code, "completed", StringComparison.Ordinal))
+        {
+            await socket.CloseOutputAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+        }
+    }
+
+    private static async Task TryCloseAsync(ClientWebSocket socket, string description)
+    {
+        if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+            return;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try
+        {
+            await socket.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                description,
                 timeout.Token);
         }
         catch (Exception) when (timeout.IsCancellationRequested)

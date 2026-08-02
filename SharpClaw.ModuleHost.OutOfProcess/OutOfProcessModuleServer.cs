@@ -13,6 +13,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
     private readonly WebApplication _app;
     private readonly OutOfProcessModuleRuntime _runtime;
     private readonly BoundedExecutionQueue _actionQueue;
+    private readonly BoundedExecutionQueue _eventQueue;
     private readonly string _controlToken;
     private SidecarHostAuthorization? _authorization;
     private int _disposed;
@@ -21,11 +22,13 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         WebApplication app,
         OutOfProcessModuleRuntime runtime,
         BoundedExecutionQueue actionQueue,
+        BoundedExecutionQueue eventQueue,
         string controlToken)
     {
         _app = app;
         _runtime = runtime;
         _actionQueue = actionQueue;
+        _eventQueue = eventQueue;
         _controlToken = controlToken;
         MapEndpoints();
     }
@@ -74,8 +77,14 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             {
                 KeepAliveInterval = TimeSpan.FromSeconds(20),
             });
-            var queue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
-            return new OutOfProcessModuleServer(app, runtime, queue, controlToken);
+            var actionQueue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
+            var eventQueue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
+            return new OutOfProcessModuleServer(
+                app,
+                runtime,
+                actionQueue,
+                eventQueue,
+                controlToken);
         }
         catch
         {
@@ -100,6 +109,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             return;
         await _app.StopAsync(CancellationToken.None);
         await _actionQueue.DisposeAsync();
+        await _eventQueue.DisposeAsync();
         await _app.DisposeAsync();
         await _runtime.DisposeAsync();
     }
@@ -225,6 +235,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                     SidecarProtocolErrors.InvalidLifecyclePhase,
                     "The first exchange message does not start a supported exchange."),
             };
+            var listenerDelivery = firstFrame.Message as SidecarEventListenerDelivery;
             var state = new SidecarProtocolState(
                 exchangeKind,
                 Guid.Empty,
@@ -234,36 +245,67 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                 firstFrame.Message.Header.Deadline,
                 firstFrame.Message.Header.ProtocolVersion,
                 _runtime.Graph.PayloadLimits,
+                EventKey: listenerDelivery?.Envelope.Descriptor.Key,
+                EventVersion: listenerDelivery?.Envelope.Descriptor.Version,
+                EventDescriptor: listenerDelivery?.Envelope.Descriptor,
                 HostAuthorization: authorization);
             protocol = new OutOfProcessProtocolSession(socket, state);
             protocol.Accept(firstFrame.Message);
 
-            if (firstFrame.Message is not HookInvokeStart actionStart)
+            BoundedExecutionQueue queue;
+            Func<CancellationToken, Task> operation;
+            string exchangeClass;
+            switch (firstFrame.Message)
             {
-                await protocol.SendErrorAsync(
-                    SidecarProtocolErrors.UnsupportedCapability,
-                    "This host build does not implement the requested exchange class.",
-                    context.RequestAborted);
-                await protocol.CloseAsync(
-                    WebSocketCloseStatus.PolicyViolation,
-                    SidecarProtocolErrors.UnsupportedCapability,
-                    context.RequestAborted);
-                return;
+                case HookInvokeStart actionStart:
+                    queue = _actionQueue;
+                    exchangeClass = "action";
+                    operation = ct => OutOfProcessActionSession.RunAsync(
+                        _runtime,
+                        protocol,
+                        actionStart,
+                        authorization,
+                        ct);
+                    break;
+                case EventInterceptStart eventStart:
+                    queue = _eventQueue;
+                    exchangeClass = "event";
+                    operation = ct => OutOfProcessEventSession.RunInterceptorAsync(
+                        _runtime,
+                        protocol,
+                        eventStart,
+                        authorization,
+                        ct);
+                    break;
+                case SidecarEventListenerDelivery delivery:
+                    queue = _eventQueue;
+                    exchangeClass = "event";
+                    operation = ct => OutOfProcessEventSession.RunListenerAsync(
+                        _runtime,
+                        protocol,
+                        delivery,
+                        ct);
+                    break;
+                default:
+                    await protocol.SendErrorAsync(
+                        SidecarProtocolErrors.UnsupportedCapability,
+                        "This host build does not implement the requested exchange class.",
+                        context.RequestAborted);
+                    await protocol.CloseAsync(
+                        WebSocketCloseStatus.PolicyViolation,
+                        SidecarProtocolErrors.UnsupportedCapability,
+                        context.RequestAborted);
+                    return;
             }
 
-            if (!_actionQueue.TrySchedule(
-                ct => OutOfProcessActionSession.RunAsync(
-                    _runtime,
-                    protocol,
-                    actionStart,
-                    authorization,
-                    ct),
+            if (!queue.TrySchedule(
+                operation,
                 context.RequestAborted,
                 out var completion))
             {
                 await protocol.SendErrorAsync(
                     SidecarProtocolErrors.ModuleBusy,
-                    "The module action queue is full.",
+                    $"The module {exchangeClass} queue is full.",
                     context.RequestAborted);
                 await protocol.CloseAsync(
                     WebSocketCloseStatus.PolicyViolation,
