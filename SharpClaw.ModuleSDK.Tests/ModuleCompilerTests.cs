@@ -12,8 +12,8 @@ public sealed class ModuleCompilerTests
     public void CompileBuildsExactCategoryAndWildcardMapsInStableOrder()
     {
         var graph = Compile(new CompleteModule(), ModuleHostingMode.InProcess);
-        var selectedActions = graph.ActionDispatch.Select(UntypedAction(CompleteModule.EchoAction));
-        var selectedEvents = graph.EventDispatch.SelectInterceptors(UntypedEvent(CompleteModule.ChangedEvent));
+        var selectedActions = graph.ActionDispatch.Select(UntypedAction(CompleteModule.HostAction));
+        var selectedEvents = graph.EventDispatch.SelectInterceptors(UntypedEvent(CompleteModule.HostEvent));
 
         selectedActions.Select(hook => hook.HookId).Should().Equal(
             "sample.action.exact",
@@ -23,7 +23,7 @@ public sealed class ModuleCompilerTests
             "sample.event.exact",
             "sample.event.category");
         graph.EventDispatch
-            .SelectListeners(UntypedEvent(CompleteModule.ChangedEvent), EventDelivery.Queued)
+            .SelectListeners(UntypedEvent(CompleteModule.HostEvent), EventDelivery.Queued)
             .Select(hook => hook.HookId)
             .Should()
             .Equal("sample.event.wildcard");
@@ -61,8 +61,8 @@ public sealed class ModuleCompilerTests
             sequence: 1,
             deadline: DateTimeOffset.UtcNow.AddMinutes(1));
         var catalog = new SidecarHostDescriptorCatalog(
-            [HostAction(CompleteModule.EchoAction)],
-            [HostEvent(CompleteModule.ChangedEvent)],
+            [HostAction(CompleteModule.HostAction)],
+            [HostEvent(CompleteModule.HostEvent)],
             negotiatedProtocolVersion: 1,
             graph.PayloadLimits);
 
@@ -114,6 +114,17 @@ public sealed class ModuleCompilerTests
     }
 
     [Test]
+    public void OutOfProcessCompilationRejectsSelfSubscription()
+    {
+        var act = () => Compile(new SelfSubscriptionModule(), ModuleHostingMode.OutOfProcess);
+
+        act.Should().Throw<ModuleGraphCompilationException>()
+            .Which.Errors.Should().Contain(error =>
+                error.Code == "unsupported_transport"
+                && error.Target == CompleteModule.HostAction.Key.Value);
+    }
+
+    [Test]
     public void CompiledCollectionsDoNotExposeMutableLists()
     {
         var graph = Compile(new CompleteModule(), ModuleHostingMode.InProcess);
@@ -130,8 +141,8 @@ public sealed class ModuleCompilerTests
             new ModuleCompilationOptions
             {
                 HostingMode = mode,
-                HostActions = [HostAction(CompleteModule.EchoAction)],
-                HostEvents = [HostEvent(CompleteModule.ChangedEvent)],
+                HostActions = [HostAction(CompleteModule.HostAction)],
+                HostEvents = [HostEvent(CompleteModule.HostEvent)],
             });
 
     private static ModuleManifest Manifest(ModuleIdentity identity, bool includeCompleteRequests) =>
@@ -148,7 +159,7 @@ public sealed class ModuleCompilerTests
                 ?
                 [
                     new ModuleManifestHookRequest(
-                        CompleteModule.EchoAction.Key.Value,
+                        CompleteModule.HostAction.Key.Value,
                         ["inspect", "wrap"]),
                     new ModuleManifestHookRequest("sample.*", ["inspect", "wrap"]),
                     new ModuleManifestHookRequest("*", ["inspect", "wrap"]),
@@ -158,7 +169,7 @@ public sealed class ModuleCompilerTests
                 ?
                 [
                     new ModuleManifestEventRequest(
-                        CompleteModule.ChangedEvent.Key.Value,
+                        CompleteModule.HostEvent.Key.Value,
                         "Inline",
                         ["inspect", "replace"]),
                     new ModuleManifestEventRequest(
@@ -175,7 +186,7 @@ public sealed class ModuleCompilerTests
             "unsupported_effect" =>
             [
                 new ModuleManifestHookRequest(
-                    CompleteModule.EchoAction.Key.Value,
+                    CompleteModule.HostAction.Key.Value,
                     ["cancel"]),
             ],
             "typed_category" =>
@@ -239,9 +250,9 @@ public sealed class ModuleCompilerTests
 
     private sealed class CompleteModule : ISharpClawModule
     {
-        public static ActionDescriptor<EchoAction, EchoResult> EchoAction { get; } =
+        public static ActionDescriptor<EchoAction, EchoResult> HostAction { get; } =
             new(
-                new SharpClawActionKey("sample.echo"),
+                new SharpClawActionKey("host.echo"),
                 1,
                 "sample",
                 ActionInterceptionCapabilities.Inspect
@@ -251,7 +262,7 @@ public sealed class ModuleCompilerTests
                 | ActionInterceptionCapabilities.Cancel,
                 ContainsSensitiveData: false,
                 HasIrreversibleEffects: false,
-                new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "sample.echo"),
+                new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "host.echo"),
                 ContinuationPolicy: null,
                 TimeSpan.FromSeconds(5))
             {
@@ -264,9 +275,20 @@ public sealed class ModuleCompilerTests
                 ],
             };
 
-        public static EventDescriptor<ChangedEvent> ChangedEvent { get; } =
+        public static ActionDescriptor<EchoAction, EchoResult> OwnedAction { get; } =
+            HostAction with
+            {
+                Key = new SharpClawActionKey("sample.owned"),
+                RepeatPolicy = new ActionRepeatPolicy(
+                    ActionRepeatKind.None,
+                    1,
+                    TimeSpan.Zero,
+                    "sample.owned"),
+            };
+
+        public static EventDescriptor<ChangedEvent> HostEvent { get; } =
             new(
-                new SharpClawEventKey("sample.changed"),
+                new SharpClawEventKey("host.changed"),
                 1,
                 "sample",
                 EventInterceptionCapabilities.Inspect
@@ -279,13 +301,16 @@ public sealed class ModuleCompilerTests
                 DeliveryClasses = [EventDelivery.Inline, EventDelivery.Queued],
             };
 
+        public static EventDescriptor<ChangedEvent> OwnedEvent { get; } =
+            HostEvent with { Key = new SharpClawEventKey("sample.owned.changed") };
+
         public ModuleIdentity Identity { get; } = new("sample_module", "Sample Module", "sample");
 
         public void Configure(ISharpClawModuleBuilder module)
         {
-            module.Actions.Add(EchoAction);
-            module.Events.Add(ChangedEvent);
-            module.Hooks.For(EchoAction).Use<EchoHook>(
+            module.Actions.Add(OwnedAction);
+            module.Events.Add(OwnedEvent);
+            module.Hooks.For(HostAction).Use<EchoHook>(
                 ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                 new HookOrdering("sample.action.exact", Before: ["sample.action.category"]));
             module.Hooks.Category(
@@ -305,7 +330,7 @@ public sealed class ModuleCompilerTests
                     ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                     new HookOrdering("sample.action.wildcard", HookPriority.Low));
 
-            module.Events.For(ChangedEvent).Intercept<ChangedEventHook>(
+            module.Events.For(HostEvent).Intercept<ChangedEventHook>(
                 EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Replace,
                 new HookOrdering("sample.event.exact", Before: ["sample.event.category"]));
             module.Events.Category(
@@ -341,11 +366,11 @@ public sealed class ModuleCompilerTests
 
         public void Configure(ISharpClawModuleBuilder module)
         {
-            module.Actions.Add(CompleteModule.EchoAction with
+            module.Actions.Add(CompleteModule.HostAction with
             {
                 Capabilities = ActionInterceptionCapabilities.Inspect,
             });
-            module.Hooks.For(CompleteModule.EchoAction with
+            module.Hooks.For(CompleteModule.HostAction with
                 {
                     Capabilities = ActionInterceptionCapabilities.Inspect,
                 })
@@ -367,6 +392,19 @@ public sealed class ModuleCompilerTests
                 JsonSerializer.SerializeToElement(new { type = "object" }));
             module.Tools.Add<EchoTool>(descriptor);
             module.Tools.Add<EchoTool>(descriptor);
+        }
+    }
+
+    private sealed class SelfSubscriptionModule : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } = new("self_subscription", "Self Subscription", "self");
+
+        public void Configure(ISharpClawModuleBuilder module)
+        {
+            module.Actions.Add(CompleteModule.HostAction);
+            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
+                new HookOrdering("self.subscription"));
         }
     }
 

@@ -53,7 +53,7 @@ public static class SharpClawModuleCompiler
 
         if (options.HostingMode == ModuleHostingMode.OutOfProcess)
         {
-            ValidateUniqueSidecarTargets(actionHooks, eventHooks, module.Identity.Id, errors);
+            ValidateUniqueSidecarTargets(state, actionHooks, eventHooks, module.Identity.Id, errors);
         }
 
         if (errors.Count > 0)
@@ -969,11 +969,36 @@ public static class SharpClawModuleCompiler
     }
 
     private static void ValidateUniqueSidecarTargets(
+        ModuleBuilderState state,
         IReadOnlyList<ModuleActionHook> actionHooks,
         IReadOnlyList<ModuleEventHook> eventHooks,
         string moduleId,
         ICollection<GraphCompilationError> errors)
     {
+        foreach (var hook in actionHooks.Where(hook =>
+                     hook.TargetKind == SidecarHookTargetKind.Exact
+                     && state.Actions.Any(action => action.Descriptor.Key == hook.ActionKey)))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.UnsupportedTransport,
+                moduleId,
+                hook.ActionKey!.Value.Value,
+                "sidecar",
+                "One sidecar discovery cannot define and subscribe to the same action key."));
+        }
+
+        foreach (var hook in eventHooks.Where(hook =>
+                     hook.TargetKind == SidecarHookTargetKind.Exact
+                     && state.Events.Any(evt => evt.Descriptor.Key == hook.EventKey)))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.UnsupportedTransport,
+                moduleId,
+                hook.EventKey!.Value.Value,
+                "sidecar",
+                "One sidecar discovery cannot define and subscribe to the same event key."));
+        }
+
         foreach (var duplicate in actionHooks.GroupBy(ActionSubscriptionKey, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
