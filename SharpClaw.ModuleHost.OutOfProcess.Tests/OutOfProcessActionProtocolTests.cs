@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -327,6 +328,78 @@ public sealed class OutOfProcessActionProtocolTests
             .Which.Code.Should().Be(SidecarProtocolErrors.DeadlineExceeded);
     }
 
+    [Test]
+    [Category("ActionProtocolResilience")]
+    [CancelAfter(15000)]
+    public async Task CallerCancellationClosesTheExchangeAndPreservesReadiness()
+    {
+        await using var client = await CreateClientAsync();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        var act = async () => await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.ExactHookId, "proceed", typed: true),
+            WaitForCancellationAsync,
+            cancellation.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        await AssertServerReadyAsync();
+    }
+
+    [Test]
+    [Category("ActionProtocolResilience")]
+    [CancelAfter(15000)]
+    public async Task ClientDisconnectionReleasesTheExchangeAndPreservesReadiness()
+    {
+        await using var client = await CreateClientAsync();
+        var start = CreateStart(
+            client,
+            LifecycleSmokeModule.ExactHookId,
+            "proceed",
+            typed: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), timeout.Token);
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.ActionHook,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            start.Header.Deadline,
+            start.Header.ProtocolVersion,
+            client.HostLimits,
+            HostAuthorization: client.Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        await protocol.SendAsync(start, ct: timeout.Token);
+
+        var frame = await protocol.ReceiveAsync(timeout.Token);
+        frame.Message.Should().BeOfType<SidecarEffectRequest>();
+        socket.Abort();
+
+        await AssertServerReadyAsync();
+    }
+
+    [Test]
+    [Category("ActionProtocolResilience")]
+    public async Task OversizedActionInputFailsBeforeTransport()
+    {
+        await using var client = await CreateClientAsync();
+        var oversized = new string('x', client.HostLimits.ActionInputBytes + 1);
+
+        var act = () => CreateStart(
+            client,
+            LifecycleSmokeModule.ExactHookId,
+            "proceed",
+            typed: true,
+            value: oversized);
+
+        act.Should().Throw<OutOfProcessProtocolException>()
+            .Which.Code.Should().Be(SidecarProtocolErrors.ModulePayloadTooLarge);
+    }
+
     [Test, CancelAfter(5000)]
     public async Task BoundedQueueRejectsWorkAfterItsCapacity()
     {
@@ -516,6 +589,26 @@ public sealed class OutOfProcessActionProtocolTests
             ? property.GetString()
             : null;
 
+    private async Task AssertServerReadyAsync()
+    {
+        await using var client = await CreateClientAsync();
+        var result = await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.ExactHookId, "proceed", typed: true),
+            (request, ct) => ValueTask.FromResult(CreateContinuation(request, "ready")));
+        result.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
+        ReadResult(result.Completion.Result).Should().Be("ready");
+    }
+
+    private static async ValueTask<(
+        ContinuationAccepted Accepted,
+        ContinuationOutcome Outcome)> WaitForCancellationAsync(
+        SidecarEffectRequest request,
+        CancellationToken ct)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        throw new InvalidOperationException("The cancellation callback completed unexpectedly.");
+    }
+
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
         OutOfProcessModuleClient.CreateAuthorizedAsync(
             _controlAddress,
@@ -528,7 +621,8 @@ public sealed class OutOfProcessActionProtocolTests
         string mode,
         bool typed,
         long sequence = 1,
-        DateTimeOffset? deadline = null)
+        DateTimeOffset? deadline = null,
+        string value = "value")
     {
         var expires = deadline ?? DateTimeOffset.UtcNow.AddSeconds(10);
         var invocationId = Guid.NewGuid();
@@ -557,7 +651,7 @@ public sealed class OutOfProcessActionProtocolTests
                 descriptor.Version,
                 typed ? SidecarPayloadMode.Typed : SidecarPayloadMode.Untyped,
                 JsonSerializer.SerializeToElement(
-                    new SmokeAction(mode, "value"),
+                    new SmokeAction(mode, value),
                     OutOfProcessProtocolCodec.JsonOptions),
                 descriptor,
                 grant,
@@ -569,6 +663,22 @@ public sealed class OutOfProcessActionProtocolTests
                     hookId,
                     expires,
                     sequence)));
+    }
+
+    private Uri ExchangeUri()
+    {
+        var builder = new UriBuilder(new Uri(
+            _controlAddress,
+            OutOfProcessModuleHostProtocol.ExchangePath))
+        {
+            Scheme = string.Equals(
+                _controlAddress.Scheme,
+                Uri.UriSchemeHttps,
+                StringComparison.Ordinal)
+                ? "wss"
+                : "ws",
+        };
+        return builder.Uri;
     }
 
     private static (ContinuationAccepted Accepted, ContinuationOutcome Outcome) CreateContinuation(
