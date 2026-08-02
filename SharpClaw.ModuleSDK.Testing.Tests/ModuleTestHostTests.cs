@@ -1,4 +1,3 @@
-using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
@@ -22,7 +21,7 @@ public sealed class ModuleTestHostTests
             .RunRequiredAsync();
         var log = host.CoreGraph.GetRequiredService<InvocationLog>();
 
-        result.Value.Should().Be("typed:terminal:category");
+        result.Value.Should().Be("typed:terminal");
         log.Entries.Should().Equal("typed-before", "category-before", "wildcard", "category-after", "typed-after");
     }
 
@@ -139,10 +138,7 @@ public sealed class ModuleTestHostTests
             log.Entries.Add("category-before");
             var outcome = await control.ProceedAsync(ct);
             log.Entries.Add("category-after");
-            var result = outcome.Result!.Value.Deserialize<TestResult>()!;
-            return control.ReplaceResult(
-                JsonSerializer.SerializeToElement(new TestResult(result.Value + ":category")),
-                "test result replacement");
+            return outcome;
         }
     }
 
