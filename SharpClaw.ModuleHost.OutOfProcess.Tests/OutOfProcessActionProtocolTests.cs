@@ -78,8 +78,13 @@ public sealed class OutOfProcessActionProtocolTests
     [OneTimeTearDown]
     public async Task StopServer()
     {
-        if (_server is not null)
-            await _server.DisposeAsync();
+        OutOfProcessModuleServer? server = _server;
+        _server = null!;
+        if (server is not null)
+            await server.DisposeAsync();
+        server = null;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
         if (Directory.Exists(_moduleDirectory))
             await DeleteDirectoryAsync(_moduleDirectory);
     }
