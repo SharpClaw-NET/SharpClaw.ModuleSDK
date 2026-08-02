@@ -10,7 +10,7 @@ namespace SharpClaw.ModuleHost.InProcess;
 /// <para>
 /// The resolver prefers the module's own dependencies next to its DLL,
 /// falling back to the default context for shared types
-/// (<c>SharpClaw.Contracts</c>, <c>Microsoft.Extensions.*</c>, etc.).
+/// (<c>SharpClaw.Contracts</c>, <c>SharpClaw.ModuleSDK</c>, and host assemblies).
 /// </para>
 /// </summary>
 public sealed class ModuleLoadContext : AssemblyLoadContext
@@ -20,15 +20,12 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
     /// every module share the same <see cref="Type"/> identity. If any of these were
     /// resolved by <see cref="AssemblyDependencyResolver"/> from the module directory,
     /// the runtime would load a second copy and casts like
-    /// <c>obj is ISharpClawCoreModule</c> would silently fail with a type mismatch.
+    /// <c>obj is ISharpClawModule</c> would fail with a type mismatch.
     /// </summary>
     private static readonly string[] HostSharedPrefixes =
     {
         "SharpClaw.Contracts",
-        "SharpClaw.Utils",
-        "SharpClaw.Application.Core",
-        "SharpClaw.Application.Infrastructure",
-        "SharpClaw.Gateway.Abstractions",
+        "SharpClaw.ModuleSDK",
         "SharpClaw.ModuleHost.InProcess",
         "Microsoft.Extensions.",
         "Microsoft.AspNetCore.",

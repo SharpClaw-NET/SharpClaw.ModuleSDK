@@ -1,14 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <PackageId>SharpClaw.ModuleHost.InProcess</PackageId>
+    <PackageId>SharpClaw.ModuleSDK.Testing</PackageId>
     <Version>0.5.0-beta.2</Version>
     <AssemblyVersion>0.5.0.0</AssemblyVersion>
     <FileVersion>0.5.0.0</FileVersion>
     <InformationalVersion>0.5.0-beta.2</InformationalVersion>
     <Authors>mkn8rn</Authors>
-    <Description>Supports opt-in in-process SharpClaw .NET module loading with collectible assembly contexts and host-shared contract assemblies.</Description>
-    <PackageTags>sharpclaw;modulehost;in-process;modules;runtime</PackageTags>
+    <Description>Runs SharpClaw module action and event graphs against the production Core dispatcher in isolated tests.</Description>
+    <PackageTags>sharpclaw;modules;sdk;testing;conformance</PackageTags>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -17,8 +17,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
     <PackageReference Include="SharpClaw.Contracts" Version="0.5.0-beta.2" />
+    <PackageReference Include="SharpClaw.Core" Version="0.5.0-beta.1" />
   </ItemGroup>
 
   <ItemGroup>
