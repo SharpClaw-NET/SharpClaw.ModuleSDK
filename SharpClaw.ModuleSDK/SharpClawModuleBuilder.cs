@@ -15,6 +15,9 @@ internal sealed record PendingActionHook(
     JsonSchemaReference? InputSchema,
     JsonSchemaReference? ResultSchema,
     string? DescriptorCategory,
+    int? DescriptorVersion,
+    ActionInterceptionCapabilities? DescriptorCapabilities,
+    bool? DescriptorContainsSensitiveData,
     bool SensitiveWildcardApprovalRequired,
     bool AcceptUnknownNonSensitiveSchemas);
 
@@ -31,6 +34,9 @@ internal sealed record PendingEventHook(
     ContractVersionRange? VersionRange,
     JsonSchemaReference? PayloadSchema,
     string? DescriptorCategory,
+    int? DescriptorVersion,
+    EventInterceptionCapabilities? DescriptorCapabilities,
+    bool? DescriptorContainsSensitiveData,
     bool SensitiveWildcardApprovalRequired,
     bool AcceptUnknownNonSensitiveSchemas);
 
@@ -214,7 +220,10 @@ internal sealed class ModuleActionHookBuilder(ModuleBuilderState state) : IActio
             descriptor.ProtocolVersionRange ?? ContractVersionRange.Exact(descriptor.Version),
             ModuleSchemaIdentity.ActionInput(descriptor.Key, descriptor.Version, typeof(TAction)),
             ModuleSchemaIdentity.ActionResult(descriptor.Key, descriptor.Version, typeof(TResult)),
-            descriptor.Category);
+            descriptor.Category,
+            descriptor.Version,
+            descriptor.Capabilities,
+            descriptor.ContainsSensitiveData);
 
     internal IActionHookRegistrationBuilder ForCategory(
         string category,
@@ -248,8 +257,8 @@ internal sealed class ModuleActionHookBuilder(ModuleBuilderState state) : IActio
             inputSchema,
             resultSchema,
             null,
-            sensitiveApprovalRequired,
-            acceptUnknownNonSensitiveSchemas);
+            sensitiveApprovalRequired: sensitiveApprovalRequired,
+            acceptUnknownNonSensitiveSchemas: acceptUnknownNonSensitiveSchemas);
 }
 
 internal sealed class ModuleActionHookRegistrationBuilder(
@@ -261,6 +270,9 @@ internal sealed class ModuleActionHookRegistrationBuilder(
     JsonSchemaReference? inputSchema = null,
     JsonSchemaReference? resultSchema = null,
     string? descriptorCategory = null,
+    int? descriptorVersion = null,
+    ActionInterceptionCapabilities? descriptorCapabilities = null,
+    bool? descriptorContainsSensitiveData = null,
     bool sensitiveApprovalRequired = false,
     bool acceptUnknownNonSensitiveSchemas = false)
     : IActionHookRegistrationBuilder, IModuleActionHookRegistrationSink
@@ -288,6 +300,9 @@ internal sealed class ModuleActionHookRegistrationBuilder(
             inputSchema,
             resultSchema,
             descriptorCategory,
+            descriptorVersion,
+            descriptorCapabilities,
+            descriptorContainsSensitiveData,
             sensitiveApprovalRequired,
             acceptUnknownNonSensitiveSchemas));
 }
@@ -335,7 +350,10 @@ internal sealed class ModuleEventDefinitionBuilder(ModuleBuilderState state)
             null,
             descriptor.ProtocolVersionRange ?? ContractVersionRange.Exact(descriptor.Version),
             ModuleSchemaIdentity.EventPayload(descriptor.Key, descriptor.Version, typeof(TEvent)),
-            descriptor.Category);
+            descriptor.Category,
+            descriptor.Version,
+            descriptor.Capabilities,
+            descriptor.ContainsSensitiveData);
 
     internal IEventHookRegistrationBuilder ForCategory(
         string category,
@@ -365,8 +383,8 @@ internal sealed class ModuleEventDefinitionBuilder(ModuleBuilderState state)
             versions,
             payloadSchema,
             null,
-            sensitiveApprovalRequired,
-            acceptUnknownNonSensitiveSchemas);
+            sensitiveApprovalRequired: sensitiveApprovalRequired,
+            acceptUnknownNonSensitiveSchemas: acceptUnknownNonSensitiveSchemas);
 }
 
 internal interface IModuleEventHookRegistrationSink
@@ -388,6 +406,9 @@ internal sealed class ModuleEventHookRegistrationBuilder(
     ContractVersionRange? versionRange = null,
     JsonSchemaReference? payloadSchema = null,
     string? descriptorCategory = null,
+    int? descriptorVersion = null,
+    EventInterceptionCapabilities? descriptorCapabilities = null,
+    bool? descriptorContainsSensitiveData = null,
     bool sensitiveApprovalRequired = false,
     bool acceptUnknownNonSensitiveSchemas = false)
     : IEventHookRegistrationBuilder, IModuleEventHookRegistrationSink
@@ -424,6 +445,9 @@ internal sealed class ModuleEventHookRegistrationBuilder(
             versionRange,
             payloadSchema,
             descriptorCategory,
+            descriptorVersion,
+            descriptorCapabilities,
+            descriptorContainsSensitiveData,
             sensitiveApprovalRequired,
             acceptUnknownNonSensitiveSchemas));
 }

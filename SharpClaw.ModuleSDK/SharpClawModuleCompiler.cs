@@ -614,9 +614,9 @@ public static class SharpClawModuleCompiler
             return own;
 
         var host = options.HostActions.FirstOrDefault(action => action.ActionKey == pending.ActionKey);
-        return host is null
-            ? null
-            : new UntypedActionDescriptor(
+        if (host is not null)
+        {
+            return new UntypedActionDescriptor(
                 host.ActionKey,
                 host.Version,
                 host.Category,
@@ -627,6 +627,29 @@ public static class SharpClawModuleCompiler
             {
                 ProtocolVersionRange = host.ProtocolVersionRange,
             };
+        }
+
+        if (pending.DescriptorVersion is not { } version
+            || pending.DescriptorCapabilities is not { } capabilities
+            || pending.DescriptorContainsSensitiveData is not { } containsSensitiveData
+            || string.IsNullOrWhiteSpace(pending.DescriptorCategory)
+            || pending.InputSchema is null
+            || pending.ResultSchema is null)
+        {
+            return null;
+        }
+
+        return new UntypedActionDescriptor(
+            pending.ActionKey.Value,
+            version,
+            pending.DescriptorCategory,
+            capabilities,
+            pending.InputSchema,
+            pending.ResultSchema,
+            containsSensitiveData)
+        {
+            ProtocolVersionRange = pending.VersionRange ?? ContractVersionRange.Exact(version),
+        };
     }
 
     private static UntypedEventDescriptor? FindEventDescriptor(
@@ -642,9 +665,9 @@ public static class SharpClawModuleCompiler
             return own;
 
         var host = options.HostEvents.FirstOrDefault(evt => evt.EventKey == pending.EventKey);
-        return host is null
-            ? null
-            : new UntypedEventDescriptor(
+        if (host is not null)
+        {
+            return new UntypedEventDescriptor(
                 host.EventKey,
                 host.Version,
                 host.Category,
@@ -654,6 +677,27 @@ public static class SharpClawModuleCompiler
             {
                 ProtocolVersionRange = host.ProtocolVersionRange,
             };
+        }
+
+        if (pending.DescriptorVersion is not { } version
+            || pending.DescriptorCapabilities is not { } capabilities
+            || pending.DescriptorContainsSensitiveData is not { } containsSensitiveData
+            || string.IsNullOrWhiteSpace(pending.DescriptorCategory)
+            || pending.PayloadSchema is null)
+        {
+            return null;
+        }
+
+        return new UntypedEventDescriptor(
+            pending.EventKey.Value,
+            version,
+            pending.DescriptorCategory,
+            capabilities,
+            pending.PayloadSchema,
+            containsSensitiveData)
+        {
+            ProtocolVersionRange = pending.VersionRange ?? ContractVersionRange.Exact(version),
+        };
     }
 
     private static void ValidateActionCapabilities(

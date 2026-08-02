@@ -77,6 +77,26 @@ public sealed class ModuleCompilerTests
     }
 
     [Test]
+    public void OutOfProcessCompilationRetainsTypedDescriptorBeforeHostAuthorization()
+    {
+        var module = new CompleteModule();
+        var graph = SharpClawModuleCompiler.Compile(
+            module,
+            Manifest(module.Identity, includeCompleteRequests: true),
+            new ModuleCompilationOptions
+            {
+                HostingMode = ModuleHostingMode.OutOfProcess,
+            });
+
+        graph.ActionHooks.Single(hook =>
+                hook.TargetKind == SidecarHookTargetKind.Exact)
+            .InputSchema.Should().Be(HostAction(CompleteModule.HostAction).InputSchema);
+        graph.EventHooks.Single(hook =>
+                hook.TargetKind == SidecarHookTargetKind.Exact)
+            .PayloadSchema.Should().Be(HostEvent(CompleteModule.HostEvent).PayloadSchema);
+    }
+
+    [Test]
     public void CompileRejectsAnEffectOutsideTheActionDescriptor()
     {
         var act = () => Compile(new UnsupportedEffectModule(), ModuleHostingMode.InProcess);
