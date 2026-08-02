@@ -3,8 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleHost.InProcess;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -17,6 +19,9 @@ public sealed class OutOfProcessEventProtocolTests
     private string _controlToken = null!;
     private OutOfProcessModuleServer _server = null!;
     private SidecarHostDescriptorCatalog _catalog = null!;
+    private ServiceProvider _inProcessServices = null!;
+    private ModuleContributionGraph _inProcessGraph = null!;
+    private InProcessModuleInvoker _inProcessInvoker = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -88,6 +93,31 @@ public sealed class OutOfProcessEventProtocolTests
             ],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
+
+        var inProcessModule = new EventSmokeModule();
+        _inProcessGraph = SharpClawModuleCompiler.Compile(
+            inProcessModule,
+            InProcessManifest(),
+            new ModuleCompilationOptions
+            {
+                HostingMode = ModuleHostingMode.InProcess,
+                HostEvents =
+                [
+                    HostDescriptor(EventSmokeModule.HostEvent),
+                    HostDescriptor(EventSmokeModule.HostListenerEvent),
+                ],
+            });
+        IServiceCollection services = new ServiceCollection();
+        foreach (var descriptor in _inProcessGraph.Services)
+            services.Add(descriptor);
+        services.AddSingleton(inProcessModule);
+        services.AddSingleton(_inProcessGraph);
+        _inProcessServices = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        _inProcessInvoker = new InProcessModuleInvoker(_inProcessGraph, _inProcessServices);
     }
 
     [OneTimeTearDown]
@@ -97,6 +127,8 @@ public sealed class OutOfProcessEventProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
+        if (_inProcessServices is not null)
+            await _inProcessServices.DisposeAsync();
     }
 
     [TestCase("continue", EventInterceptionKind.Continued)]
@@ -165,6 +197,239 @@ public sealed class OutOfProcessEventProtocolTests
             result.Should().BeNull();
         }
     }
+
+    [TestCaseSource(nameof(EventSemanticsCases))]
+    [Category("ModuleHostEventConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsReturnTheSameEventSemantics(
+        ModuleHostingMode hostingMode,
+        string mode,
+        EventConformanceResult expected)
+    {
+        var result = await InvokeInterceptionConformanceAsync(
+            hostingMode,
+            EventSmokeModule.ExactInterceptorId,
+            mode,
+            typed: true);
+
+        result.Should().Be(expected);
+    }
+
+    [TestCaseSource(nameof(EventSelectorCases))]
+    [Category("ModuleHostEventConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsUseTheSameEventSelectors(
+        ModuleHostingMode hostingMode,
+        string hookId,
+        string mode,
+        bool typed,
+        EventConformanceResult expected)
+    {
+        var result = await InvokeInterceptionConformanceAsync(
+            hostingMode,
+            hookId,
+            mode,
+            typed);
+
+        result.Should().Be(expected);
+    }
+
+    [TestCaseSource(nameof(EventListenerCases))]
+    [Category("ModuleHostEventConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsCompleteTypedAndUntypedObservation(
+        ModuleHostingMode hostingMode,
+        string listenerId,
+        bool typed)
+    {
+        await InvokeListenerConformanceAsync(hostingMode, listenerId, typed);
+    }
+
+    private static IEnumerable<TestCaseData> EventSemanticsCases()
+    {
+        var scenarios = new (string Mode, EventConformanceResult Expected)[]
+        {
+            ("continue", new(EventInterceptionKind.Continued, null, null)),
+            ("replace", new(EventInterceptionKind.Replaced, "sidecar:value", null)),
+            ("cancel", new(EventInterceptionKind.Cancelled, null, "smoke_cancelled")),
+            ("stop", new(EventInterceptionKind.PropagationStopped, null, null)),
+        };
+        foreach (var hostingMode in Enum.GetValues<ModuleHostingMode>())
+        {
+            foreach (var scenario in scenarios)
+            {
+                yield return new TestCaseData(hostingMode, scenario.Mode, scenario.Expected)
+                    .SetName($"Event_{hostingMode}_{scenario.Mode}");
+            }
+        }
+    }
+
+    private static IEnumerable<TestCaseData> EventSelectorCases()
+    {
+        var selectors = new (string HookId, string Mode, bool Typed, EventConformanceResult Expected)[]
+        {
+            (
+                EventSmokeModule.ExactInterceptorId,
+                "replace",
+                true,
+                new(EventInterceptionKind.Replaced, "sidecar:value", null)),
+            (
+                EventSmokeModule.CategoryInterceptorId,
+                "replace",
+                false,
+                new(EventInterceptionKind.Replaced, "sidecar:untyped", null)),
+            (
+                EventSmokeModule.WildcardInterceptorId,
+                "continue",
+                false,
+                new(EventInterceptionKind.Continued, null, null)),
+        };
+        foreach (var hostingMode in Enum.GetValues<ModuleHostingMode>())
+        {
+            foreach (var selector in selectors)
+            {
+                yield return new TestCaseData(
+                        hostingMode,
+                        selector.HookId,
+                        selector.Mode,
+                        selector.Typed,
+                        selector.Expected)
+                    .SetName($"EventSelector_{hostingMode}_{selector.HookId}");
+            }
+        }
+    }
+
+    private static IEnumerable<TestCaseData> EventListenerCases()
+    {
+        foreach (var hostingMode in Enum.GetValues<ModuleHostingMode>())
+        {
+            yield return new TestCaseData(
+                    hostingMode,
+                    EventSmokeModule.ExactListenerId,
+                    true)
+                .SetName($"EventListener_{hostingMode}_typed");
+            yield return new TestCaseData(
+                    hostingMode,
+                    EventSmokeModule.CategoryListenerId,
+                    false)
+                .SetName($"EventListener_{hostingMode}_untyped");
+        }
+    }
+
+    private async ValueTask<EventConformanceResult> InvokeInterceptionConformanceAsync(
+        ModuleHostingMode hostingMode,
+        string hookId,
+        string mode,
+        bool typed)
+    {
+        if (hostingMode == ModuleHostingMode.OutOfProcess)
+        {
+            await using var client = await CreateClientAsync();
+            return Normalize(await client.InterceptEventAsync(CreateStart(client, hookId, mode)));
+        }
+
+        var hook = _inProcessGraph.EventHooks.Single(item =>
+            string.Equals(item.HookId, hookId, StringComparison.Ordinal));
+        if (typed)
+        {
+            var outcome = await _inProcessInvoker.InvokeEventAsync(
+                hook,
+                TypedContext(mode),
+                new ConformanceEventControl(),
+                CancellationToken.None);
+            return Normalize(outcome);
+        }
+
+        var untypedOutcome = await _inProcessInvoker.InvokeAnyEventAsync(
+            hook,
+            new UntypedEventContext(UntypedEnvelope(EventSmokeModule.HostEvent, mode, hookId)),
+            new ConformanceUntypedEventControl(),
+            CancellationToken.None);
+        return Normalize(untypedOutcome);
+    }
+
+    private async ValueTask InvokeListenerConformanceAsync(
+        ModuleHostingMode hostingMode,
+        string listenerId,
+        bool typed)
+    {
+        if (hostingMode == ModuleHostingMode.OutOfProcess)
+        {
+            await using var client = await CreateClientAsync();
+            var result = await client.DeliverEventAsync(CreateDelivery(
+                client,
+                listenerId,
+                requiresAcknowledgement: true));
+            result.Should().NotBeNull();
+            result!.Accepted.Should().BeTrue();
+            return;
+        }
+
+        var hook = _inProcessGraph.EventHooks.Single(item =>
+            string.Equals(item.HookId, listenerId, StringComparison.Ordinal));
+        if (typed)
+        {
+            await _inProcessInvoker.InvokeEventListenerAsync(
+                hook,
+                TypedEnvelope("listen"),
+                CancellationToken.None);
+            return;
+        }
+
+        await _inProcessInvoker.InvokeAnyEventListenerAsync(
+            hook,
+            UntypedEnvelope(EventSmokeModule.HostListenerEvent, "listen", listenerId),
+            CancellationToken.None);
+    }
+
+    private EventContext<SmokeEvent> TypedContext(string mode) =>
+        new(
+            EventSmokeModule.HostEvent,
+            TypedEnvelope(mode),
+            RequestPrincipal.Anonymous,
+            ExtensionFeatureSet.Empty,
+            _inProcessGraph.ContractHash);
+
+    private static EventEnvelope<SmokeEvent> TypedEnvelope(string mode) =>
+        new(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            "host",
+            new SmokeEvent(mode, "value"));
+
+    private static UntypedEventEnvelope UntypedEnvelope(
+        EventDescriptor<SmokeEvent> typed,
+        string mode,
+        string hookId) =>
+        new(
+            UntypedDescriptor(
+                typed,
+                hookId != EventSmokeModule.ExactInterceptorId
+                && hookId != EventSmokeModule.ExactListenerId),
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            "host",
+            JsonSerializer.SerializeToElement(
+                new SmokeEvent(mode, "value"),
+                OutOfProcessProtocolCodec.JsonOptions));
+
+    private static EventConformanceResult Normalize(EventInterceptOutcome outcome) =>
+        new(outcome.Kind, ReadPayload(outcome.Payload), outcome.Error?.Code);
+
+    private static EventConformanceResult Normalize(IEventInterception<SmokeEvent> outcome) =>
+        new(outcome.Kind, outcome.Payload?.Value, outcome.Error?.Code);
+
+    private static EventConformanceResult Normalize(IUntypedEventInterception outcome) =>
+        new(outcome.Kind, ReadPayload(outcome.Payload), outcome.Error?.Code);
+
+    private static string? ReadPayload(JsonElement? payload) =>
+        payload is { } value && value.TryGetProperty("value", out var property)
+            ? property.GetString()
+            : null;
 
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
         OutOfProcessModuleClient.CreateAuthorizedAsync(
@@ -256,6 +521,38 @@ public sealed class OutOfProcessEventProtocolTests
                 requiresAcknowledgement));
     }
 
+    private static ModuleManifest InProcessManifest() =>
+        new(
+            EventSmokeModule.Id,
+            "Event Smoke",
+            "0.5.0-beta.2",
+            "eventsmoke",
+            "EventSmokeModule.dll",
+            "0.5.0-beta.2",
+            Runtime: ModuleManifestRuntimeInfo.DotNet,
+            ModuleType: typeof(EventSmokeModule).FullName,
+            HostMode: ModuleManifestRuntimeInfo.HostModeInProcess,
+            RequestedEvents:
+            [
+                new ModuleManifestEventRequest(
+                    "host.smoke.event",
+                    "Inline",
+                    ["inspect", "replace", "cancel", "stopPropagation"]),
+                new ModuleManifestEventRequest(
+                    "smoke.*",
+                    "Inline",
+                    ["inspect", "replace"]),
+                new ModuleManifestEventRequest("*", "Inline", ["inspect"]),
+                new ModuleManifestEventRequest(
+                    "host.smoke.listener",
+                    "Queued",
+                    ["observe"]),
+                new ModuleManifestEventRequest(
+                    "listen.*",
+                    "Queued",
+                    ["observe"]),
+            ]);
+
     private static SidecarHostEventDescriptor HostDescriptor(
         EventDescriptor<SmokeEvent> descriptor)
     {
@@ -307,5 +604,74 @@ public sealed class OutOfProcessEventProtocolTests
             listener.Stop();
             await Task.CompletedTask;
         }
+    }
+
+    public sealed record EventConformanceResult(
+        EventInterceptionKind Kind,
+        string? Value,
+        string? ErrorCode);
+
+    private sealed record ConformanceEventInterception(
+        EventInterceptionKind Kind,
+        SmokeEvent? Payload,
+        ExecutionError? Error) : IEventInterception<SmokeEvent>;
+
+    private sealed record ConformanceUntypedEventInterception(
+        EventInterceptionKind Kind,
+        JsonElement? Payload,
+        ExecutionError? Error) : IUntypedEventInterception;
+
+    private sealed class ConformanceEventControl : IEventControl<SmokeEvent>
+    {
+        public IEventInterception<SmokeEvent> Continue() =>
+            new ConformanceEventInterception(
+                EventInterceptionKind.Continued,
+                Payload: null,
+                Error: null);
+
+        public IEventInterception<SmokeEvent> Replace(SmokeEvent payload, string reason) =>
+            new ConformanceEventInterception(
+                EventInterceptionKind.Replaced,
+                payload,
+                Error: null);
+
+        public IEventInterception<SmokeEvent> Cancel(string code, string message) =>
+            new ConformanceEventInterception(
+                EventInterceptionKind.Cancelled,
+                Payload: null,
+                Error: new ExecutionError(code, message));
+
+        public IEventInterception<SmokeEvent> StopPropagation() =>
+            new ConformanceEventInterception(
+                EventInterceptionKind.PropagationStopped,
+                Payload: null,
+                Error: null);
+    }
+
+    private sealed class ConformanceUntypedEventControl : IUntypedEventControl
+    {
+        public IUntypedEventInterception Continue() =>
+            new ConformanceUntypedEventInterception(
+                EventInterceptionKind.Continued,
+                Payload: null,
+                Error: null);
+
+        public IUntypedEventInterception Replace(JsonElement payload, string reason) =>
+            new ConformanceUntypedEventInterception(
+                EventInterceptionKind.Replaced,
+                payload,
+                Error: null);
+
+        public IUntypedEventInterception Cancel(string code, string message) =>
+            new ConformanceUntypedEventInterception(
+                EventInterceptionKind.Cancelled,
+                Payload: null,
+                Error: new ExecutionError(code, message));
+
+        public IUntypedEventInterception StopPropagation() =>
+            new ConformanceUntypedEventInterception(
+                EventInterceptionKind.PropagationStopped,
+                Payload: null,
+                Error: null);
     }
 }
