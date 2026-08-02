@@ -14,6 +14,8 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
     private readonly OutOfProcessModuleRuntime _runtime;
     private readonly BoundedExecutionQueue _actionQueue;
     private readonly BoundedExecutionQueue _eventQueue;
+    private readonly BoundedExecutionQueue _toolQueue;
+    private readonly BoundedExecutionQueue _lifecycleQueue;
     private readonly string _controlToken;
     private SidecarHostAuthorization? _authorization;
     private int _disposed;
@@ -23,12 +25,16 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         OutOfProcessModuleRuntime runtime,
         BoundedExecutionQueue actionQueue,
         BoundedExecutionQueue eventQueue,
+        BoundedExecutionQueue toolQueue,
+        BoundedExecutionQueue lifecycleQueue,
         string controlToken)
     {
         _app = app;
         _runtime = runtime;
         _actionQueue = actionQueue;
         _eventQueue = eventQueue;
+        _toolQueue = toolQueue;
+        _lifecycleQueue = lifecycleQueue;
         _controlToken = controlToken;
         MapEndpoints();
     }
@@ -79,11 +85,15 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             });
             var actionQueue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
             var eventQueue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
+            var toolQueue = new BoundedExecutionQueue(capacity: 32, concurrency: 1);
+            var lifecycleQueue = new BoundedExecutionQueue(capacity: 8, concurrency: 1);
             return new OutOfProcessModuleServer(
                 app,
                 runtime,
                 actionQueue,
                 eventQueue,
+                toolQueue,
+                lifecycleQueue,
                 controlToken);
         }
         catch
@@ -110,6 +120,8 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         await _app.StopAsync(CancellationToken.None);
         await _actionQueue.DisposeAsync();
         await _eventQueue.DisposeAsync();
+        await _toolQueue.DisposeAsync();
+        await _lifecycleQueue.DisposeAsync();
         await _app.DisposeAsync();
         await _runtime.DisposeAsync();
     }
@@ -284,6 +296,24 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                         _runtime,
                         protocol,
                         delivery,
+                        ct);
+                    break;
+                case SidecarToolHandlerInvokeStart toolStart:
+                    queue = _toolQueue;
+                    exchangeClass = "tool";
+                    operation = ct => OutOfProcessHandlerSession.RunToolAsync(
+                        _runtime,
+                        protocol,
+                        toolStart,
+                        ct);
+                    break;
+                case SidecarLifecycleHandlerInvokeStart lifecycleStart:
+                    queue = _lifecycleQueue;
+                    exchangeClass = "lifecycle";
+                    operation = ct => OutOfProcessHandlerSession.RunLifecycleAsync(
+                        _runtime,
+                        protocol,
+                        lifecycleStart,
                         ct);
                     break;
                 default:

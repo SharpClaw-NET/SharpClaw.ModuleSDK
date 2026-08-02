@@ -289,6 +289,111 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Invokes one discovered module tool handler.</summary>
+    public async ValueTask<SidecarToolHandlerResult> InvokeToolAsync(
+        SidecarToolHandlerInvokeStart start,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), ct);
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.ToolHandler,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            start.Header.Deadline,
+            start.Header.ProtocolVersion,
+            HostLimits,
+            HostAuthorization: Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        try
+        {
+            await protocol.SendAsync(start, ct: ct);
+            var frame = await protocol.ReceiveAsync(ct);
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+            return frame.Message switch
+            {
+                SidecarToolHandlerResult result => result,
+                SidecarToolHandlerCancelled cancelled => throw new OutOfProcessProtocolException(
+                    cancelled.Code,
+                    cancelled.Message),
+                SidecarToolHandlerFailed failed => throw new OutOfProcessProtocolException(
+                    failed.Error.Code,
+                    failed.Error.Message),
+                SidecarProtocolError protocolError => throw Error(protocolError),
+                _ => throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar did not return a tool handler result."),
+            };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryCloseAsync(socket, "cancelled");
+            throw;
+        }
+    }
+
+    /// <summary>Invokes one discovered module lifecycle handler.</summary>
+    public async ValueTask<SidecarLifecycleHandlerResult> InvokeLifecycleAsync(
+        SidecarLifecycleHandlerInvokeStart start,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        await socket.ConnectAsync(ExchangeUri(), ct);
+        var state = new SidecarProtocolState(
+            SidecarExchangeKind.LifecycleHandler,
+            Guid.Empty,
+            Guid.Empty,
+            SidecarProtocolPhase.Negotiated,
+            LastSequence: 0,
+            start.Header.Deadline,
+            start.Header.ProtocolVersion,
+            HostLimits,
+            HostAuthorization: Authorization);
+        var protocol = new OutOfProcessProtocolSession(socket, state);
+        try
+        {
+            await protocol.SendAsync(start, ct: ct);
+            var frame = await protocol.ReceiveAsync(ct);
+            await protocol.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "completed",
+                ct);
+            return frame.Message switch
+            {
+                SidecarLifecycleHandlerResult result => result,
+                SidecarLifecycleHandlerCancelled cancelled =>
+                    throw new OutOfProcessProtocolException(
+                        cancelled.Code,
+                        cancelled.Message),
+                SidecarLifecycleHandlerFailed failed => throw new OutOfProcessProtocolException(
+                    failed.Error.Code,
+                    failed.Error.Message),
+                SidecarProtocolError protocolError => throw Error(protocolError),
+                _ => throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar did not return a lifecycle handler result."),
+            };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryCloseAsync(socket, "cancelled");
+            throw;
+        }
+    }
+
     /// <inheritdoc />
     public ValueTask DisposeAsync()
     {
