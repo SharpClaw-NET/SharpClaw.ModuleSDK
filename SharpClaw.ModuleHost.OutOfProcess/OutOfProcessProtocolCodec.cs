@@ -53,9 +53,9 @@ internal static class OutOfProcessProtocolCodec
                 var result = await socket.ReceiveAsync(buffer.AsMemory(), ct);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    var code = string.IsNullOrWhiteSpace(result.CloseStatusDescription)
+                    var code = string.IsNullOrWhiteSpace(socket.CloseStatusDescription)
                         ? SidecarProtocolErrors.Disconnected
-                        : result.CloseStatusDescription;
+                        : socket.CloseStatusDescription;
                     throw new OutOfProcessProtocolException(
                         code,
                         "The sidecar exchange disconnected before a terminal outcome.");
