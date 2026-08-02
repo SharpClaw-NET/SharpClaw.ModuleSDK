@@ -194,7 +194,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             await using var client = await CreateClientAsync();
             var terminal = await client.InvokeToolAsync(CreateToolStart(client, mode, text));
             return terminal.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
-                .Content;
+                .Content
+                ?? throw new InvalidOperationException("The sidecar tool returned no content.");
         }
 
         var invocationId = Guid.NewGuid();
@@ -211,7 +212,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                 new RequestPrincipal("test-user"),
                 ExtensionFeatureSet.Empty),
             CancellationToken.None);
-        return result.Content;
+        return result.Content
+            ?? throw new InvalidOperationException("The in-process tool returned no content.");
     }
 
     private async ValueTask InvokeLifecycleConformanceAsync(
