@@ -109,9 +109,22 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
                         new SmokeAction("proceed", "repeat"),
                         "smoke repetition"),
                     ct),
+                "wrap" => await WrapAsync(control, ct),
                 "double" => await UseTwiceAsync(control, ct),
                 _ => await control.ProceedAsync(ct),
             };
+
+        private static async ValueTask<IActionOutcome<SmokeResult>> WrapAsync(
+            IActionControl<SmokeAction, SmokeResult> control,
+            CancellationToken ct)
+        {
+            var outcome = await control.ProceedAsync(ct);
+            return outcome.Kind == ActionOutcomeKind.Completed && outcome.Result is not null
+                ? control.ReplaceResult(
+                    outcome.Result with { Value = "wrapped:" + outcome.Result.Value },
+                    "smoke wrapping")
+                : outcome;
+        }
 
         private static async ValueTask<IActionOutcome<SmokeResult>> UseTwiceAsync(
             IActionControl<SmokeAction, SmokeResult> control,

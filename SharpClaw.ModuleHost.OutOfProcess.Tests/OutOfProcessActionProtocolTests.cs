@@ -3,8 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleHost.InProcess;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -18,6 +20,9 @@ public sealed class OutOfProcessActionProtocolTests
     private string _controlToken = null!;
     private OutOfProcessModuleServer _server = null!;
     private SidecarHostDescriptorCatalog _catalog = null!;
+    private ServiceProvider _inProcessServices = null!;
+    private ModuleContributionGraph _inProcessGraph = null!;
+    private InProcessModuleInvoker _inProcessInvoker = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -73,6 +78,27 @@ public sealed class OutOfProcessActionProtocolTests
             [],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
+
+        var inProcessModule = new LifecycleSmokeModule();
+        _inProcessGraph = SharpClawModuleCompiler.Compile(
+            inProcessModule,
+            InProcessManifest(),
+            new ModuleCompilationOptions
+            {
+                HostingMode = ModuleHostingMode.InProcess,
+                HostActions = [HostDescriptor()],
+            });
+        IServiceCollection services = new ServiceCollection();
+        foreach (var descriptor in _inProcessGraph.Services)
+            services.Add(descriptor);
+        services.AddSingleton(inProcessModule);
+        services.AddSingleton(_inProcessGraph);
+        _inProcessServices = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        _inProcessInvoker = new InProcessModuleInvoker(_inProcessGraph, _inProcessServices);
     }
 
     [OneTimeTearDown]
@@ -82,6 +108,8 @@ public sealed class OutOfProcessActionProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
+        if (_inProcessServices is not null)
+            await _inProcessServices.DisposeAsync();
     }
 
     [Test, CancelAfter(15000)]
@@ -230,6 +258,45 @@ public sealed class OutOfProcessActionProtocolTests
         result.Completion.Error!.Code.Should().Be("smoke_cancelled");
     }
 
+    [TestCaseSource(nameof(ActionSemanticsCases))]
+    [Category("ModuleHostActionConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsReturnTheSameActionSemantics(
+        ModuleHostingMode hostingMode,
+        string mode,
+        ActionConformanceResult expected)
+    {
+        var result = await InvokeConformanceAsync(
+            hostingMode,
+            LifecycleSmokeModule.ExactHookId,
+            mode,
+            typed: true);
+
+        result.Should().Be(expected);
+    }
+
+    [TestCaseSource(nameof(SelectorConformanceCases))]
+    [Category("ModuleHostActionConformance")]
+    [CancelAfter(15000)]
+    public async Task ModuleHostsUseTheSameTypedAndUntypedSelectors(
+        ModuleHostingMode hostingMode,
+        string hookId,
+        bool typed,
+        string expectedValue)
+    {
+        var result = await InvokeConformanceAsync(
+            hostingMode,
+            hookId,
+            "replace",
+            typed);
+
+        result.Should().Be(new ActionConformanceResult(
+            ActionOutcomeKind.Completed,
+            expectedValue,
+            ErrorCode: null,
+            HasContinuation: false));
+    }
+
     [Test]
     public async Task InvalidSequenceAndExpiredDeadlineFailBeforeTransport()
     {
@@ -290,6 +357,164 @@ public sealed class OutOfProcessActionProtocolTests
         release.TrySetResult();
         await Task.WhenAll(first, second);
     }
+
+    private static IEnumerable<TestCaseData> ActionSemanticsCases()
+    {
+        var scenarios = new (string Mode, ActionConformanceResult Expected)[]
+        {
+            ("replace", new(ActionOutcomeKind.Completed, "sidecar:value", null, false)),
+            ("fail", new(ActionOutcomeKind.Failed, null, "smoke_failed", false)),
+            ("input", new(ActionOutcomeKind.Completed, "replacement", null, false)),
+            ("cancel", new(ActionOutcomeKind.Cancelled, null, "smoke_cancelled", false)),
+            ("defer", new(ActionOutcomeKind.Deferred, null, null, true)),
+            ("repeat", new(ActionOutcomeKind.Completed, "repeat", null, false)),
+            ("wrap", new(ActionOutcomeKind.Completed, "wrapped:host:value", null, false)),
+            ("proceed", new(ActionOutcomeKind.Completed, "host:value", null, false)),
+            ("double", new(
+                ActionOutcomeKind.Failed,
+                null,
+                SidecarProtocolErrors.ContinuationAlreadyUsed,
+                false)),
+        };
+        foreach (var hostingMode in Enum.GetValues<ModuleHostingMode>())
+        {
+            foreach (var scenario in scenarios)
+            {
+                yield return new TestCaseData(hostingMode, scenario.Mode, scenario.Expected)
+                    .SetName($"Action_{hostingMode}_{scenario.Mode}");
+            }
+        }
+    }
+
+    private static IEnumerable<TestCaseData> SelectorConformanceCases()
+    {
+        var selectors = new (string HookId, bool Typed, string ExpectedValue)[]
+        {
+            (LifecycleSmokeModule.ExactHookId, true, "sidecar:value"),
+            (LifecycleSmokeModule.CategoryHookId, false, "sidecar:untyped"),
+            (LifecycleSmokeModule.WildcardHookId, false, "sidecar:untyped"),
+        };
+        foreach (var hostingMode in Enum.GetValues<ModuleHostingMode>())
+        {
+            foreach (var selector in selectors)
+            {
+                yield return new TestCaseData(
+                        hostingMode,
+                        selector.HookId,
+                        selector.Typed,
+                        selector.ExpectedValue)
+                    .SetName($"Selector_{hostingMode}_{selector.HookId}");
+            }
+        }
+    }
+
+    private async ValueTask<ActionConformanceResult> InvokeConformanceAsync(
+        ModuleHostingMode hostingMode,
+        string hookId,
+        string mode,
+        bool typed)
+    {
+        if (hostingMode == ModuleHostingMode.OutOfProcess)
+        {
+            await using var client = await CreateClientAsync();
+            var result = await client.InvokeActionAsync(
+                CreateStart(client, hookId, mode, typed),
+                (request, ct) => ValueTask.FromResult(CreateContinuation(request, "host:value")));
+            return Normalize(result.Completion, result.Continuation);
+        }
+
+        var hook = _inProcessGraph.ActionHooks.Single(item =>
+            string.Equals(item.HookId, hookId, StringComparison.Ordinal));
+        if (typed)
+        {
+            var outcome = await _inProcessInvoker.InvokeActionAsync<SmokeAction, SmokeResult>(
+                hook,
+                TypedContext(mode),
+                new ConformanceActionControl(),
+                CancellationToken.None);
+            return Normalize(outcome);
+        }
+
+        var untypedOutcome = await _inProcessInvoker.InvokeAnyActionAsync(
+            hook,
+            UntypedContext(mode, hookId),
+            new ConformanceUntypedActionControl(),
+            CancellationToken.None);
+        return Normalize(untypedOutcome);
+    }
+
+    private ActionContext<SmokeAction> TypedContext(string mode)
+    {
+        var invocationId = Guid.NewGuid();
+        return new ActionContext<SmokeAction>(
+            invocationId,
+            null,
+            Guid.NewGuid(),
+            invocationId,
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddSeconds(10),
+            LifecycleSmokeModule.HostAction.Key,
+            LifecycleSmokeModule.HostAction.Key.Value,
+            RequestPrincipal.Anonymous,
+            new SmokeAction(mode, "value"),
+            ExtensionFeatureSet.Empty,
+            new ActionPipelineSnapshot(_inProcessGraph.ContractHash, []));
+    }
+
+    private UntypedActionContext UntypedContext(string mode, string hookId)
+    {
+        var invocationId = Guid.NewGuid();
+        var descriptor = UntypedDescriptor() with
+        {
+            AcceptsUnknownNonSensitiveSchemas =
+                hookId != LifecycleSmokeModule.ExactHookId,
+        };
+        return new UntypedActionContext(
+            invocationId,
+            null,
+            Guid.NewGuid(),
+            invocationId,
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddSeconds(10),
+            descriptor.Key.Value,
+            RequestPrincipal.Anonymous,
+            ExtensionFeatureSet.Empty,
+            _inProcessGraph.ContractHash,
+            descriptor,
+            JsonSerializer.SerializeToElement(
+                new SmokeAction(mode, "value"),
+                OutOfProcessProtocolCodec.JsonOptions));
+    }
+
+    private static ActionConformanceResult Normalize(
+        HookCompleted outcome,
+        ContinuationToken? continuation) =>
+        new(
+            outcome.Kind,
+            ReadResult(outcome.Result),
+            outcome.Error?.Code,
+            continuation is not null);
+
+    private static ActionConformanceResult Normalize(IActionOutcome<SmokeResult> outcome) =>
+        new(
+            outcome.Kind,
+            outcome.Result?.Value,
+            outcome.Error?.Code,
+            outcome.Continuation is not null);
+
+    private static ActionConformanceResult Normalize(IUntypedActionOutcome outcome) =>
+        new(
+            outcome.Kind,
+            ReadResult(outcome.Result),
+            outcome.Error?.Code,
+            outcome.Continuation is not null);
+
+    private static string? ReadResult(JsonElement? result) =>
+        result is { } value && value.TryGetProperty("value", out var property)
+            ? property.GetString()
+            : null;
 
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
         OutOfProcessModuleClient.CreateAuthorizedAsync(
@@ -403,6 +628,30 @@ public sealed class OutOfProcessActionProtocolTests
         return (accepted, outcome);
     }
 
+    private static ModuleManifest InProcessManifest() =>
+        new(
+            LifecycleSmokeModule.Id,
+            "Lifecycle Smoke",
+            "0.5.0-beta.2",
+            "smoke",
+            "LifecycleSmokeModule.dll",
+            "0.5.0-beta.2",
+            Runtime: ModuleManifestRuntimeInfo.DotNet,
+            ModuleType: typeof(LifecycleSmokeModule).FullName,
+            HostMode: ModuleManifestRuntimeInfo.HostModeInProcess,
+            RequestedHooks:
+            [
+                new ModuleManifestHookRequest(
+                    "host.smoke",
+                    ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]),
+                new ModuleManifestHookRequest(
+                    "smoke.*",
+                    ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]),
+                new ModuleManifestHookRequest(
+                    "*",
+                    ["inspect", "replaceInput", "cancel", "replaceResult", "defer", "repeat", "wrap"]),
+            ]);
+
     private static SidecarHostActionDescriptor HostDescriptor()
     {
         var descriptor = LifecycleSmokeModule.HostAction;
@@ -447,6 +696,202 @@ public sealed class OutOfProcessActionProtocolTests
             listener.Stop();
             await Task.CompletedTask;
         }
+    }
+
+    public sealed record ActionConformanceResult(
+        ActionOutcomeKind Kind,
+        string? Value,
+        string? ErrorCode,
+        bool HasContinuation);
+
+    private sealed record ConformanceActionOutcome(
+        ActionOutcomeKind Kind,
+        SmokeResult? Result,
+        ContinuationToken? Continuation,
+        ExecutionError? Error,
+        ActionUncertainty? Uncertainty = null) : IActionOutcome<SmokeResult>;
+
+    private sealed record ConformanceUntypedActionOutcome(
+        ActionOutcomeKind Kind,
+        JsonElement? Result,
+        ContinuationToken? Continuation,
+        ExecutionError? Error,
+        ActionUncertainty? Uncertainty = null) : IUntypedActionOutcome;
+
+    private sealed class ConformanceActionControl : IActionControl<SmokeAction, SmokeResult>
+    {
+        private bool _continued;
+
+        public ValueTask<IActionOutcome<SmokeResult>> ProceedAsync(CancellationToken ct) =>
+            ContinueAsync(new SmokeResult("host:value"), ct);
+
+        public ValueTask<IActionOutcome<SmokeResult>> ProceedWithInputAsync(
+            ActionReplacement<SmokeAction> replacement,
+            CancellationToken ct) =>
+            ContinueAsync(new SmokeResult(replacement.Value.Value), ct);
+
+        public IActionOutcome<SmokeResult> ReplaceResult(SmokeResult result, string reason) =>
+            new ConformanceActionOutcome(
+                ActionOutcomeKind.Completed,
+                result,
+                Continuation: null,
+                Error: null);
+
+        public IActionOutcome<SmokeResult> Cancel(string code, string message) =>
+            new ConformanceActionOutcome(
+                ActionOutcomeKind.Cancelled,
+                Result: null,
+                Continuation: null,
+                Error: new ExecutionError(code, message));
+
+        public IActionOutcome<SmokeResult> Fail(ExecutionError error) =>
+            new ConformanceActionOutcome(
+                ActionOutcomeKind.Failed,
+                Result: null,
+                Continuation: null,
+                Error: error);
+
+        public ValueTask<IActionOutcome<SmokeResult>> DeferAsync(
+            ActionDeferRequest request,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Continue(
+                ActionOutcomeKind.Deferred,
+                Result: null,
+                new ContinuationToken(Guid.NewGuid(), "test-secret"),
+                Error: null));
+        }
+
+        public ValueTask<IActionOutcome<SmokeResult>> RepeatAsync(
+            ActionRepeatRequest<SmokeAction> request,
+            CancellationToken ct) =>
+            ContinueAsync(new SmokeResult(request.Value.Value), ct);
+
+        private ValueTask<IActionOutcome<SmokeResult>> ContinueAsync(
+            SmokeResult result,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Continue(
+                ActionOutcomeKind.Completed,
+                result,
+                Continuation: null,
+                Error: null));
+        }
+
+        private IActionOutcome<SmokeResult> Continue(
+            ActionOutcomeKind kind,
+            SmokeResult? Result,
+            ContinuationToken? Continuation,
+            ExecutionError? Error)
+        {
+            if (_continued)
+            {
+                return new ConformanceActionOutcome(
+                    ActionOutcomeKind.Failed,
+                    Result: null,
+                    Continuation: null,
+                    Error: new ExecutionError(
+                        SidecarProtocolErrors.ContinuationAlreadyUsed,
+                        "The continuation was already used."));
+            }
+
+            _continued = true;
+            return new ConformanceActionOutcome(kind, Result, Continuation, Error);
+        }
+    }
+
+    private sealed class ConformanceUntypedActionControl : IUntypedActionControl
+    {
+        private bool _continued;
+
+        public ValueTask<IUntypedActionOutcome> ProceedAsync(CancellationToken ct) =>
+            ContinueAsync(Result("host:value"), ct);
+
+        public ValueTask<IUntypedActionOutcome> ProceedWithInputAsync(
+            JsonElement replacement,
+            string reason,
+            CancellationToken ct) =>
+            ContinueAsync(Result(replacement.GetProperty("value").GetString()!), ct);
+
+        public IUntypedActionOutcome ReplaceResult(JsonElement result, string reason) =>
+            new ConformanceUntypedActionOutcome(
+                ActionOutcomeKind.Completed,
+                result,
+                Continuation: null,
+                Error: null);
+
+        public IUntypedActionOutcome Cancel(string code, string message) =>
+            new ConformanceUntypedActionOutcome(
+                ActionOutcomeKind.Cancelled,
+                Result: null,
+                Continuation: null,
+                Error: new ExecutionError(code, message));
+
+        public IUntypedActionOutcome Fail(ExecutionError error) =>
+            new ConformanceUntypedActionOutcome(
+                ActionOutcomeKind.Failed,
+                Result: null,
+                Continuation: null,
+                Error: error);
+
+        public ValueTask<IUntypedActionOutcome> DeferAsync(
+            ActionDeferRequest request,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Continue(
+                ActionOutcomeKind.Deferred,
+                Result: null,
+                new ContinuationToken(Guid.NewGuid(), "test-secret"),
+                Error: null));
+        }
+
+        public ValueTask<IUntypedActionOutcome> RepeatAsync(
+            JsonElement replacement,
+            string reason,
+            TimeSpan? backoff,
+            CancellationToken ct) =>
+            ContinueAsync(Result(replacement.GetProperty("value").GetString()!), ct);
+
+        private ValueTask<IUntypedActionOutcome> ContinueAsync(
+            JsonElement result,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Continue(
+                ActionOutcomeKind.Completed,
+                result,
+                Continuation: null,
+                Error: null));
+        }
+
+        private IUntypedActionOutcome Continue(
+            ActionOutcomeKind kind,
+            JsonElement? Result,
+            ContinuationToken? Continuation,
+            ExecutionError? Error)
+        {
+            if (_continued)
+            {
+                return new ConformanceUntypedActionOutcome(
+                    ActionOutcomeKind.Failed,
+                    Result: null,
+                    Continuation: null,
+                    Error: new ExecutionError(
+                        SidecarProtocolErrors.ContinuationAlreadyUsed,
+                        "The continuation was already used."));
+            }
+
+            _continued = true;
+            return new ConformanceUntypedActionOutcome(kind, Result, Continuation, Error);
+        }
+
+        private static JsonElement Result(string value) =>
+            JsonSerializer.SerializeToElement(
+                new SmokeResult(value),
+                OutOfProcessProtocolCodec.JsonOptions);
     }
 
 }
