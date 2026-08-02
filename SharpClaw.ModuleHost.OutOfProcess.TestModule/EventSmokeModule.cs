@@ -35,7 +35,7 @@ public sealed class EventSmokeModule : ISharpClawModule
         new SharpClawEventKey("host.smoke.listener"),
         1,
         "listen",
-        EventInterceptionCapabilities.Observe,
+        EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
         DurableByDefault: false,
         ContainsSensitiveData: false)
     {
