@@ -877,7 +877,7 @@ public static class SharpClawModuleCompiler
         };
 
     private static string NormalizeEffect(string effect) =>
-        new(effect.Where(character => character is not '-' and not '_').ToArray()).ToLowerInvariant();
+        new string(effect.Where(character => character is not '-' and not '_').ToArray()).ToLowerInvariant();
 
     private static IReadOnlyList<T> OrderHooks<T>(
         IReadOnlyList<T> hooks,
