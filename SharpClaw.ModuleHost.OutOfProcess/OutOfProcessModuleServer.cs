@@ -350,7 +350,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                 "completed",
                 context.RequestAborted);
         }
-        catch (OutOfProcessProtocolException ex)
+        catch (SidecarProtocolException ex)
         {
             await TrySendProtocolErrorAsync(protocol, ex, context.RequestAborted);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -383,7 +383,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 
     private static async Task TrySendProtocolErrorAsync(
         OutOfProcessProtocolSession? protocol,
-        OutOfProcessProtocolException error,
+        SidecarProtocolException error,
         CancellationToken ct)
     {
         if (protocol is null)
@@ -395,7 +395,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         catch (Exception) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessProtocolException)
+        catch (SidecarProtocolException)
         {
         }
         catch (WebSocketException)

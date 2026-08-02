@@ -34,13 +34,19 @@ public static class SidecarMessageHeaderFactory
             var message = factory(header);
             var next = JsonSerializer.SerializeToUtf8Bytes(message, message.GetType()).Length;
             if (next > maximumPayloadBytes)
-                throw new InvalidOperationException("The sidecar message exceeds its payload authority.");
+            {
+                throw new SidecarProtocolException(
+                    SidecarProtocolErrors.ModulePayloadTooLarge,
+                    "The sidecar message exceeds its payload authority.");
+            }
             if (next == measured)
                 return message;
             measured = next;
         }
 
-        throw new InvalidOperationException("The sidecar message size did not become stable.");
+        throw new SidecarProtocolException(
+            SidecarProtocolErrors.MalformedMessage,
+            "The sidecar message size did not become stable.");
     }
 }
 

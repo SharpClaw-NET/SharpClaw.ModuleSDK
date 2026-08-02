@@ -396,7 +396,7 @@ public sealed class OutOfProcessActionProtocolTests
             typed: true,
             value: oversized);
 
-        act.Should().Throw<OutOfProcessProtocolException>()
+        act.Should().Throw<SidecarProtocolException>()
             .Which.Code.Should().Be(SidecarProtocolErrors.ModulePayloadTooLarge);
     }
 
