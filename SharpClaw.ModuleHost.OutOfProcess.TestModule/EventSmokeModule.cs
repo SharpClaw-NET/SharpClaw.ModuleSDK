@@ -104,7 +104,7 @@ public sealed class EventSmokeModule : ISharpClawModule
             IUntypedEventControl control,
             CancellationToken ct)
         {
-            var mode = context.Envelope.Payload.GetProperty(nameof(SmokeEvent.Mode)).GetString();
+            var mode = context.Envelope.Payload.GetProperty("mode").GetString();
             if (string.Equals(mode, "replace", StringComparison.Ordinal))
             {
                 var replacement = JsonSerializer.SerializeToElement(
@@ -130,7 +130,7 @@ public sealed class EventSmokeModule : ISharpClawModule
     {
         public ValueTask OnEventAsync(UntypedEventEnvelope evt, CancellationToken ct)
         {
-            if (!evt.Payload.TryGetProperty(nameof(SmokeEvent.Value), out _))
+            if (!evt.Payload.TryGetProperty("value", out _))
                 throw new InvalidOperationException("The untyped event payload is empty.");
             return ValueTask.CompletedTask;
         }
