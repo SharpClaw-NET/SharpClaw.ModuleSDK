@@ -151,7 +151,40 @@ internal static class OutOfProcessProtocolCodec
             MaxDepth = 32,
             PropertyNameCaseInsensitive = false,
         };
+        options.Converters.Add(new ReadOnlySetJsonConverterFactory());
         options.Converters.Add(new JsonStringEnumConverter());
         return options;
+    }
+}
+
+internal sealed class ReadOnlySetJsonConverterFactory : JsonConverterFactory
+{
+    public override bool CanConvert(Type typeToConvert) =>
+        typeToConvert.IsGenericType
+        && typeToConvert.GetGenericTypeDefinition() == typeof(IReadOnlySet<>);
+
+    public override JsonConverter CreateConverter(
+        Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        var elementType = typeToConvert.GetGenericArguments()[0];
+        return (JsonConverter)(Activator.CreateInstance(
+            typeof(ReadOnlySetJsonConverter<>).MakeGenericType(elementType))
+            ?? throw new InvalidOperationException("The read-only set converter could not be created."));
+    }
+
+    private sealed class ReadOnlySetJsonConverter<T> : JsonConverter<IReadOnlySet<T>>
+    {
+        public override IReadOnlySet<T>? Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options) =>
+            JsonSerializer.Deserialize<HashSet<T>>(ref reader, options);
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            IReadOnlySet<T> value,
+            JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value.ToArray(), options);
     }
 }
