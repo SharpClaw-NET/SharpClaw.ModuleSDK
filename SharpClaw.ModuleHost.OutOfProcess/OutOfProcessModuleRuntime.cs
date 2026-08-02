@@ -9,7 +9,9 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
 {
     private readonly ModuleLoadContext _loadContext;
-    private readonly ServiceProvider _services;
+    private ServiceProvider? _services;
+    private ISharpClawModule? _module;
+    private ModuleContributionGraph? _graph;
     private bool _started;
     private bool _disposed;
 
@@ -24,20 +26,23 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
         ModuleDirectory = moduleDirectory;
         _loadContext = loadContext;
         _services = services;
-        Module = module;
+        _module = module;
         Manifest = manifest;
-        Graph = graph;
+        _graph = graph;
     }
 
     public string ModuleDirectory { get; }
 
-    public ISharpClawModule Module { get; }
+    public ISharpClawModule Module => _module
+        ?? throw new ObjectDisposedException(nameof(OutOfProcessModuleRuntime));
 
     public ModuleManifest Manifest { get; }
 
-    public ModuleContributionGraph Graph { get; }
+    public ModuleContributionGraph Graph => _graph
+        ?? throw new ObjectDisposedException(nameof(OutOfProcessModuleRuntime));
 
-    public IServiceProvider Services => _services;
+    public IServiceProvider Services => _services
+        ?? throw new ObjectDisposedException(nameof(OutOfProcessModuleRuntime));
 
     public static async Task<OutOfProcessModuleRuntime> LoadAsync(
         string moduleDirectory,
@@ -136,11 +141,21 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     {
         if (_disposed)
             return;
-        if (_started)
-            await Module.StopAsync(CancellationToken.None);
-        _started = false;
         _disposed = true;
-        await _services.DisposeAsync();
-        _loadContext.Unload();
+        try
+        {
+            if (_started)
+                await _module!.StopAsync(CancellationToken.None);
+            _started = false;
+            await _services!.DisposeAsync();
+        }
+        finally
+        {
+            _started = false;
+            _services = null;
+            _module = null;
+            _graph = null;
+            _loadContext.Unload();
+        }
     }
 }
