@@ -57,20 +57,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             CliName,
             ["app-inspect"],
             "Returns the module and graph identity.",
-            JsonSerializer.SerializeToElement(new
-            {
-                type = "array",
-                items = new { type = "string" },
-            }),
-            JsonSerializer.SerializeToElement(new
-            {
-                type = "object",
-                properties = new
-                {
-                    moduleId = new { type = "string" },
-                    contractHash = new { type = "string" },
-                },
-            })));
+            new JsonSchemaReference("application.inspect.input", 1, "application-input"),
+            new JsonSchemaReference("application.inspect.result", 1, "application-result")));
     }
 
     public sealed class AuthorizationHook : IActionInterceptor<ApplicationSmokeAction, ApplicationSmokeResult>

@@ -128,7 +128,7 @@ public sealed class ModuleCompilerTests
     {
         var graph = Compile(new ApplicationModule(), ModuleHostingMode.OutOfProcess);
 
-        graph.Application.EndpointTypes.Should().ContainSingle(typeof(SampleEndpoints));
+        graph.Application.EndpointTypes.Should().ContainSingle(value => value == typeof(SampleEndpoints));
         graph.Application.CliCommands.Should().ContainSingle(item =>
             item.Descriptor.Name == "sample.inspect"
             && item.HandlerType == typeof(SampleCli));
@@ -498,8 +498,8 @@ public sealed class ModuleCompilerTests
                 "sample.inspect",
                 ["sample-i"],
                 "Inspects the sample module.",
-                JsonSerializer.SerializeToElement(new { type = "array", items = new { type = "string" } }),
-                JsonSerializer.SerializeToElement(new { type = "object" })));
+                new JsonSchemaReference("sample.inspect.input", 1, "sample-input"),
+                new JsonSchemaReference("sample.inspect.result", 1, "sample-result")));
         }
     }
 
