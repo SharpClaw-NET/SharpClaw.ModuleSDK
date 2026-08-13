@@ -124,9 +124,36 @@ public sealed class ModuleCompilerTests
     }
 
     [Test]
-    public void OutOfProcessCompilationRejectsApplicationTypeContributions()
+    public void OutOfProcessCompilationTransportsEndpointAndCliContributions()
     {
-        var act = () => Compile(new ApplicationModule(), ModuleHostingMode.OutOfProcess);
+        var graph = Compile(new ApplicationModule(), ModuleHostingMode.OutOfProcess);
+
+        graph.Application.EndpointTypes.Should().ContainSingle(typeof(SampleEndpoints));
+        graph.Application.CliCommands.Should().ContainSingle(item =>
+            item.Descriptor.Name == "sample.inspect"
+            && item.HandlerType == typeof(SampleCli));
+        graph.CreateSidecarApplicationDiscovery().Should().Match<SidecarApplicationDiscovery>(
+            discovery => discovery.ModuleId == graph.Identity.Id
+                && discovery.ContractHash == graph.ContractHash
+                && discovery.Endpoints.Single().TypeName == typeof(SampleEndpoints).FullName
+                && discovery.CliCommands.Single().Descriptor.Name == "sample.inspect");
+    }
+
+    [Test]
+    public void OutOfProcessCompilationAcceptsSelfSubscription()
+    {
+        var graph = Compile(new SelfSubscriptionModule(), ModuleHostingMode.OutOfProcess);
+
+        graph.Actions.Should().ContainSingle(action =>
+            action.Descriptor.Key == CompleteModule.HostAction.Key);
+        graph.ActionHooks.Should().ContainSingle(hook =>
+            hook.ActionKey == CompleteModule.HostAction.Key);
+    }
+
+    [Test]
+    public void OutOfProcessCompilationStillRejectsUiContributions()
+    {
+        var act = () => Compile(new UiApplicationModule(), ModuleHostingMode.OutOfProcess);
 
         act.Should().Throw<ModuleGraphCompilationException>()
             .Which.Errors.Should().Contain(error =>
@@ -134,14 +161,28 @@ public sealed class ModuleCompilerTests
     }
 
     [Test]
-    public void OutOfProcessCompilationRejectsSelfSubscription()
+    public void OutOfProcessCompilationRejectsDuplicateSubscriptions()
     {
-        var act = () => Compile(new SelfSubscriptionModule(), ModuleHostingMode.OutOfProcess);
+        var act = () => Compile(new DuplicateSubscriptionModule(), ModuleHostingMode.OutOfProcess);
 
         act.Should().Throw<ModuleGraphCompilationException>()
-            .Which.Errors.Should().Contain(error =>
-                error.Code == "unsupported_transport"
-                && error.Target == CompleteModule.HostAction.Key.Value);
+            .Which.Errors.Should().Contain(error => error.Code == "unsupported_transport");
+    }
+
+    [Test]
+    public void OutOfProcessCompilationRejectsMissingManifestRequests()
+    {
+        var act = () => SharpClawModuleCompiler.Compile(
+            new SelfSubscriptionModule(),
+            Manifest(new ModuleIdentity("missing_request", "Missing Request", "missing"), false),
+            new ModuleCompilationOptions
+            {
+                HostingMode = ModuleHostingMode.OutOfProcess,
+                HostActions = [HostAction(CompleteModule.HostAction)],
+            });
+
+        act.Should().Throw<ModuleGraphCompilationException>()
+            .Which.Errors.Should().Contain(error => error.Code == "missing_manifest_request");
     }
 
     [Test]
@@ -212,6 +253,12 @@ public sealed class ModuleCompilerTests
             "typed_category" =>
             [
                 new ModuleManifestHookRequest("sample.*", ["inspect", "wrap"]),
+            ],
+            "self_subscription" =>
+            [
+                new ModuleManifestHookRequest(
+                    CompleteModule.HostAction.Key.Value,
+                    ["inspect", "wrap"]),
             ],
             _ => [],
         };
@@ -444,8 +491,43 @@ public sealed class ModuleCompilerTests
         {
         }
 
-        public void ConfigureApplication(ISharpClawApplicationBuilder application) =>
+        public void ConfigureApplication(ISharpClawApplicationBuilder application)
+        {
             application.Endpoints.Add<SampleEndpoints>();
+            application.Cli.Add<SampleCli>(new ModuleCliCommandDescriptor(
+                "sample.inspect",
+                ["sample-i"],
+                "Inspects the sample module.",
+                JsonSerializer.SerializeToElement(new { type = "array", items = new { type = "string" } }),
+                JsonSerializer.SerializeToElement(new { type = "object" })));
+        }
+    }
+
+    private sealed class UiApplicationModule : ISharpClawModule, ISharpClawApplicationModule
+    {
+        public ModuleIdentity Identity { get; } = new("ui_application", "UI Application", "ui");
+
+        public void Configure(ISharpClawModuleBuilder module)
+        {
+        }
+
+        public void ConfigureApplication(ISharpClawApplicationBuilder application) =>
+            application.Ui.Add<SampleUi>();
+    }
+
+    private sealed class DuplicateSubscriptionModule : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } = new("duplicate_subscription", "Duplicate Subscription", "duplicate");
+
+        public void Configure(ISharpClawModuleBuilder module)
+        {
+            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+                ActionInterceptionCapabilities.Inspect,
+                new HookOrdering("duplicate.one"));
+            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+                ActionInterceptionCapabilities.Inspect,
+                new HookOrdering("duplicate.two"));
+        }
     }
 
     private sealed class EchoHook : IActionInterceptor<EchoAction, EchoResult>
@@ -493,4 +575,16 @@ public sealed class ModuleCompilerTests
     }
 
     private sealed class SampleEndpoints;
+
+    private sealed class SampleUi;
+
+    private sealed class SampleCli : IModuleCliHandler
+    {
+        public ValueTask<ModuleCliResult> ExecuteAsync(
+            ModuleCliInvocation invocation,
+            CancellationToken ct) =>
+            ValueTask.FromResult(new ModuleCliResult(
+                true,
+                [new ModuleCliOutput("stdout", invocation.Command)]));
+    }
 }

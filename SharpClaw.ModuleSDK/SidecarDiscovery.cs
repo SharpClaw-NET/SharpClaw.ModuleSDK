@@ -71,23 +71,65 @@ public static class SidecarDiscoveryFactory
             sequence,
             deadline,
             graph.PayloadLimits.ProtocolMessageBytes,
-            header => new SidecarDiscoveryEnvelope(
-                header,
-                graph.Identity.Id,
-                graph.ContractHash,
-                new SidecarProtocolOffer(
-                    graph.ProtocolVersionRange.Minimum,
-                    graph.ProtocolVersionRange.Maximum,
-                    [SidecarPayloadMode.Typed, SidecarPayloadMode.Untyped],
-                    graph.PayloadLimits),
-                Array.AsReadOnly(graph.ActionHooks.Select(ToSubscription).ToArray()),
-                Array.AsReadOnly(graph.EventHooks.Select(ToSubscription).ToArray()),
-                Array.AsReadOnly(graph.Actions.Select(ToDefinition).ToArray()),
-                Array.AsReadOnly(graph.Events.Select(ToDefinition).ToArray()),
-                Array.AsReadOnly(graph.Tools.Select(ToDefinition).ToArray()),
-                LifecycleDefinitions(graph),
-                graph.Features));
+            header => CreateEnvelope(graph, header));
     }
+
+    /// <summary>Creates a measured discovery document with application metadata.</summary>
+    public static SidecarDiscoveryDocument CreateDocument(
+        ModuleContributionGraph graph,
+        int protocolVersion,
+        long sequence,
+        DateTimeOffset deadline)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+        if (graph.HostingMode != ModuleHostingMode.OutOfProcess)
+            throw new InvalidOperationException("Sidecar discovery requires an out-of-process graph.");
+        if (!graph.ProtocolVersionRange.Contains(protocolVersion))
+            throw new ArgumentOutOfRangeException(nameof(protocolVersion));
+
+        return SidecarMessageHeaderFactory.CreateMeasured(
+            protocolVersion,
+            sequence,
+            deadline,
+            graph.PayloadLimits.ProtocolMessageBytes,
+            header =>
+            {
+                var discovery = CreateEnvelope(graph, header);
+                return new SidecarDiscoveryDocument(
+                    discovery.Header,
+                    discovery.ModuleId,
+                    discovery.ContractHash,
+                    discovery.Protocol,
+                    discovery.Actions,
+                    discovery.Events,
+                    discovery.ActionDefinitions,
+                    discovery.EventDefinitions,
+                    discovery.ToolHandlers,
+                    discovery.LifecycleHandlers,
+                    discovery.Features,
+                    graph.CreateSidecarApplicationDiscovery());
+            });
+    }
+
+    private static SidecarDiscoveryEnvelope CreateEnvelope(
+        ModuleContributionGraph graph,
+        SidecarMessageHeader header) =>
+        new(
+            header,
+            graph.Identity.Id,
+            graph.ContractHash,
+            new SidecarProtocolOffer(
+                graph.ProtocolVersionRange.Minimum,
+                graph.ProtocolVersionRange.Maximum,
+                [SidecarPayloadMode.Typed, SidecarPayloadMode.Untyped],
+                graph.PayloadLimits),
+            Array.AsReadOnly(graph.ActionHooks.Select(ToSubscription).ToArray()),
+            Array.AsReadOnly(graph.EventHooks.Select(ToSubscription).ToArray()),
+            Array.AsReadOnly(graph.Actions.Select(ToDefinition).ToArray()),
+            Array.AsReadOnly(graph.Events.Select(ToDefinition).ToArray()),
+            Array.AsReadOnly(graph.Tools.Select(ToDefinition).ToArray()),
+            LifecycleDefinitions(graph),
+            graph.Features);
 
     private static SidecarActionSubscription ToSubscription(ModuleActionHook hook) =>
         new(
@@ -193,7 +235,8 @@ public static class SidecarAuthorizationFactory
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(hostCatalog);
-        var validation = SidecarDiscoveryValidator.Validate(discovery, hostCatalog);
+        var validationDiscovery = RemoveSelfOwnedSubscriptions(discovery);
+        var validation = SidecarDiscoveryValidator.Validate(validationDiscovery, hostCatalog);
         if (!validation.Accepted)
         {
             throw new SidecarDiscoveryAuthorizationException(
@@ -201,7 +244,7 @@ public static class SidecarAuthorizationFactory
                 validation.ErrorMessage ?? "The sidecar discovery was rejected.");
         }
 
-        var actionGrants = discovery.Actions
+        var actionGrants = validationDiscovery.Actions
             .SelectMany(subscription => hostCatalog.Actions
                 .Where(descriptor => Matches(subscription, descriptor))
                 .Select(descriptor => new ActionCapabilityGrant(
@@ -213,7 +256,7 @@ public static class SidecarAuthorizationFactory
                         && !descriptor.ContainsSensitiveData)))
             .Distinct()
             .ToArray();
-        var eventGrants = discovery.Events
+        var eventGrants = validationDiscovery.Events
             .SelectMany(subscription => hostCatalog.Events
                 .Where(descriptor => Matches(subscription, descriptor))
                 .Select(descriptor => new EventCapabilityGrant(
@@ -231,6 +274,125 @@ public static class SidecarAuthorizationFactory
             Array.AsReadOnly(eventGrants),
             hostCatalog.SensitiveWildcardApproval);
     }
+
+    private static SidecarDiscoveryEnvelope RemoveSelfOwnedSubscriptions(
+        SidecarDiscoveryEnvelope discovery)
+    {
+        var selfActions = discovery.Actions
+            .Where(subscription =>
+                subscription.TargetKind == SidecarHookTargetKind.Exact
+                && subscription.ActionKey is { } key
+                && discovery.ActionDefinitions.Any(definition => definition.ActionKey == key))
+            .ToArray();
+        var selfEvents = discovery.Events
+            .Where(subscription =>
+                subscription.TargetKind == SidecarHookTargetKind.Exact
+                && subscription.EventKey is { } key
+                && discovery.EventDefinitions.Any(definition => definition.EventKey == key))
+            .ToArray();
+        ValidateSelfOwnedActionSubscriptions(selfActions, discovery.ActionDefinitions);
+        ValidateSelfOwnedEventSubscriptions(selfEvents, discovery.EventDefinitions);
+
+        var selfActionKeys = selfActions
+            .Where(subscription => subscription.ActionKey is not null)
+            .Select(subscription => subscription.ActionKey!.Value)
+            .ToHashSet();
+        var selfEventKeys = selfEvents
+            .Where(subscription => subscription.EventKey is not null)
+            .Select(subscription => subscription.EventKey!.Value)
+            .ToHashSet();
+        return discovery with
+        {
+            Actions = discovery.Actions
+                .Where(subscription => !selfActions.Contains(subscription))
+                .ToArray(),
+            Events = discovery.Events
+                .Where(subscription => !selfEvents.Contains(subscription))
+                .ToArray(),
+            ActionDefinitions = discovery.ActionDefinitions
+                .Where(definition => !selfActionKeys.Contains(definition.ActionKey))
+                .ToArray(),
+            EventDefinitions = discovery.EventDefinitions
+                .Where(definition => !selfEventKeys.Contains(definition.EventKey))
+                .ToArray(),
+        };
+    }
+
+    private static void ValidateSelfOwnedActionSubscriptions(
+        IReadOnlyList<SidecarActionSubscription> subscriptions,
+        IReadOnlyList<SidecarActionDefinition> definitions)
+    {
+        foreach (var subscription in subscriptions)
+        {
+            var definition = definitions.Single(item => item.ActionKey == subscription.ActionKey);
+            if (!subscription.VersionRange.Contains(definition.Version))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedVersion,
+                    "A self-owned action subscription does not cover its definition version.");
+            }
+            if (!string.Equals(subscription.Category, definition.Category, StringComparison.Ordinal))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.CategoryMismatch,
+                    "A self-owned action subscription category does not match its definition.");
+            }
+            if (!SameSchema(subscription.InputSchema, definition.InputSchema)
+                || !SameSchema(subscription.ResultSchema, definition.ResultSchema))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.SchemaMismatch,
+                    "A self-owned action subscription schema does not match its definition.");
+            }
+            if ((subscription.Capabilities & ~definition.Capabilities) != 0)
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedCapability,
+                    "A self-owned action subscription requests an ungranted capability.");
+            }
+        }
+    }
+
+    private static void ValidateSelfOwnedEventSubscriptions(
+        IReadOnlyList<SidecarEventSubscription> subscriptions,
+        IReadOnlyList<SidecarEventDefinition> definitions)
+    {
+        foreach (var subscription in subscriptions)
+        {
+            var definition = definitions.Single(item => item.EventKey == subscription.EventKey);
+            if (!subscription.VersionRange.Contains(definition.Version))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedVersion,
+                    "A self-owned event subscription does not cover its definition version.");
+            }
+            if (!string.Equals(subscription.Category, definition.Category, StringComparison.Ordinal))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.CategoryMismatch,
+                    "A self-owned event subscription category does not match its definition.");
+            }
+            if (!SameSchema(subscription.PayloadSchema, definition.PayloadSchema))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.SchemaMismatch,
+                    "A self-owned event subscription schema does not match its definition.");
+            }
+            if ((subscription.Capabilities & ~definition.Capabilities) != 0)
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedCapability,
+                    "A self-owned event subscription requests an ungranted capability.");
+            }
+        }
+    }
+
+    private static bool SameSchema(
+        JsonSchemaReference left,
+        JsonSchemaReference right) =>
+        string.Equals(left.ContractName, right.ContractName, StringComparison.Ordinal)
+        && left.Version == right.Version
+        && string.Equals(left.ContentHash, right.ContentHash, StringComparison.Ordinal);
 
     private static bool Matches(
         SidecarActionSubscription subscription,

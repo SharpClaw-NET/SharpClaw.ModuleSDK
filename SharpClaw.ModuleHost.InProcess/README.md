@@ -18,7 +18,7 @@ The adapter does not create substitute outcomes or another dispatch path.
 using SharpClaw.ModuleHost.InProcess;
 
 await using var host = await InProcessModuleHost.LoadAsync(moduleDirectory);
-await host.StartAsync("0.5.0-beta.2");
+await host.StartAsync("0.5.0-beta.3");
 ```
 
 Use one host instance for each loaded module. Dispose the host after the module

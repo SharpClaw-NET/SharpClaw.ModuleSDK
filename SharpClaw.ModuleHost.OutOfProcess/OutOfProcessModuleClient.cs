@@ -23,6 +23,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         string controlToken,
         HttpClient httpClient,
         SidecarDiscoveryEnvelope discovery,
+        SidecarApplicationDiscovery application,
         SidecarHostAuthorization authorization,
         SidecarPayloadLimits hostLimits)
     {
@@ -30,12 +31,16 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         _controlToken = controlToken;
         _httpClient = httpClient;
         Discovery = discovery;
+        Application = application;
         Authorization = authorization;
         HostLimits = hostLimits;
     }
 
     /// <summary>Gets the validated module discovery.</summary>
     public SidecarDiscoveryEnvelope Discovery { get; }
+
+    /// <summary>Gets the typed endpoint and CLI contributions from the same graph.</summary>
+    public SidecarApplicationDiscovery Application { get; }
 
     /// <summary>Gets the exact grants issued for this client.</summary>
     public SidecarHostAuthorization Authorization { get; }
@@ -63,13 +68,14 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             controlToken);
         try
         {
-            var discovery = await http.GetFromJsonAsync<SidecarDiscoveryEnvelope>(
+            var document = await http.GetFromJsonAsync<SidecarDiscoveryDocument>(
                 OutOfProcessModuleHostProtocol.DiscoveryPath,
                 OutOfProcessProtocolCodec.JsonOptions,
                 ct)
                 ?? throw new OutOfProcessProtocolException(
                     SidecarProtocolErrors.MalformedMessage,
                     "The sidecar returned no discovery envelope.");
+            var discovery = document.ToDiscovery();
             var authorization = SidecarAuthorizationFactory.Create(discovery, hostCatalog);
             var decision = SidecarMessageHeaderFactory.CreateMeasured(
                 hostCatalog.NegotiatedProtocolVersion,
@@ -92,6 +98,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 controlToken,
                 http,
                 discovery,
+                document.Application,
                 authorization,
                 hostCatalog.PayloadLimits);
         }
@@ -183,6 +190,48 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             await TryCancelAsync(protocol, socket);
             throw;
         }
+    }
+
+    /// <summary>Invokes one authorized module CLI contribution through the sidecar.</summary>
+    public async ValueTask<SidecarCliExecutionResponse> InvokeCliAsync(
+        string command,
+        IReadOnlyList<string> arguments,
+        RequestPrincipal caller,
+        DateTimeOffset? deadline = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(command);
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(caller);
+        if (!Application.CliCommands.Any(item =>
+                string.Equals(item.Descriptor.Name, command, StringComparison.Ordinal)
+                || item.Descriptor.Aliases.Contains(command, StringComparer.Ordinal)))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"CLI command '{command}' is not declared by the sidecar.");
+        }
+
+        var request = new SidecarCliInvocation(
+            Guid.NewGuid(),
+            Discovery.ModuleId,
+            Discovery.ContractHash,
+            command,
+            arguments,
+            caller,
+            deadline ?? DateTimeOffset.UtcNow.AddMinutes(1));
+        using var response = await _httpClient.PostAsJsonAsync(
+            OutOfProcessModuleHostProtocol.ApplicationCliPath,
+            request,
+            OutOfProcessProtocolCodec.JsonOptions,
+            ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<SidecarCliExecutionResponse>(
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct)
+            ?? throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The sidecar returned no CLI execution response.");
     }
 
     /// <summary>Runs one event interceptor exchange.</summary>

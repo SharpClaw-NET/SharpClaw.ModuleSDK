@@ -408,14 +408,14 @@ public static class SharpClawModuleCompiler
         }
 
         if (options.HostingMode == ModuleHostingMode.OutOfProcess
-            && (state.Endpoints.Count > 0 || state.CliCommands.Count > 0 || state.UiContributions.Count > 0))
+            && state.UiContributions.Count > 0)
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.UnsupportedTransport,
                 state.Identity.Id,
                 "application",
                 "sidecar",
-                "The published sidecar protocol does not represent application endpoint, CLI, or UI contribution types."));
+                "The sidecar protocol does not transport UI contribution types."));
         }
     }
 
@@ -1019,30 +1019,6 @@ public static class SharpClawModuleCompiler
         string moduleId,
         ICollection<GraphCompilationError> errors)
     {
-        foreach (var hook in actionHooks.Where(hook =>
-                     hook.TargetKind == SidecarHookTargetKind.Exact
-                     && state.Actions.Any(action => action.Descriptor.Key == hook.ActionKey)))
-        {
-            errors.Add(Error(
-                ModuleGraphErrorCodes.UnsupportedTransport,
-                moduleId,
-                hook.ActionKey!.Value.Value,
-                "sidecar",
-                "One sidecar discovery cannot define and subscribe to the same action key."));
-        }
-
-        foreach (var hook in eventHooks.Where(hook =>
-                     hook.TargetKind == SidecarHookTargetKind.Exact
-                     && state.Events.Any(evt => evt.Descriptor.Key == hook.EventKey)))
-        {
-            errors.Add(Error(
-                ModuleGraphErrorCodes.UnsupportedTransport,
-                moduleId,
-                hook.EventKey!.Value.Value,
-                "sidecar",
-                "One sidecar discovery cannot define and subscribe to the same event key."));
-        }
-
         foreach (var duplicate in actionHooks.GroupBy(ActionSubscriptionKey, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {

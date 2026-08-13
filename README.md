@@ -19,3 +19,7 @@ For module developers, the practical shape is the same in either case: build a
 module directory, and describe it with `module.json`. Unless a host explicitly
 opts into in-process loading, expect the module to be run by the out-of-process
 host.
+
+Modules can declare typed endpoint and CLI contributions through
+`ISharpClawApplicationModule`. The out-of-process host carries those declarations
+through sidecar discovery and invokes CLI handlers through the same module graph.

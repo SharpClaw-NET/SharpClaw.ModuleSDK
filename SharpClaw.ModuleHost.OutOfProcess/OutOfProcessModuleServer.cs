@@ -1,7 +1,9 @@
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http.Json;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
 
@@ -148,13 +150,22 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 
         _app.MapGet(OutOfProcessModuleHostProtocol.DiscoveryPath, () =>
         {
-            var discovery = _runtime.Graph.CreateSidecarDiscovery(
+            var discovery = SidecarDiscoveryFactory.CreateDocument(
+                _runtime.Graph,
                 OutOfProcessModuleHostProtocol.Version,
                 sequence: 1,
                 DateTimeOffset.UtcNow.AddMinutes(1));
             return Results.Json(discovery, OutOfProcessProtocolCodec.JsonOptions);
         });
 
+        _app.MapGet(
+            OutOfProcessModuleHostProtocol.ApplicationPath,
+            () => Results.Json(
+                _runtime.Graph.CreateSidecarApplicationDiscovery(),
+                OutOfProcessProtocolCodec.JsonOptions));
+        _app.MapPost(
+            OutOfProcessModuleHostProtocol.ApplicationCliPath,
+            ExecuteCliAsync);
         _app.MapPost(OutOfProcessModuleHostProtocol.AuthorizationPath, AuthorizeAsync);
         _app.MapGet(OutOfProcessModuleHostProtocol.ExchangePath, HandleExchangeAsync);
     }
@@ -210,6 +221,124 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 
         Volatile.Write(ref _authorization, decision.Authorization);
         return Results.NoContent();
+    }
+
+    private async Task<IResult> ExecuteCliAsync(
+        HttpContext context,
+        CancellationToken ct)
+    {
+        var maximumBytes = _runtime.Graph.PayloadLimits.ProtocolMessageBytes;
+        if (context.Request.ContentLength is > 0 and var contentLength
+            && contentLength > maximumBytes)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+
+        SidecarCliInvocation? request;
+        try
+        {
+            request = await context.Request.ReadFromJsonAsync<SidecarCliInvocation>(
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct);
+        }
+        catch (JsonException)
+        {
+            return Results.BadRequest(new
+            {
+                error = SidecarProtocolErrors.MalformedMessage,
+                message = "The CLI invocation is not valid JSON.",
+            });
+        }
+
+        if (request is null)
+            return Results.BadRequest();
+
+        if (!string.Equals(request.ModuleId, _runtime.Graph.Identity.Id, StringComparison.Ordinal)
+            || !string.Equals(request.ContractHash, _runtime.Graph.ContractHash, StringComparison.Ordinal))
+        {
+            return Results.BadRequest(new
+            {
+                error = SidecarProtocolErrors.ExchangeIdentityMismatch,
+            });
+        }
+
+        var contribution = _runtime.Graph.Application.CliCommands.SingleOrDefault(item =>
+            string.Equals(item.Descriptor.Name, request.Command, StringComparison.Ordinal)
+            || item.Descriptor.Aliases.Contains(request.Command, StringComparer.Ordinal));
+        if (contribution is null)
+        {
+            return Results.NotFound(new
+            {
+                error = SidecarProtocolErrors.UnknownHostDescriptor,
+            });
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (request.Deadline <= now)
+        {
+            return JsonResult(new SidecarCliExecutionResponse(
+                _runtime.Graph.Identity.Id,
+                _runtime.Graph.ContractHash,
+                new ModuleCliResult(
+                    false,
+                    [],
+                    new ExecutionError(
+                        "deadline_exceeded",
+                        "The CLI invocation deadline has expired."))));
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(request.Deadline - now);
+        ModuleCliResult result;
+        try
+        {
+            var handler = ActivatorUtilities.GetServiceOrCreateInstance(
+                _runtime.Services,
+                contribution.HandlerType) as IModuleCliHandler
+                ?? throw new InvalidOperationException(
+                    $"CLI handler '{contribution.HandlerType.FullName}' has an invalid contract.");
+            result = await handler.ExecuteAsync(
+                new ModuleCliInvocation(
+                    request.InvocationId,
+                    contribution.Descriptor.Name,
+                    request.Arguments,
+                    request.Caller,
+                    request.Deadline),
+                linked.Token);
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+            result = new ModuleCliResult(
+                false,
+                [],
+                new ExecutionError(
+                    "cancelled",
+                    "The CLI invocation was cancelled."));
+        }
+        catch (Exception)
+        {
+            result = new ModuleCliResult(
+                false,
+                [],
+                new ExecutionError(
+                    "module_cli_failed",
+                    "The module CLI handler failed."));
+        }
+
+        return JsonResult(new SidecarCliExecutionResponse(
+            _runtime.Graph.Identity.Id,
+            _runtime.Graph.ContractHash,
+            result));
+    }
+
+    private IResult JsonResult(SidecarCliExecutionResponse response)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            response,
+            OutOfProcessProtocolCodec.JsonOptions);
+        return bytes.Length <= _runtime.Graph.PayloadLimits.ProtocolMessageBytes
+            ? Results.Bytes(bytes, "application/json")
+            : Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
     }
 
     private async Task HandleExchangeAsync(HttpContext context)

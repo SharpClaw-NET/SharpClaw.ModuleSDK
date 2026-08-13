@@ -16,6 +16,13 @@ then runs the module through this host process. In-process hosting exists only
 as an opt-in, limited mode for hosts that explicitly enable it; module authors
 should expect out-of-process hosting to be the normal execution model.
 
+Modules that implement `ISharpClawApplicationModule` can declare typed endpoint
+and CLI contributions. Sidecar discovery carries the endpoint type identities
+and CLI descriptors, and the host invokes CLI handlers through the same loaded
+module instance and contribution graph. A module can also declare an action and
+subscribe to that exact action key, so its authorization hook protects the
+module-owned action without changing the action protocol.
+
 ```json
 {
   "id": "sample_module",

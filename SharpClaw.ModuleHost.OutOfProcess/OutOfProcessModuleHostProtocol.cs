@@ -29,4 +29,10 @@ public static class OutOfProcessModuleHostProtocol
 
     /// <summary>Gets the bounded readiness route.</summary>
     public const string ReadinessPath = "/.sharpclaw/module/v1/readiness";
+
+    /// <summary>Gets the application contribution discovery route.</summary>
+    public const string ApplicationPath = "/.sharpclaw/module/v1/application";
+
+    /// <summary>Gets the module CLI invocation route.</summary>
+    public const string ApplicationCliPath = "/.sharpclaw/module/v1/application/cli";
 }
