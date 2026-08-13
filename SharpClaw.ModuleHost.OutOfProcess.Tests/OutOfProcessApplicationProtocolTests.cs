@@ -106,7 +106,8 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         result.ModuleId.Should().Be(client.Discovery.ModuleId);
         result.ContractHash.Should().Be(client.Discovery.ContractHash);
-        result.Result.Succeeded.Should().BeTrue();
+        result.Result.Succeeded.Should().BeTrue(
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         result.Result.Output.Single().Text.Should().Be(
             $"{ApplicationSmokeModule.Id}|{ApplicationSmokeModule.Id}|{client.Discovery.ContractHash}|{ApplicationSmokeModule.CliName}");
     }
@@ -125,7 +126,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 return ValueTask.FromResult(CreateContinuation(request, "allowed"));
             });
 
-        allowed.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
+        allowed.Completion.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"action error {allowed.Completion.Error?.Code}: {allowed.Completion.Error?.Message}");
         allowedTerminalCalls.Should().Be(1);
 
         var deniedTerminalCalls = 0;
