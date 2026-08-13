@@ -81,6 +81,7 @@ internal static class ModuleTestKernelOptions
         IReadOnlyList<ModuleTestHostAction> hostActions)
     {
         var candidates = KernelActionCatalog.Descriptors
+            .Where(entry => !entry.IsJobsAction)
             .Select(entry => new ActionCandidate(
                 "core",
                 entry.Key,
