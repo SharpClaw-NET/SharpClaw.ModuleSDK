@@ -15,12 +15,17 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string OwnedActionHookId = "application.owned.authorization";
     public const string CliName = "application.inspect";
 
+    public const ActionInterceptionCapabilities HostCapabilities =
+        ActionInterceptionCapabilities.Inspect
+        | ActionInterceptionCapabilities.Wrap
+        | ActionInterceptionCapabilities.Cancel;
+
     public static ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> HostAction { get; } =
         new(
             new SharpClawActionKey("host.application.smoke"),
             1,
             "application",
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
+            HostCapabilities,
             ContainsSensitiveData: false,
             HasIrreversibleEffects: false,
             new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "host.application.smoke"),
@@ -43,10 +48,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     {
         module.Actions.Add(OwnedAction);
         module.Hooks.For(HostAction).Use<AuthorizationHook>(
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
+            HostCapabilities,
             new HookOrdering(HostActionHookId));
         module.Hooks.For(OwnedAction).Use<AuthorizationHook>(
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
+            HostCapabilities,
             new HookOrdering(OwnedActionHookId));
     }
 
@@ -73,7 +78,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     }
 
     public sealed class ApplicationCliHandler(
-        ApplicationSmokeModule module,
+        ISharpClawModule module,
         ModuleContributionGraph graph) : IModuleCliHandler
     {
         public ValueTask<ModuleCliResult> ExecuteAsync(

@@ -48,11 +48,11 @@ public sealed class OutOfProcessApplicationProtocolTests
               "requestedHooks": [
                 {
                   "target": "host.application.smoke",
-                  "effects": ["inspect", "cancel"]
+                  "effects": ["inspect", "wrap", "cancel"]
                 },
                 {
                   "target": "module.application.smoke",
-                  "effects": ["inspect", "cancel"]
+                  "effects": ["inspect", "wrap", "cancel"]
                 }
               ]
             }
@@ -79,8 +79,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
-        if (Directory.Exists(_moduleDirectory))
-            Directory.Delete(_moduleDirectory, recursive: true);
+        await DeleteModuleDirectoryAsync();
     }
 
     [Test, CancelAfter(15000)]
@@ -276,5 +275,33 @@ public sealed class OutOfProcessApplicationProtocolTests
             listener.Stop();
             await Task.CompletedTask;
         }
+    }
+
+    private async Task DeleteModuleDirectoryAsync()
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            if (!Directory.Exists(_moduleDirectory))
+                return;
+            try
+            {
+                Directory.Delete(_moduleDirectory, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                await Task.Delay(100);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                await Task.Delay(100);
+            }
+        }
+
+        Directory.Delete(_moduleDirectory, recursive: true);
     }
 }
