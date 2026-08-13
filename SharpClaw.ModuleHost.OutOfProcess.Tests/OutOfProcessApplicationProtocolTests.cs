@@ -174,7 +174,17 @@ public sealed class OutOfProcessApplicationProtocolTests
                 JsonSerializer.SerializeToElement(
                     new ApplicationSmokeAction(mode, "value"),
                     OutOfProcessProtocolCodec.JsonOptions),
-                descriptor,
+                new UntypedActionDescriptor(
+                    descriptor.ActionKey,
+                    descriptor.Version,
+                    descriptor.Category,
+                    descriptor.Capabilities,
+                    descriptor.InputSchema,
+                    descriptor.ResultSchema,
+                    descriptor.ContainsSensitiveData)
+                {
+                    ProtocolVersionRange = descriptor.ProtocolVersionRange,
+                },
                 grant,
                 RequestPrincipal.Anonymous,
                 ExtensionFeatureSet.Empty,
