@@ -18,6 +18,7 @@ internal static class OutOfProcessCapabilityFrameKind
     public const string ActionTerminalResponse = "action_terminal_response";
     public const string StorageRequest = "storage_request";
     public const string StorageResponse = "storage_response";
+    public const string CapabilityCancellation = "capability_cancellation";
     public const string Error = "error";
 }
 
@@ -25,6 +26,12 @@ internal sealed record OutOfProcessCapabilityFrame(
     string Kind,
     SidecarTransportFrameIdentity PayloadIdentity,
     JsonElement Payload);
+
+internal sealed record OutOfProcessCapabilityCancellation(
+    SidecarCapabilityCallIdentity Call,
+    SidecarCancellationIdentity Cancellation,
+    string Reason,
+    DateTimeOffset SentAt);
 
 internal static class OutOfProcessCapabilityWire
 {
@@ -181,6 +188,9 @@ internal static class SidecarCapabilityErrors
     public const string UnknownAction = "sidecar_unknown_action";
     public const string UnknownStorage = "sidecar_unknown_storage";
     public const string HostFailure = "sidecar_host_failure";
+    public const string ModuleBusy = "sidecar_module_busy";
+    public const string Cancelled = "sidecar_cancelled";
+    public const string Replay = "sidecar_replay";
 }
 
 internal sealed class OutOfProcessCapabilityException : Exception

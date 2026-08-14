@@ -262,6 +262,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, PendingAction> _actions = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarStorageCapabilityResponse>> _storage = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _retiredCalls = new();
     private readonly CancellationTokenSource _disconnect = new();
     private long _sequence;
     private int _disposed;
@@ -311,6 +312,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct)
     {
         ValidateActionRequest(request);
+        using var deadline = CreateCallCancellation(request.Deadline, ct);
+        var callCancellation = deadline.Token;
         var begin = _session.BeginCall(
             request.Call,
             SidecarCapabilityKind.Action,
@@ -321,8 +324,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
         var pending = new PendingAction(request, terminal, completion);
         if (!_actions.TryAdd(request.Call.CallId, pending))
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
             throw new OutOfProcessCapabilityException("sidecar_replay", "The action call identifier was reused.");
+        }
 
+        var retainPending = false;
         try
         {
             await OutOfProcessCapabilityWire.SendAsync(
@@ -331,8 +338,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request,
                 _limits.ProtocolMessageBytes,
                 SendGate,
-                ct);
-            var response = await completion.Task.WaitAsync(ct);
+                callCancellation);
+            var response = await completion.Task.WaitAsync(callCancellation);
             var validation = SidecarCapabilityTransportValidation.ValidateActionResponse(
                 request,
                 response,
@@ -344,9 +351,27 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 response.Outcome.TerminalCallCount));
             return response;
         }
+        catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
+        {
+            retainPending = true;
+            await SendCancellationAsync(
+                request.Call,
+                request.Cancellation,
+                request.Deadline,
+                callCancellation,
+                ct);
+            _ = RetireActionAsync(request, completion);
+            throw;
+        }
+        catch
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
+            throw;
+        }
         finally
         {
-            _actions.TryRemove(request.Call.CallId, out _);
+            if (!retainPending)
+                _actions.TryRemove(request.Call.CallId, out _);
         }
     }
 
@@ -385,6 +410,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct)
     {
         ValidateStorageRequest(request);
+        using var deadline = CreateCallCancellation(request.Deadline, ct);
+        var callCancellation = deadline.Token;
         var payload = request.RequestPayload ?? EmptyPayload();
         ThrowIfRejected(_session.BeginCall(
             request.Call,
@@ -394,7 +421,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             DateTimeOffset.UtcNow));
         var completion = NewCompletion<SidecarStorageCapabilityResponse>();
         if (!_storage.TryAdd(request.Call.CallId, completion))
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
             throw new OutOfProcessCapabilityException("sidecar_replay", "The storage call identifier was reused.");
+        }
+        var retainPending = false;
         try
         {
             await OutOfProcessCapabilityWire.SendAsync(
@@ -403,8 +434,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request,
                 _limits.ProtocolMessageBytes,
                 SendGate,
-                ct);
-            var response = await completion.Task.WaitAsync(ct);
+                callCancellation);
+            var response = await completion.Task.WaitAsync(callCancellation);
             ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
                 request,
                 response,
@@ -412,9 +443,22 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ThrowIfRejected(_session.CompleteCall(request.Call.CallId, 0));
             return response;
         }
+        catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
+        {
+            retainPending = true;
+            await SendCancellationAsync(request.Call, request.Cancellation, request.Deadline, callCancellation, ct);
+            _ = RetireStorageAsync(request, completion);
+            throw;
+        }
+        catch
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
+            throw;
+        }
         finally
         {
-            _storage.TryRemove(request.Call.CallId, out _);
+            if (!retainPending)
+                _storage.TryRemove(request.Call.CallId, out _);
         }
     }
 
@@ -532,6 +576,118 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ct);
     }
 
+    private async Task SendCancellationAsync(
+        SidecarCapabilityCallIdentity call,
+        SidecarCancellationIdentity cancellation,
+        DateTimeOffset deadline,
+        CancellationToken callCancellation,
+        CancellationToken callerCancellation)
+    {
+        var reason = deadline <= DateTimeOffset.UtcNow
+            ? "deadline"
+            : callerCancellation.IsCancellationRequested
+                ? "caller"
+                : "call";
+        using var sendTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.CapabilityCancellation,
+                new OutOfProcessCapabilityCancellation(
+                    call,
+                    cancellation,
+                    reason,
+                    DateTimeOffset.UtcNow),
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                sendTimeout.Token);
+        }
+        catch (OperationCanceledException) when (sendTimeout.IsCancellationRequested)
+        {
+            _disconnect.Cancel();
+        }
+        catch (WebSocketException)
+        {
+            _disconnect.Cancel();
+        }
+    }
+
+    private async Task RetireActionAsync(
+        SidecarActionCapabilityRequest request,
+        TaskCompletionSource<SidecarActionCapabilityResponse> completion)
+    {
+        try
+        {
+            var response = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var validation = SidecarCapabilityTransportValidation.ValidateActionResponse(
+                request,
+                response,
+                Binding,
+                _session);
+            if (validation.Accepted)
+                _session.CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount);
+            else
+                _session.CompleteCall(request.Call.CallId, 0);
+        }
+        catch
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
+            _retiredCalls[request.Call.CallId] = DateTimeOffset.UtcNow.AddSeconds(30);
+        }
+        finally
+        {
+            _actions.TryRemove(request.Call.CallId, out _);
+        }
+    }
+
+    private async Task RetireStorageAsync(
+        SidecarStorageCapabilityRequest request,
+        TaskCompletionSource<SidecarStorageCapabilityResponse> completion)
+    {
+        try
+        {
+            var response = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var validation = SidecarCapabilityTransportValidation.ValidateStorageResponse(
+                request,
+                response,
+                Binding);
+            _session.CompleteCall(request.Call.CallId, validation.Accepted ? 0 : 0);
+        }
+        catch
+        {
+            _session.CompleteCall(request.Call.CallId, 0);
+            _retiredCalls[request.Call.CallId] = DateTimeOffset.UtcNow.AddSeconds(30);
+        }
+        finally
+        {
+            _storage.TryRemove(request.Call.CallId, out _);
+        }
+    }
+
+    private static CancellationTokenSource CreateCallCancellation(
+        DateTimeOffset deadline,
+        CancellationToken callerCancellation)
+    {
+        var source = CancellationTokenSource.CreateLinkedTokenSource(callerCancellation);
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            source.Cancel();
+        else
+            source.CancelAfter(remaining);
+        return source;
+    }
+
+    private bool IsRetired(Guid callId)
+    {
+        if (!_retiredCalls.TryGetValue(callId, out var expiresAt))
+            return false;
+        if (expiresAt > DateTimeOffset.UtcNow)
+            return true;
+        _retiredCalls.TryRemove(callId, out _);
+        return false;
+    }
+
     private bool ValidateTerminalAuthority(SidecarHostTerminalAuthority authority) =>
         string.Equals(
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
@@ -546,7 +702,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The action response has no result identity.");
         if (_actions.TryGetValue(resultIdentity.CallId, out var pending))
             pending.Completion.TrySetResult(response);
-        else
+        else if (!IsRetired(resultIdentity.CallId))
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
                 "The action response does not match an active action call.");
@@ -560,7 +716,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The storage response has no result identity.");
         if (_storage.TryGetValue(resultIdentity.CallId, out var completion))
             completion.TrySetResult(response);
-        else
+        else if (!IsRetired(resultIdentity.CallId))
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
                 "The storage response does not match an active storage call.");

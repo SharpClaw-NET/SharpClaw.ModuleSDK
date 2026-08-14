@@ -124,7 +124,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             dispatcher,
             client.CreateCapabilityGrant(),
             ["application-store"],
-            descriptors));
+            descriptors,
+            new ActionPipelineSnapshot(client.Discovery.ContractHash, [])));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,

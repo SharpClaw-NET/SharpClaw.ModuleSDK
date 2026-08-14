@@ -102,7 +102,9 @@ public sealed class OutOfProcessActionDescriptorCatalog
             identity,
             descriptor,
             typeof(TAction),
-            typeof(TResult));
+            typeof(TResult),
+            (session, request, cancellationToken) =>
+                session.DispatchAsync(descriptor, identity, request, cancellationToken));
         if (!_registrations.TryAdd(Key(identity), registration))
         {
             throw new InvalidOperationException(
@@ -122,8 +124,21 @@ public sealed class OutOfProcessActionDescriptorCatalog
         SidecarActionDescriptorIdentity Identity,
         object Descriptor,
         Type ActionType,
-        Type ResultType);
+        Type ResultType,
+        Func<
+            OutOfProcessCapabilityHostSession,
+            SidecarActionCapabilityRequest,
+            CancellationToken,
+            ValueTask<OutOfProcessActionDispatchResult>> Dispatch);
 }
+
+internal sealed record OutOfProcessActionDispatchResult(
+    ActionOutcomeKind Kind,
+    object? Result,
+    ExecutionError? Error,
+    ActionUncertainty? Uncertainty,
+    ContinuationToken? Continuation,
+    int TerminalCallCount);
 
 /// <summary>Supplies the exact host services used by one authorized sidecar session.</summary>
 public sealed class OutOfProcessCapabilityHostOptions
@@ -134,7 +149,8 @@ public sealed class OutOfProcessCapabilityHostOptions
         IActionDispatcher actionDispatcher,
         SidecarCapabilityGrant grant,
         IEnumerable<string> ownedStorageNames,
-        OutOfProcessActionDescriptorCatalog actionDescriptors)
+        OutOfProcessActionDescriptorCatalog actionDescriptors,
+        ActionPipelineSnapshot actionSnapshot)
     {
         StorageGateway = storageGateway
             ?? throw new ArgumentNullException(nameof(storageGateway));
@@ -143,6 +159,8 @@ public sealed class OutOfProcessCapabilityHostOptions
         Grant = grant ?? throw new ArgumentNullException(nameof(grant));
         ActionDescriptors = actionDescriptors
             ?? throw new ArgumentNullException(nameof(actionDescriptors));
+        ActionSnapshot = actionSnapshot
+            ?? throw new ArgumentNullException(nameof(actionSnapshot));
         ArgumentNullException.ThrowIfNull(ownedStorageNames);
         OwnedStorageNames = new HashSet<string>(
             ownedStorageNames.Where(value => !string.IsNullOrWhiteSpace(value)),
@@ -167,6 +185,24 @@ public sealed class OutOfProcessCapabilityHostOptions
 
     /// <summary>Gets the typed host action descriptor lookup.</summary>
     public OutOfProcessActionDescriptorCatalog ActionDescriptors { get; }
+
+    /// <summary>Gets the host-owned action pipeline snapshot used for every dispatch.</summary>
+    public ActionPipelineSnapshot ActionSnapshot { get; }
+
+    internal string ActionSnapshotHash =>
+        OutOfProcessCapabilitySnapshot.ComputeHash(ActionSnapshot);
+}
+
+internal static class OutOfProcessCapabilitySnapshot
+{
+    public static string ComputeHash(ActionPipelineSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var bytes = SidecarCapabilityTransportCodec.Serialize(snapshot);
+        using var document = System.Text.Json.JsonDocument.Parse(bytes);
+        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        return SidecarCapabilityTransportCodec.ComputeSha256(canonical);
+    }
 }
 
 /// <summary>Creates the capability grant shared by one authorized host and sidecar.</summary>
