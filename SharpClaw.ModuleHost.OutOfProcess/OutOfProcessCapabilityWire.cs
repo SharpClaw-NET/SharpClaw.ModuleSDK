@@ -190,7 +190,9 @@ internal static class OutOfProcessCapabilitySecurity
 
     public static string ComputeAuthorizationHash(SidecarHostAuthorization authorization) =>
         SidecarCapabilityTransportCodec.ComputeSha256(
-            SidecarCapabilityTransportCodec.Serialize(authorization));
+            JsonSerializer.SerializeToUtf8Bytes(
+                authorization,
+                OutOfProcessProtocolCodec.JsonOptions));
 
     public static bool ValidateGrant(
         SidecarCapabilityGrant grant,
