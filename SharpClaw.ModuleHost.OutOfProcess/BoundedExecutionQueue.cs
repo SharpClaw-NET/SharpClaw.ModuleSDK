@@ -37,9 +37,7 @@ internal sealed class BoundedExecutionQueue : IAsyncDisposable
         completion = source.Task;
         if (_channel.Writer.TryWrite(item))
             return true;
-        source.TrySetException(new OutOfProcessProtocolException(
-            SharpClaw.Contracts.Modules.SidecarProtocolErrors.ModuleBusy,
-            "The module execution queue is full."));
+        source.TrySetResult();
         return false;
     }
 
