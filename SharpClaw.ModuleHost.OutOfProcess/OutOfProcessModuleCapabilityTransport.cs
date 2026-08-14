@@ -403,10 +403,23 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 SendGate,
                 ct);
             var response = await completion.Task.WaitAsync(ct);
-            ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
-                request,
-                response,
-                Binding));
+        var responseValidation = SidecarCapabilityTransportValidation.ValidateStorageResponse(
+            request,
+            response,
+            Binding);
+        if (!responseValidation.Accepted)
+        {
+            var payload = response.ResultPayload;
+            var canonicalBytes = payload is null
+                ? Array.Empty<byte>()
+                : SidecarCapabilityTransportCodec.Serialize(payload.Value);
+            throw new OutOfProcessCapabilityException(
+                responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                $"{responseValidation.Message} resultHash={response.ResultIdentity?.ContentHash}; "
+                + $"payloadHash={payload?.ContentHash}; computedHash="
+                + $"{SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes)}; "
+                + $"resultLength={payload?.ByteLength}; computedLength={canonicalBytes.Length}.");
+        }
             ThrowIfRejected(_session.CompleteCall(request.Call.CallId, response.GetPayloadBytes()));
             return response;
         }
