@@ -192,8 +192,8 @@ public static class OutOfProcessCapabilityGrantFactory
 
         return new SidecarCapabilityGrant(
             Guid.NewGuid().ToString("N"),
-            discovery.ContractHash,
             discovery.ModuleId,
+            discovery.ContractHash,
             [SidecarCapabilityKind.Action, SidecarCapabilityKind.Storage],
             OutOfProcessCapabilitySecurity.ComputeAuthorizationHash(authorization),
             issuedAt,
