@@ -361,8 +361,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var actionPayload = CreatePayload(
             action,
             registration.Identity.InputTypeIdentity,
-            registration.Identity.InputSchemaVersion,
-            registration.Identity.InputSchemaHash);
+            registration.Identity.InputSchemaVersion);
         var receipt = new SidecarTerminalReceipt(
             Guid.NewGuid().ToString("N"),
             registration.Identity.Key,
@@ -585,8 +584,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var payload = CreatePayload(
             value,
             typeIdentity,
-            schemaVersion,
-            contentHash: null);
+            schemaVersion);
         return new SidecarStorageCapabilityResponse(
             new SidecarStorageResultIdentity(
                 Guid.NewGuid(),
@@ -673,8 +671,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             resultPayload = CreatePayload(
                 result,
                 registration.Identity.ResultTypeIdentity,
-                registration.Identity.ResultSchemaVersion,
-                registration.Identity.ResultSchemaHash);
+                registration.Identity.ResultSchemaVersion);
         }
 
         var continuationRequestId = request.Continuation?.ContinuationRequestId
@@ -769,18 +766,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     private static SidecarSerializedPayload CreatePayload<T>(
         T value,
         string typeIdentity,
-        int schemaVersion,
-        string? contentHash)
+        int schemaVersion)
     {
         var bytes = SidecarCapabilityTransportCodec.Serialize(value);
         using var document = JsonDocument.Parse(bytes);
-        var hash = SidecarCapabilityTransportCodec.ComputeSha256(bytes);
+        var canonicalBytes = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        var hash = SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes);
         return new SidecarSerializedPayload(
             typeIdentity,
             schemaVersion,
-            contentHash ?? hash,
+            hash,
             document.RootElement.Clone(),
-            bytes.Length);
+            canonicalBytes.Length);
     }
 
     private static SidecarSerializedPayload EmptyPayload() =>

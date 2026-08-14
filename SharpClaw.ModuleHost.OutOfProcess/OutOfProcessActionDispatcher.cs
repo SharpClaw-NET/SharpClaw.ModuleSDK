@@ -30,7 +30,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             call,
             SidecarActionInvocationKind.Run,
             identity,
-            Payload(action, identity.InputTypeIdentity, identity.InputSchemaVersion, identity.InputSchemaHash),
+            Payload(action, identity.InputTypeIdentity, identity.InputSchemaVersion),
             snapshot,
             new SidecarCancellationIdentity(
                 call.CancellationId,
@@ -88,8 +88,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             var payload = Payload(
                 result,
                 identity.ResultTypeIdentity,
-                identity.ResultSchemaVersion,
-                identity.ResultSchemaHash);
+                identity.ResultSchemaVersion);
             return new SidecarActionTerminalTransportResponse(
                 new SidecarActionResultIdentity(
                     Guid.NewGuid(),
@@ -142,17 +141,17 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
     private static SidecarSerializedPayload Payload<T>(
         T value,
         string typeIdentity,
-        int schemaVersion,
-        string contentHash)
+        int schemaVersion)
     {
         var bytes = SidecarCapabilityTransportCodec.Serialize(value);
         using var document = JsonDocument.Parse(bytes);
+        var canonicalBytes = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
         return new SidecarSerializedPayload(
             typeIdentity,
             schemaVersion,
-            contentHash,
+            SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes),
             document.RootElement.Clone(),
-            bytes.Length);
+            canonicalBytes.Length);
     }
 
     private static SidecarSerializedPayload EmptyPayload() =>

@@ -614,7 +614,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static SidecarSerializedPayload EmptyPayload() =>
-        new("system.empty", 1, SidecarCapabilityTransportCodec.ComputeSha256([]),
+        new("system.empty", 1, SidecarCapabilityTransportCodec.ComputeSha256("null"u8),
             JsonDocument.Parse("null").RootElement.Clone(), 4);
 
     private static OutOfProcessCapabilityException ReadError(byte[] payload)

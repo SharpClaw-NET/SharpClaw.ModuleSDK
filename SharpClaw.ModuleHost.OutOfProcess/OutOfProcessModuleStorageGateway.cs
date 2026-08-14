@@ -211,13 +211,14 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
     {
         var bytes = SidecarCapabilityTransportCodec.Serialize(value);
         using var document = JsonDocument.Parse(bytes);
-        var hash = SidecarCapabilityTransportCodec.ComputeSha256(bytes);
+        var canonicalBytes = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        var hash = SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes);
         return new SidecarSerializedPayload(
             typeIdentity,
             1,
             hash,
             document.RootElement.Clone(),
-            bytes.Length);
+            canonicalBytes.Length);
     }
 
     private static SidecarPayloadTypeIdentity PayloadType<T>()
