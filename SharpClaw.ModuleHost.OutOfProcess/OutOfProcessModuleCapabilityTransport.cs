@@ -388,9 +388,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             ThrowIfRejected(validation);
-            ThrowIfRejected(CompleteCall(
-                request.Call.CallId,
-                response.Outcome.TerminalCallCount));
+            if (!CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The sidecar action call could not be completed.");
+            }
             return response;
         }
         catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
@@ -482,7 +485,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request,
                 response,
                 Binding));
-            ThrowIfRejected(CompleteCall(request.Call.CallId, 0));
+            if (!CompleteCall(request.Call.CallId, 0))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The sidecar storage call could not be completed.");
+            }
             return response;
         }
         catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
