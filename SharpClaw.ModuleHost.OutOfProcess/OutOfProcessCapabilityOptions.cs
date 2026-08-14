@@ -47,21 +47,29 @@ public static class OutOfProcessActionDescriptorIdentity
         ArgumentNullException.ThrowIfNull(resultSchema);
         ArgumentException.ThrowIfNullOrWhiteSpace(inputSchema.ContentHash);
         ArgumentException.ThrowIfNullOrWhiteSpace(resultSchema.ContentHash);
+        var inputTypeIdentity = inputType.AssemblyQualifiedName
+            ?? inputType.FullName
+            ?? inputType.Name;
+        var resultTypeIdentity = resultType.AssemblyQualifiedName
+            ?? resultType.FullName
+            ?? resultType.Name;
         return new SidecarActionDescriptorIdentity(
             key,
             version,
             category,
-            inputType.AssemblyQualifiedName ?? inputType.FullName ?? inputType.Name,
+            inputTypeIdentity,
             inputSchema.ContentHash,
             inputSchema.Version,
-            resultType.AssemblyQualifiedName ?? resultType.FullName ?? resultType.Name,
+            resultTypeIdentity,
             resultSchema.ContentHash,
             resultSchema.Version,
             ComputeDescriptorHash(
                 key,
                 version,
                 category,
+                inputTypeIdentity,
                 inputSchema,
+                resultTypeIdentity,
                 resultSchema));
     }
 
@@ -70,7 +78,9 @@ public static class OutOfProcessActionDescriptorIdentity
         SharpClawActionKey key,
         int version,
         string category,
+        string inputTypeIdentity,
         JsonSchemaReference inputSchema,
+        string resultTypeIdentity,
         JsonSchemaReference resultSchema)
     {
         var value = string.Join(
@@ -78,14 +88,30 @@ public static class OutOfProcessActionDescriptorIdentity
             key.Value,
             version,
             category,
+            inputTypeIdentity,
             inputSchema.ContractName,
             inputSchema.Version,
             inputSchema.ContentHash,
+            resultTypeIdentity,
             resultSchema.ContractName,
             resultSchema.Version,
             resultSchema.ContentHash);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
+
+    internal static bool Matches(
+        SidecarActionDescriptorIdentity expected,
+        SidecarActionDescriptorIdentity actual) =>
+        expected.Key == actual.Key
+        && expected.Version == actual.Version
+        && string.Equals(expected.Category, actual.Category, StringComparison.Ordinal)
+        && string.Equals(expected.InputTypeIdentity, actual.InputTypeIdentity, StringComparison.Ordinal)
+        && string.Equals(expected.InputSchemaHash, actual.InputSchemaHash, StringComparison.Ordinal)
+        && expected.InputSchemaVersion == actual.InputSchemaVersion
+        && string.Equals(expected.ResultTypeIdentity, actual.ResultTypeIdentity, StringComparison.Ordinal)
+        && string.Equals(expected.ResultSchemaHash, actual.ResultSchemaHash, StringComparison.Ordinal)
+        && expected.ResultSchemaVersion == actual.ResultSchemaVersion
+        && string.Equals(expected.DescriptorHash, actual.DescriptorHash, StringComparison.Ordinal);
 }
 
 /// <summary>Stores the typed action descriptors available to the host dispatcher.</summary>
@@ -114,8 +140,17 @@ public sealed class OutOfProcessActionDescriptorCatalog
 
     internal bool TryGet(
         SidecarActionDescriptorIdentity identity,
-        out Registration registration) =>
-        _registrations.TryGetValue(Key(identity), out registration!);
+        out Registration registration)
+    {
+        if (!_registrations.TryGetValue(Key(identity), out registration!))
+            return false;
+
+        if (OutOfProcessActionDescriptorIdentity.Matches(registration.Identity, identity))
+            return true;
+
+        registration = null!;
+        return false;
+    }
 
     private static string Key(SidecarActionDescriptorIdentity identity) =>
         $"{identity.Key.Value}|{identity.Version}|{identity.DescriptorHash}";
