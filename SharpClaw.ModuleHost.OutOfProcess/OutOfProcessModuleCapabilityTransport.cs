@@ -339,7 +339,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             ThrowIfRejected(validation);
-            ThrowIfRejected(_session.CompleteCall(request.Call.CallId, response.GetPayloadBytes()));
+            ThrowIfRejected(_session.CompleteCall(
+                request.Call.CallId,
+                response.Outcome.TerminalCallCount));
             return response;
         }
         finally
@@ -424,7 +426,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 + $"resultSchema={resultPayload?.SchemaVersion}; "
                 + $"expectedSchema={request.ResultPayloadType?.SchemaVersion}.");
         }
-            ThrowIfRejected(_session.CompleteCall(request.Call.CallId, response.GetPayloadBytes()));
+            ThrowIfRejected(_session.CompleteCall(request.Call.CallId, 0));
             return response;
         }
         finally

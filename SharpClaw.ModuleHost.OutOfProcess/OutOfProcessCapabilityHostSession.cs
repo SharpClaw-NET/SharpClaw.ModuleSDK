@@ -194,7 +194,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 return;
             }
 
-            var completion = _session.CompleteCall(request.Call.CallId, response.GetPayloadBytes());
+            var completion = _session.CompleteCall(
+                request.Call.CallId,
+                response.Outcome.TerminalCallCount);
             if (!completion.Accepted)
             {
                 await SendActionFailureAsync(request, completion.Code, completion.Message, channelCt);
@@ -279,7 +281,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 return;
             }
 
-            var completion = _session.CompleteCall(request.Call.CallId, response.GetPayloadBytes());
+            var completion = _session.CompleteCall(request.Call.CallId, 0);
             if (!completion.Accepted)
             {
                 await SendStorageFailureAsync(request, completion.Code, completion.Message, channelCt);
