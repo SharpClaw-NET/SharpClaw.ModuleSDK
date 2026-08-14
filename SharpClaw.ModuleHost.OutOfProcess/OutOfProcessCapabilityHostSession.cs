@@ -365,7 +365,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 await SendActionFailureAsync(
                     request,
                     responseValidation.Code,
-                    responseValidation.Message,
+                    $"{responseValidation.Message} request={request.Descriptor.Key.Value}:{request.Descriptor.Version}:{request.Descriptor.DescriptorHash}; "
+                    + $"response={response.ResultIdentity?.ActionKey.Value}:{response.ResultIdentity?.ActionVersion}:{response.ResultIdentity?.ResultTypeIdentity}:{response.ResultIdentity?.ContentHash}; "
+                    + $"outcome={response.Outcome.Kind}:{response.Outcome.TerminalCallCount}:{response.Outcome.Receipt?.ReceiptId}",
                     channelCt);
                 return;
             }
