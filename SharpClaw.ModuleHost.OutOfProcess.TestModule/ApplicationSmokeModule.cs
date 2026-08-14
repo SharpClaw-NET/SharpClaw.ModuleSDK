@@ -21,6 +21,11 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         | ActionInterceptionCapabilities.Wrap
         | ActionInterceptionCapabilities.Cancel;
 
+    public const ActionInterceptionCapabilities UnrequestedCapabilities =
+        ActionInterceptionCapabilities.ReplaceResult
+        | ActionInterceptionCapabilities.Defer
+        | ActionInterceptionCapabilities.Repeat;
+
     public static ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> HostAction { get; } =
         new(
             new SharpClawActionKey("host.application.smoke"),
@@ -129,7 +134,15 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     new ApplicationSmokeAction("capability", "action"),
                     static (action, _) => ValueTask.FromResult(
                         new ApplicationSmokeResult($"terminal:{action.Value}")),
-                    new ActionPipelineSnapshot(graph.ContractHash, []),
+                    new ActionPipelineSnapshot(
+                        graph.ContractHash,
+                        [new ActionCapabilityGrant(
+                            HostAction.Key,
+                            HostAction.Version,
+                            HostCapabilities | UnrequestedCapabilities,
+                            SensitiveApproved: false,
+                            AcceptUnknownSchemas: false)],
+                        []),
                     ct);
                 return new ModuleCliResult(
                     true,

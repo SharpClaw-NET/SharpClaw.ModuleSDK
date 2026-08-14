@@ -145,6 +145,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         storage.InvokeCalls.Should().Be(1);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
+        dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
     }
 
     [Test, CancelAfter(30000)]
@@ -648,6 +649,8 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         public int TerminalCalls { get; private set; }
 
+        public ActionInterceptionCapabilities? LastSnapshotCapabilities { get; private set; }
+
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -655,6 +658,14 @@ public sealed class OutOfProcessApplicationProtocolTests
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {
+            var grant = snapshot.ActionGrants.Single(item =>
+                item.ActionKey == descriptor.Key
+                && item.ActionVersion == descriptor.Version);
+            if (grant.Capabilities != ApplicationSmokeModule.HostCapabilities)
+                throw new AssertionException(
+                    $"The dispatcher received unexpected capabilities: {grant.Capabilities}.");
+
+            LastSnapshotCapabilities = grant.Capabilities;
             RunCalls++;
             var result = await terminal(action, ct);
             TerminalCalls++;
