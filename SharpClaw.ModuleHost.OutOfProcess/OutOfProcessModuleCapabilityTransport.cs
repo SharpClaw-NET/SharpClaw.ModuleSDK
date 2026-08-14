@@ -405,27 +405,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 SendGate,
                 ct);
             var response = await completion.Task.WaitAsync(ct);
-        var responseValidation = SidecarCapabilityTransportValidation.ValidateStorageResponse(
-            request,
-            response,
-            Binding);
-        if (!responseValidation.Accepted)
-        {
-            var resultPayload = response.ResultPayload;
-            var canonicalBytes = resultPayload is null
-                ? Array.Empty<byte>()
-                : SidecarCapabilityTransportCodec.Serialize(resultPayload.Value);
-            throw new OutOfProcessCapabilityException(
-                responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                $"{responseValidation.Message} resultHash={response.ResultIdentity?.ContentHash}; "
-                + $"payloadHash={resultPayload?.ContentHash}; computedHash="
-                + $"{SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes)}; "
-                + $"resultLength={resultPayload?.ByteLength}; computedLength={canonicalBytes.Length}; "
-                + $"resultType={resultPayload?.TypeIdentity}; "
-                + $"expectedType={request.ResultPayloadType?.TypeIdentity}; "
-                + $"resultSchema={resultPayload?.SchemaVersion}; "
-                + $"expectedSchema={request.ResultPayloadType?.SchemaVersion}.");
-        }
+            ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
+                request,
+                response,
+                Binding));
             ThrowIfRejected(_session.CompleteCall(request.Call.CallId, 0));
             return response;
         }
@@ -613,15 +596,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request,
             Binding,
             DateTimeOffset.UtcNow);
-        if (!validation.Accepted)
-        {
-            throw new OutOfProcessCapabilityException(
-                validation.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                $"{validation.Message} callModule={request.Call.ModuleId}; "
-                + $"requestModule={request.ModuleId}; callGraph={request.Call.GraphId}; "
-                + $"bindingGraph={Binding.GraphId}; callCapability={request.Call.Capability}; "
-                + $"requestCapability=storage");
-        }
+        ThrowIfRejected(validation);
     }
 
     private void FailPending(Exception error)
@@ -657,13 +632,4 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
     }
 
-}
-
-internal static class SidecarCapabilityTransportResponseExtensions
-{
-    public static int GetPayloadBytes(this SidecarActionCapabilityResponse response) =>
-        response.Outcome?.Result?.ByteLength ?? 0;
-
-    public static int GetPayloadBytes(this SidecarStorageCapabilityResponse response) =>
-        response.ResultPayload?.ByteLength ?? 0;
 }
