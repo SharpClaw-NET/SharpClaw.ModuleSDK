@@ -371,8 +371,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             registration.Identity.Version,
             request.Call.CallId,
             1,
-            actionPayload.ContentHash,
-            $"{_session.Binding.GraphId}:{request.Call.CallId:N}");
+            $"{_session.Binding.GraphId}:{request.Call.CallId:N}",
+            actionPayload.ContentHash);
         var issuedAt = DateTimeOffset.UtcNow;
         var expiresAt = request.Deadline < _session.Binding.ExpiresAt
             ? request.Deadline
@@ -393,16 +393,16 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             actionPayload.SchemaVersion,
             actionPayload.ContentHash,
             actionPayload.ByteLength,
-            receipt.IdempotencyScope,
+            receipt.ReceiptId,
             receipt.ActionKey,
             receipt.ActionVersion,
             receipt.CallId,
             receipt.Attempt,
+            receipt.IdempotencyScope,
             receipt.ContentHash,
-            receipt.ReceiptId,
+            request.Deadline,
             issuedAt,
             expiresAt,
-            request.Deadline,
             "pending");
         authority = authority with
         {
