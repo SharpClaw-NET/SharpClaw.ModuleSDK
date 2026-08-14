@@ -128,19 +128,22 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _capabilitySession, null, null) is not null)
             throw new InvalidOperationException("The sidecar capability channel is already connected.");
         var grant = options.Grant;
-        if (!string.Equals(grant.GraphId, Discovery.ContractHash, StringComparison.Ordinal)
-            || !string.Equals(grant.ModuleId, Discovery.ModuleId, StringComparison.Ordinal)
-            || !grant.Allows(SidecarCapabilityKind.Action)
-            || !grant.Allows(SidecarCapabilityKind.Storage)
-            || !string.Equals(
+        if (!string.Equals(grant.GraphId, Discovery.ContractHash, StringComparison.Ordinal))
+            throw UnauthorizedGrant("The capability grant graph identity does not match discovery.");
+        if (!string.Equals(grant.ModuleId, Discovery.ModuleId, StringComparison.Ordinal))
+            throw UnauthorizedGrant("The capability grant module identity does not match discovery.");
+        if (!grant.Allows(SidecarCapabilityKind.Action) || !grant.Allows(SidecarCapabilityKind.Storage))
+            throw UnauthorizedGrant("The capability grant does not include the required capabilities.");
+        if (!string.Equals(
                 grant.AuthorizationHash,
                 OutOfProcessCapabilitySecurity.ComputeAuthorizationHash(Authorization),
                 StringComparison.Ordinal))
-        {
-            throw new OutOfProcessCapabilityException(
+            throw UnauthorizedGrant("The capability grant authorization identity does not match.");
+
+        static OutOfProcessCapabilityException UnauthorizedGrant(string message) =>
+            new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
-                "The capability grant does not match the authorized module.");
-        }
+                message);
 
         var binding = OutOfProcessCapabilitySecurity.CreateBinding(
             Discovery.ContractHash,
