@@ -30,6 +30,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         public CancellationTokenSource Cancellation { get; } = cancellation;
 
         public int Completed;
+
+        public int CompletionAccepted;
     }
 
     public OutOfProcessCapabilityHostSession(
@@ -289,12 +291,29 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         return active;
     }
 
+    private void AbandonCall(Guid callId, ActiveCall active)
+    {
+        if (_calls.TryRemove(callId, out var removed))
+            removed.Cancellation.Dispose();
+        else
+            active.Cancellation.Dispose();
+    }
+
     private bool CompleteCall(Guid callId, int terminalCallCount)
     {
         if (!_calls.TryGetValue(callId, out var active)
             || Interlocked.Exchange(ref active.Completed, 1) != 0)
-            return false;
-        return CompleteSessionCall(callId, terminalCallCount);
+        {
+            return active is not null
+                && Volatile.Read(ref active.CompletionAccepted) != 0;
+        }
+
+        var accepted = CompleteSessionCall(callId, terminalCallCount);
+        if (!accepted && terminalCallCount != 0)
+            accepted = CompleteSessionCall(callId, 0);
+        if (accepted)
+            Volatile.Write(ref active.CompletionAccepted, 1);
+        return accepted;
     }
 
     private async ValueTask FinishCallAsync(
@@ -304,8 +323,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         if (active is null || !_calls.TryRemove(callId, out var removed))
             return;
-        if (Interlocked.Exchange(ref removed.Completed, 1) == 0)
-            CompleteSessionCall(callId, 0);
+        if (Interlocked.Exchange(ref removed.Completed, 1) == 0
+            || Volatile.Read(ref removed.CompletionAccepted) == 0)
+        {
+            if (CompleteSessionCall(callId, 0))
+                Volatile.Write(ref removed.CompletionAccepted, 1);
+        }
         removed.Cancellation.Dispose();
         await StartRotationIfReadyAsync(channelCt);
     }
@@ -493,7 +516,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 return;
             }
 
-            var begin = _session.BeginCall(
+            active = RegisterCall(request.Call, channelCt);
+            var begin = Session.BeginCall(
                 request.Call,
                 SidecarCapabilityKind.Action,
                 request.Action,
@@ -501,11 +525,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
             if (!begin.Accepted)
             {
+                AbandonCall(request.Call.CallId, active);
+                active = null;
                 await SendActionFailureAsync(request, begin.Code, begin.Message, channelCt);
                 return;
             }
-
-            active = RegisterCall(request.Call, channelCt);
 
             if (!_options.ActionDescriptors.TryGet(request.Descriptor, out var registration))
             {
@@ -565,7 +589,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             && active.Cancellation.IsCancellationRequested
             && !channelCt.IsCancellationRequested)
         {
-            CompleteCall(request.Call.CallId, 0);
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.Cancelled,
@@ -579,7 +604,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (Exception)
         {
-            CompleteCall(request.Call.CallId, 0);
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
@@ -623,7 +649,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
             var requestPayload = request.RequestPayload;
             var requestFramePayload = requestPayload ?? EmptyPayload();
-            var begin = _session.BeginCall(
+            active = RegisterCall(request.Call, channelCt);
+            var begin = Session.BeginCall(
                 request.Call,
                 SidecarCapabilityKind.Storage,
                 requestFramePayload,
@@ -631,11 +658,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
             if (!begin.Accepted)
             {
+                AbandonCall(request.Call.CallId, active);
+                active = null;
                 await SendStorageFailureAsync(request, begin.Code, begin.Message, channelCt);
                 return;
             }
-
-            active = RegisterCall(request.Call, channelCt);
 
             var response = await InvokeStorageAsync(request, active.Cancellation.Token);
             var responseValidation = SidecarCapabilityTransportValidation.ValidateStorageResponse(
@@ -675,7 +702,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             && active.Cancellation.IsCancellationRequested
             && !channelCt.IsCancellationRequested)
         {
-            CompleteCall(request.Call.CallId, 0);
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
             await SendStorageFailureAsync(
                 request,
                 SidecarCapabilityErrors.Cancelled,
@@ -689,7 +717,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (ModuleStorageContractException ex)
         {
-            CompleteCall(request.Call.CallId, 0);
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
             await SendStorageFailureAsync(
                 request,
                 ex.Failure.Code,
@@ -699,7 +728,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (Exception)
         {
-            CompleteCall(request.Call.CallId, 0);
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
             await SendStorageFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
