@@ -105,7 +105,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         result.ModuleId.Should().Be(client.Discovery.ModuleId);
         result.ContractHash.Should().Be(client.Discovery.ContractHash);
         result.Result.Succeeded.Should().BeTrue(
-            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
         result.Result.Output.Single().Text.Should().Be(
             $"{ApplicationSmokeModule.Id}|{ApplicationSmokeModule.Id}|{client.Discovery.ContractHash}|{ApplicationSmokeModule.CliName}");
     }
@@ -131,7 +132,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             new RequestPrincipal("capability-test"));
 
         result.Result.Succeeded.Should().BeTrue(
-            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
         result.Result.Output.Single().Text.Should().Contain("contracts:1");
         result.Result.Output.Single().Text.Should().Contain("storage:{\"value\":\"storage\"}");
         result.Result.Output.Single().Text.Should().Contain("action:terminal:action");

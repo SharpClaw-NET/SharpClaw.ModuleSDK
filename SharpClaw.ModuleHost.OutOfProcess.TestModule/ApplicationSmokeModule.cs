@@ -115,27 +115,37 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ModuleCliInvocation invocation,
             CancellationToken ct)
         {
-            var contracts = storage.ListContracts();
-            var storageResult = await storage.InvokeAsync(
-                module.Identity.Id,
-                "application-store",
-                "echo",
-                JsonSerializer.SerializeToElement(new { value = "storage" }),
-                ct);
-            var actionResult = await dispatcher.RunRequiredAsync(
-                HostAction,
-                new ApplicationSmokeAction("capability", "action"),
-                static (action, _) => ValueTask.FromResult(
-                    new ApplicationSmokeResult($"terminal:{action.Value}")),
-                new ActionPipelineSnapshot(graph.ContractHash, []),
-                ct);
-            return new ModuleCliResult(
-                true,
-                [new ModuleCliOutput(
-                    "stdout",
-                    $"{module.Identity.Id}|{graph.Identity.Id}|{graph.ContractHash}|"
-                    + $"contracts:{contracts.Count}|storage:{storageResult.GetRawText()}|"
-                    + $"action:{actionResult.Value}")]);
+            try
+            {
+                var contracts = storage.ListContracts();
+                var storageResult = await storage.InvokeAsync(
+                    module.Identity.Id,
+                    "application-store",
+                    "echo",
+                    JsonSerializer.SerializeToElement(new { value = "storage" }),
+                    ct);
+                var actionResult = await dispatcher.RunRequiredAsync(
+                    HostAction,
+                    new ApplicationSmokeAction("capability", "action"),
+                    static (action, _) => ValueTask.FromResult(
+                        new ApplicationSmokeResult($"terminal:{action.Value}")),
+                    new ActionPipelineSnapshot(graph.ContractHash, []),
+                    ct);
+                return new ModuleCliResult(
+                    true,
+                    [new ModuleCliOutput(
+                        "stdout",
+                        $"{module.Identity.Id}|{graph.Identity.Id}|{graph.ContractHash}|"
+                        + $"contracts:{contracts.Count}|storage:{storageResult.GetRawText()}|"
+                        + $"action:{actionResult.Value}")]);
+            }
+            catch (Exception ex)
+            {
+                return new ModuleCliResult(
+                    false,
+                    [new ModuleCliOutput("stderr", $"{ex.GetType().FullName}: {ex.Message}")],
+                    new ExecutionError("capability_smoke_failed", ex.Message));
+            }
         }
     }
 }
