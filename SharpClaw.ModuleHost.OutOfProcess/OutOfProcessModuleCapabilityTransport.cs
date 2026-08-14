@@ -586,10 +586,19 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private void ValidateStorageRequest(SidecarStorageCapabilityRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageRequest(
+        var validation = SidecarCapabilityTransportValidation.ValidateStorageRequest(
             request,
             Binding,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow);
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                $"{validation.Message} callModule={request.Call.ModuleId}; "
+                + $"requestModule={request.ModuleId}; callGraph={request.Call.GraphId}; "
+                + $"bindingGraph={Binding.GraphId}; callCapability={request.Call.Capability}; "
+                + $"requestCapability=storage");
+        }
     }
 
     private void FailPending(Exception error)
