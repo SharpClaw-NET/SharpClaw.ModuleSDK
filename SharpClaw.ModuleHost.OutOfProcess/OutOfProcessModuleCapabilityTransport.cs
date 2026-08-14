@@ -438,6 +438,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     public async Task RunAsync(CancellationToken ct)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _disconnect.Token);
+        Exception? failure = null;
         try
         {
             while (true)
@@ -474,10 +475,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
         }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
         finally
         {
             _session.Disconnect();
-            FailPending(new OutOfProcessCapabilityException(
+            FailPending(failure ?? new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Disconnected,
                 "The sidecar capability channel disconnected."));
         }
