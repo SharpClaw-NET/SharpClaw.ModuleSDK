@@ -189,20 +189,6 @@ public sealed class OutOfProcessCapabilityHostOptions
     /// <summary>Gets the host-owned action pipeline snapshot used for every dispatch.</summary>
     public ActionPipelineSnapshot ActionSnapshot { get; }
 
-    internal string ActionSnapshotHash =>
-        OutOfProcessCapabilitySnapshot.ComputeHash(ActionSnapshot);
-}
-
-internal static class OutOfProcessCapabilitySnapshot
-{
-    public static string ComputeHash(ActionPipelineSnapshot snapshot)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        var bytes = SidecarCapabilityTransportCodec.Serialize(snapshot);
-        using var document = System.Text.Json.JsonDocument.Parse(bytes);
-        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
-        return SidecarCapabilityTransportCodec.ComputeSha256(canonical);
-    }
 }
 
 /// <summary>Creates the capability grant shared by one authorized host and sidecar.</summary>

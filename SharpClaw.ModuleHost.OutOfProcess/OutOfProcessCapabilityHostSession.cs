@@ -267,8 +267,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
         if (!string.Equals(
-                OutOfProcessCapabilitySnapshot.ComputeHash(request.Snapshot),
-                _options.ActionSnapshotHash,
+                request.Snapshot.ContractHash,
+                _options.ActionSnapshot.ContractHash,
                 StringComparison.Ordinal))
             return false;
 
