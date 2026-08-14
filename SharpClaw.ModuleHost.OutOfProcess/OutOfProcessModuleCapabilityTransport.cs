@@ -418,7 +418,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 $"{responseValidation.Message} resultHash={response.ResultIdentity?.ContentHash}; "
                 + $"payloadHash={resultPayload?.ContentHash}; computedHash="
                 + $"{SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes)}; "
-                + $"resultLength={resultPayload?.ByteLength}; computedLength={canonicalBytes.Length}.");
+                + $"resultLength={resultPayload?.ByteLength}; computedLength={canonicalBytes.Length}; "
+                + $"resultType={resultPayload?.TypeIdentity}; "
+                + $"expectedType={request.ResultPayloadType?.TypeIdentity}; "
+                + $"resultSchema={resultPayload?.SchemaVersion}; "
+                + $"expectedSchema={request.ResultPayloadType?.SchemaVersion}.");
         }
             ThrowIfRejected(_session.CompleteCall(request.Call.CallId, response.GetPayloadBytes()));
             return response;
