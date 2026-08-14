@@ -9,6 +9,7 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
 {
     private readonly ModuleLoadContext _loadContext;
+    private readonly OutOfProcessModuleCapabilityTransport _capabilityTransport;
     private ServiceProvider? _services;
     private ISharpClawModule? _module;
     private ModuleContributionGraph? _graph;
@@ -18,6 +19,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     private OutOfProcessModuleRuntime(
         string moduleDirectory,
         ModuleLoadContext loadContext,
+        OutOfProcessModuleCapabilityTransport capabilityTransport,
         ServiceProvider services,
         ISharpClawModule module,
         ModuleManifest manifest,
@@ -25,6 +27,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     {
         ModuleDirectory = moduleDirectory;
         _loadContext = loadContext;
+        _capabilityTransport = capabilityTransport;
         _services = services;
         _module = module;
         Manifest = manifest;
@@ -44,11 +47,21 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     public IServiceProvider Services => _services
         ?? throw new ObjectDisposedException(nameof(OutOfProcessModuleRuntime));
 
-    public static async Task<OutOfProcessModuleRuntime> LoadAsync(
+    public static Task<OutOfProcessModuleRuntime> LoadAsync(
         string moduleDirectory,
+        CancellationToken ct = default) =>
+        LoadAsync(
+            moduleDirectory,
+            new OutOfProcessModuleCapabilityTransport(),
+            ct);
+
+    internal static async Task<OutOfProcessModuleRuntime> LoadAsync(
+        string moduleDirectory,
+        OutOfProcessModuleCapabilityTransport capabilityTransport,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
+        ArgumentNullException.ThrowIfNull(capabilityTransport);
         var root = Path.GetFullPath(moduleDirectory);
         var manifestPath = OutOfProcessPathGuard.EnsureContainedIn(
             Path.Combine(root, "module.json"),
@@ -94,9 +107,30 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
                 {
                     HostingMode = ModuleHostingMode.OutOfProcess,
                 });
+            capabilityTransport.Initialize(
+                graph.Identity.Id,
+                graph.ContractHash,
+                graph.PayloadLimits);
             IServiceCollection services = new ServiceCollection();
             foreach (var descriptor in graph.Services)
+            {
+                if (descriptor.ServiceType == typeof(IModuleStorageGateway)
+                    || descriptor.ServiceType == typeof(IActionDispatcher)
+                    || descriptor.ServiceType == typeof(ISidecarCapabilityTransport))
+                {
+                    throw new InvalidOperationException(
+                        $"The module cannot register host-owned service '{descriptor.ServiceType.FullName}'.");
+                }
                 services.Add(descriptor);
+            }
+            services.AddSingleton<ISidecarCapabilityTransport>(capabilityTransport);
+            services.AddSingleton<IModuleStorageGateway>(
+                new OutOfProcessModuleStorageGateway(
+                    capabilityTransport,
+                    graph.Identity.Id,
+                    graph.Storage.Select(value => value.StorageName)));
+            services.AddSingleton<IActionDispatcher>(
+                new OutOfProcessActionDispatcher(capabilityTransport));
             services.AddSingleton(module);
             services.AddSingleton(graph);
             var provider = services.BuildServiceProvider(new ServiceProviderOptions
@@ -107,6 +141,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
             return new OutOfProcessModuleRuntime(
                 root,
                 loadContext,
+                capabilityTransport,
                 provider,
                 module,
                 manifest,
@@ -114,6 +149,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
         }
         catch
         {
+            await capabilityTransport.DisposeAsync();
             loadContext.Unload();
             throw;
         }
@@ -155,6 +191,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
             _services = null;
             _module = null;
             _graph = null;
+            await _capabilityTransport.DisposeAsync();
             _loadContext.Unload();
         }
     }

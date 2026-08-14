@@ -27,6 +27,9 @@ public static class OutOfProcessModuleHostProtocol
     /// <summary>Gets the duplex exchange route.</summary>
     public const string ExchangePath = "/.sharpclaw/module/v1/exchange";
 
+    /// <summary>Gets the authenticated host-capability route.</summary>
+    public const string CapabilityPath = "/.sharpclaw/module/v1/capabilities";
+
     /// <summary>Gets the bounded readiness route.</summary>
     public const string ReadinessPath = "/.sharpclaw/module/v1/readiness";
 

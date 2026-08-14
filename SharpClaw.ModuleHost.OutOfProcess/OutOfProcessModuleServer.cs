@@ -14,6 +14,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 {
     private readonly WebApplication _app;
     private readonly OutOfProcessModuleRuntime _runtime;
+    private readonly OutOfProcessModuleCapabilityTransport _capabilityTransport;
     private readonly BoundedExecutionQueue _actionQueue;
     private readonly BoundedExecutionQueue _eventQueue;
     private readonly BoundedExecutionQueue _toolQueue;
@@ -25,6 +26,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
     private OutOfProcessModuleServer(
         WebApplication app,
         OutOfProcessModuleRuntime runtime,
+        OutOfProcessModuleCapabilityTransport capabilityTransport,
         BoundedExecutionQueue actionQueue,
         BoundedExecutionQueue eventQueue,
         BoundedExecutionQueue toolQueue,
@@ -33,6 +35,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
     {
         _app = app;
         _runtime = runtime;
+        _capabilityTransport = capabilityTransport;
         _actionQueue = actionQueue;
         _eventQueue = eventQueue;
         _toolQueue = toolQueue;
@@ -66,9 +69,14 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
         ArgumentNullException.ThrowIfNull(controlAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
-        var runtime = await OutOfProcessModuleRuntime.LoadAsync(moduleDirectory, ct);
+        var capabilityTransport = new OutOfProcessModuleCapabilityTransport();
+        OutOfProcessModuleRuntime? runtime = null;
         try
         {
+            runtime = await OutOfProcessModuleRuntime.LoadAsync(
+                moduleDirectory,
+                capabilityTransport,
+                ct);
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions
             {
                 Args = args ?? [],
@@ -92,6 +100,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             return new OutOfProcessModuleServer(
                 app,
                 runtime,
+                capabilityTransport,
                 actionQueue,
                 eventQueue,
                 toolQueue,
@@ -100,7 +109,9 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         }
         catch
         {
-            await runtime.DisposeAsync();
+            await capabilityTransport.DisposeAsync();
+            if (runtime is not null)
+                await runtime.DisposeAsync();
             throw;
         }
     }
@@ -125,6 +136,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         await _toolQueue.DisposeAsync();
         await _lifecycleQueue.DisposeAsync();
         await _app.DisposeAsync();
+        await _capabilityTransport.DisposeAsync();
         await _runtime.DisposeAsync();
     }
 
@@ -167,6 +179,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             OutOfProcessModuleHostProtocol.ApplicationCliPath,
             ExecuteCliAsync);
         _app.MapPost(OutOfProcessModuleHostProtocol.AuthorizationPath, AuthorizeAsync);
+        _app.MapGet(OutOfProcessModuleHostProtocol.CapabilityPath, HandleCapabilitiesAsync);
         _app.MapGet(OutOfProcessModuleHostProtocol.ExchangePath, HandleExchangeAsync);
     }
 
@@ -220,7 +233,45 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         }
 
         Volatile.Write(ref _authorization, decision.Authorization);
+        _capabilityTransport.SetAuthorization(decision.Authorization);
         return Results.NoContent();
+    }
+
+    private async Task HandleCapabilitiesAsync(HttpContext context)
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (Volatile.Read(ref _authorization) is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            return;
+        }
+
+        using var socket = await context.WebSockets.AcceptWebSocketAsync();
+        try
+        {
+            await _capabilityTransport.AcceptAsync(
+                socket,
+                _controlToken,
+                context.RequestAborted);
+        }
+        catch (OutOfProcessCapabilityException ex)
+        {
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await socket.CloseAsync(
+                    WebSocketCloseStatus.PolicyViolation,
+                    ex.Code,
+                    CancellationToken.None);
+            }
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+        }
     }
 
     private async Task<IResult> ExecuteCliAsync(

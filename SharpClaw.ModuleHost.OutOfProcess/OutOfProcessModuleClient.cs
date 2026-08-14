@@ -17,6 +17,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     private readonly Uri _controlAddress;
     private readonly string _controlToken;
     private readonly HttpClient _httpClient;
+    private OutOfProcessCapabilityHostSession? _capabilitySession;
+    private Task? _capabilityRun;
 
     private OutOfProcessModuleClient(
         Uri controlAddress,
@@ -47,6 +49,14 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
 
     /// <summary>Gets the host payload limits.</summary>
     public SidecarPayloadLimits HostLimits { get; }
+
+    /// <summary>Creates a capability grant for this authorized module.</summary>
+    public SidecarCapabilityGrant CreateCapabilityGrant(
+        DateTimeOffset? expiresAt = null) =>
+        OutOfProcessCapabilityGrantFactory.Create(
+            Discovery,
+            Authorization,
+            expiresAt);
 
     /// <summary>Discovers and authorizes one sidecar against immutable host descriptors.</summary>
     public static async Task<OutOfProcessModuleClient> CreateAuthorizedAsync(
@@ -105,6 +115,98 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         catch
         {
             http.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Connects one host-owned dispatcher and storage gateway to the sidecar.</summary>
+    public async Task ConnectCapabilitiesAsync(
+        OutOfProcessCapabilityHostOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (Interlocked.CompareExchange(ref _capabilitySession, null, null) is not null)
+            throw new InvalidOperationException("The sidecar capability channel is already connected.");
+        var grant = options.Grant;
+        if (!string.Equals(grant.GraphId, Discovery.ContractHash, StringComparison.Ordinal)
+            || !string.Equals(grant.ModuleId, Discovery.ModuleId, StringComparison.Ordinal)
+            || !grant.Allows(SidecarCapabilityKind.Action)
+            || !grant.Allows(SidecarCapabilityKind.Storage)
+            || !string.Equals(
+                grant.AuthorizationHash,
+                OutOfProcessCapabilitySecurity.ComputeAuthorizationHash(Authorization),
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The capability grant does not match the authorized module.");
+        }
+
+        var binding = OutOfProcessCapabilitySecurity.CreateBinding(
+            Discovery.ContractHash,
+            Discovery.ModuleId,
+            OutOfProcessModuleHostProtocol.Version,
+            grant,
+            HostLimits,
+            _controlToken);
+        var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader(
+            OutOfProcessModuleHostProtocol.TokenHeaderName,
+            _controlToken);
+        try
+        {
+            await socket.ConnectAsync(CapabilitiesUri(), ct);
+            var sendGate = new SemaphoreSlim(1, 1);
+            try
+            {
+                await OutOfProcessCapabilityWire.SendAsync(
+                    socket,
+                    OutOfProcessCapabilityFrameKind.Bind,
+                    binding,
+                    HostLimits.ProtocolMessageBytes,
+                    sendGate,
+                    ct);
+                var frame = await OutOfProcessCapabilityWire.ReceiveAsync(
+                    socket,
+                    HostLimits.ProtocolMessageBytes,
+                    ct);
+                if (!string.Equals(
+                        frame.Kind,
+                        OutOfProcessCapabilityFrameKind.BindAccepted,
+                        StringComparison.Ordinal))
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Unauthorized,
+                        "The sidecar did not accept the capability binding.");
+                }
+
+                var accepted = OutOfProcessCapabilityWire.Deserialize<SidecarCapabilityValidationResult>(
+                    frame.Payload);
+                if (!accepted.Accepted)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        accepted.Code ?? SidecarCapabilityErrors.Unauthorized,
+                        accepted.Message ?? "The sidecar rejected the capability binding.");
+                }
+            }
+            finally
+            {
+                sendGate.Dispose();
+            }
+
+            var session = new OutOfProcessCapabilityHostSession(
+                socket,
+                binding,
+                _controlToken,
+                HostLimits,
+                options,
+                Authorization);
+            _capabilitySession = session;
+            _capabilityRun = session.RunAsync(CancellationToken.None);
+        }
+        catch
+        {
+            socket.Dispose();
             throw;
         }
     }
@@ -449,10 +551,36 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        if (_capabilitySession is not null)
+        {
+            var session = _capabilitySession;
+            _capabilitySession = null;
+            await DisposeCapabilityAsync(session, _capabilityRun);
+            _capabilityRun = null;
+        }
         _httpClient.Dispose();
-        return ValueTask.CompletedTask;
+    }
+
+    private static async Task DisposeCapabilityAsync(
+        OutOfProcessCapabilityHostSession session,
+        Task? run)
+    {
+        await session.DisposeAsync();
+        if (run is not null)
+        {
+            try
+            {
+                await run;
+            }
+            catch (OutOfProcessCapabilityException)
+            {
+            }
+            catch (WebSocketException)
+            {
+            }
+        }
     }
 
     private static OutOfProcessActionResult CreateCompleted(
@@ -599,6 +727,19 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         var builder = new UriBuilder(new Uri(
             _controlAddress,
             OutOfProcessModuleHostProtocol.ExchangePath))
+        {
+            Scheme = string.Equals(_controlAddress.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
+                ? "wss"
+                : "ws",
+        };
+        return builder.Uri;
+    }
+
+    private Uri CapabilitiesUri()
+    {
+        var builder = new UriBuilder(new Uri(
+            _controlAddress,
+            OutOfProcessModuleHostProtocol.CapabilityPath))
         {
             Scheme = string.Equals(_controlAddress.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
                 ? "wss"
