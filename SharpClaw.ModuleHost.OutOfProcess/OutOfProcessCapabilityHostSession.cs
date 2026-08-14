@@ -553,7 +553,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var outcome = await _options.ActionDispatcher.RunAsync(
             descriptor,
             action,
-            (value, terminalCancellation) => InvokeTerminalAsync(
+            (value, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
                 request,
                 identity,
                 value,
