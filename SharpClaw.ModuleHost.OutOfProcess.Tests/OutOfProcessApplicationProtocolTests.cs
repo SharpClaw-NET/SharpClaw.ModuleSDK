@@ -111,6 +111,37 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(15000)]
+    public async Task CapabilityChannelDelegatesToTheExactHostSingletons()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors));
+
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            [],
+            new RequestPrincipal("capability-test"));
+
+        result.Result.Succeeded.Should().BeTrue(
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
+        result.Result.Output.Single().Text.Should().Contain("contracts:1");
+        result.Result.Output.Single().Text.Should().Contain("storage:{\"value\":\"storage\"}");
+        result.Result.Output.Single().Text.Should().Contain("action:terminal:action");
+        storage.ListContractsCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(1);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(15000)]
     public async Task AuthorizationHookAllowsOneTerminalCallAndDeniesBeforeTheTerminalCall()
     {
         await using var client = await CreateClientAsync();
@@ -436,6 +467,111 @@ public sealed class OutOfProcessApplicationProtocolTests
             listener.Stop();
             await Task.CompletedTask;
         }
+    }
+
+    private sealed class CountingStorageGateway : IModuleStorageGateway
+    {
+        public int ListContractsCalls { get; private set; }
+
+        public int InvokeCalls { get; private set; }
+
+        public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts()
+        {
+            ListContractsCalls++;
+            return
+            [
+                new ModuleStorageContractDescriptor(
+                    ApplicationSmokeModule.Id,
+                    "application-store",
+                    [new ModuleStorageOperationDescriptor("echo")]),
+            ];
+        }
+
+        public Task<JsonElement> InvokeAsync(
+            string moduleId,
+            string storageName,
+            string operation,
+            JsonElement parameters,
+            CancellationToken ct)
+        {
+            InvokeCalls++;
+            moduleId.Should().Be(ApplicationSmokeModule.Id);
+            storageName.Should().Be("application-store");
+            operation.Should().Be("echo");
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { value = "storage" }));
+        }
+
+        public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageMutationAndOutboxRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRenewalRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRecoveryRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class CountingActionDispatcher : IActionDispatcher
+    {
+        public int RunCalls { get; private set; }
+
+        public int TerminalCalls { get; private set; }
+
+        public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct)
+        {
+            RunCalls++;
+            var result = await terminal(action, ct);
+            TerminalCalls++;
+            return new CountingActionOutcome<TResult>(result);
+        }
+
+        public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct)
+        {
+            var outcome = await RunAsync(descriptor, action, terminal, snapshot, ct);
+            return outcome.Result;
+        }
+    }
+
+    private sealed class CountingActionOutcome<TResult>(TResult result) : IActionOutcome<TResult>
+    {
+        public ActionOutcomeKind Kind => ActionOutcomeKind.Completed;
+
+        public TResult Result => result;
+
+        public ContinuationToken? Continuation => null;
+
+        public ExecutionError? Error => null;
+
+        public ActionUncertainty? Uncertainty => null;
     }
 
 }

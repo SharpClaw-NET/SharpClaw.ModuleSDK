@@ -14,6 +14,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string HostActionHookId = "application.host.authorization";
     public const string OwnedActionHookId = "application.owned.authorization";
     public const string CliName = "application.inspect";
+    public const string CapabilityCliName = "application.capabilities";
 
     public const ActionInterceptionCapabilities HostCapabilities =
         ActionInterceptionCapabilities.Inspect
@@ -47,6 +48,11 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Actions.Add(OwnedAction);
+        module.Storage.Add(new ModuleStorageContractDescriptor(
+            Id,
+            "application-store",
+            [new ModuleStorageOperationDescriptor("echo")],
+            "Application capability smoke storage."));
         module.Hooks.For(HostAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(HostActionHookId));
@@ -64,6 +70,12 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             "Returns the module and graph identity.",
             new JsonSchemaReference("application.inspect.input", 1, "application-input"),
             new JsonSchemaReference("application.inspect.result", 1, "application-result")));
+        application.Cli.Add<CapabilityCliHandler>(new ModuleCliCommandDescriptor(
+            CapabilityCliName,
+            ["app-capabilities"],
+            "Exercises host-owned action and storage capabilities.",
+            new JsonSchemaReference("application.capabilities.input", 1, "application-input"),
+            new JsonSchemaReference("application.capabilities.result", 1, "application-result")));
     }
 
     public sealed class AuthorizationHook : IActionInterceptor<ApplicationSmokeAction, ApplicationSmokeResult>
@@ -92,4 +104,38 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     }
 
     public sealed class ApplicationEndpoint;
+
+    public sealed class CapabilityCliHandler(
+        ISharpClawModule module,
+        ModuleContributionGraph graph,
+        IModuleStorageGateway storage,
+        IActionDispatcher dispatcher) : IModuleCliHandler
+    {
+        public async ValueTask<ModuleCliResult> ExecuteAsync(
+            ModuleCliInvocation invocation,
+            CancellationToken ct)
+        {
+            var contracts = storage.ListContracts();
+            var storageResult = await storage.InvokeAsync(
+                module.Identity.Id,
+                "application-store",
+                "echo",
+                JsonSerializer.SerializeToElement(new { value = "storage" }),
+                ct);
+            var actionResult = await dispatcher.RunRequiredAsync(
+                HostAction,
+                new ApplicationSmokeAction("capability", "action"),
+                static (action, _) => ValueTask.FromResult(
+                    new ApplicationSmokeResult($"terminal:{action.Value}")),
+                new ActionPipelineSnapshot(graph.ContractHash, []),
+                ct);
+            return new ModuleCliResult(
+                true,
+                [new ModuleCliOutput(
+                    "stdout",
+                    $"{module.Identity.Id}|{graph.Identity.Id}|{graph.ContractHash}|"
+                    + $"contracts:{contracts.Count}|storage:{storageResult.GetRawText()}|"
+                    + $"action:{actionResult.Value}")]);
+        }
+    }
 }
