@@ -128,7 +128,7 @@ internal static class OutOfProcessCapabilityWire
                     "The capability frame is empty.");
             }
 
-            var payloadBytes = Encoding.UTF8.GetBytes(frame.Payload.GetRawText());
+            var payloadBytes = SidecarCapabilityTransportCodec.Serialize(frame.Payload);
             var identityValidation = SidecarCapabilityTransportValidation.ValidateFrame(
                 payloadBytes,
                 frame.PayloadIdentity,
