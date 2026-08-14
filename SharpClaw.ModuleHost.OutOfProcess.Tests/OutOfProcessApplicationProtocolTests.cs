@@ -184,6 +184,51 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(3);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task CapabilityCancellationStopsHostOperationAndKeepsSessionUsable()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway { BlockInvoke = true };
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants)));
+
+        using var cancellation = new CancellationTokenSource();
+        var pending = client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            [],
+            new RequestPrincipal("capability-cancellation"),
+            ct: cancellation.Token).AsTask();
+        await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+        await storage.InvocationCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        storage.BlockInvoke = false;
+        var followUp = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            [],
+            new RequestPrincipal("capability-after-cancellation"));
+
+        followUp.Result.Succeeded.Should().BeTrue(
+            $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}; "
+            + string.Join(" | ", followUp.Result.Output.Select(item => item.Text)));
+        storage.InvokeCalls.Should().Be(2);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+    }
+
     [Test, CancelAfter(15000)]
     public async Task AuthorizationHookAllowsOneTerminalCallAndDeniesBeforeTheTerminalCall()
     {
@@ -518,6 +563,14 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         public int InvokeCalls { get; private set; }
 
+        public bool BlockInvoke { get; set; }
+
+        public TaskCompletionSource InvocationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource InvocationCancelled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts()
         {
             ListContractsCalls++;
@@ -530,7 +583,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             ];
         }
 
-        public Task<JsonElement> InvokeAsync(
+        public async Task<JsonElement> InvokeAsync(
             string moduleId,
             string storageName,
             string operation,
@@ -541,7 +594,21 @@ public sealed class OutOfProcessApplicationProtocolTests
             moduleId.Should().Be(ApplicationSmokeModule.Id);
             storageName.Should().Be("application-store");
             operation.Should().Be("echo");
-            return Task.FromResult(JsonSerializer.SerializeToElement(new { value = "storage" }));
+            if (BlockInvoke)
+            {
+                InvocationStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    InvocationCancelled.TrySetResult();
+                    throw;
+                }
+            }
+
+            return JsonSerializer.SerializeToElement(new { value = "storage" });
         }
 
         public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
