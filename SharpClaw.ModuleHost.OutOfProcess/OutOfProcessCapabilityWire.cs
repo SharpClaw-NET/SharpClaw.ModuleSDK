@@ -244,8 +244,8 @@ internal static class OutOfProcessCapabilitySecurity
             issuedAt,
             expiresAt);
         var binding = new SidecarCapabilitySessionBinding(
-            graphId,
             moduleId,
+            graphId,
             protocolVersion,
             grant,
             Guid.NewGuid(),
