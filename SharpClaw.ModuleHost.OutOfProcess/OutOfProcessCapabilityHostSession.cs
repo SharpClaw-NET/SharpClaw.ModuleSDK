@@ -636,7 +636,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     null,
                     null),
                 _session.Binding.SafeFailure,
-                Completed: true),
+                Completed: false),
             ct);
     }
 
