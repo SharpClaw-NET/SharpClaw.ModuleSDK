@@ -251,11 +251,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             }
 
             var requestPayload = request.RequestPayload;
+            var requestFramePayload = requestPayload ?? EmptyPayload();
             var begin = _session.BeginCall(
                 request.Call,
                 SidecarCapabilityKind.Storage,
-                requestPayload ?? EmptyPayload(),
-                requestPayload?.ByteLength ?? 0,
+                requestFramePayload,
+                requestFramePayload.ByteLength,
                 DateTimeOffset.UtcNow);
             if (!begin.Accepted)
             {
