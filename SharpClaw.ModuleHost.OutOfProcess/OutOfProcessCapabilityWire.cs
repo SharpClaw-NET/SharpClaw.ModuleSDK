@@ -50,11 +50,19 @@ internal static class OutOfProcessCapabilityWire
         }
 
         using var document = JsonDocument.Parse(payloadBytes);
+        var canonicalPayloadBytes = SidecarCapabilityTransportCodec.Serialize(
+            document.RootElement);
+        if (canonicalPayloadBytes.Length > maximumBytes)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.PayloadTooLarge,
+                "The canonical capability payload exceeds its configured byte limit.");
+        }
         var frame = new OutOfProcessCapabilityFrame(
             kind,
             new SidecarTransportFrameIdentity(
-                SidecarCapabilityTransportCodec.ComputeSha256(payloadBytes),
-                payloadBytes.Length),
+                SidecarCapabilityTransportCodec.ComputeSha256(canonicalPayloadBytes),
+                canonicalPayloadBytes.Length),
             document.RootElement.Clone());
         var frameBytes = SidecarCapabilityTransportCodec.Serialize(frame);
         if (frameBytes.Length > checked(maximumBytes + FrameOverheadBytes))
