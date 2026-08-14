@@ -160,7 +160,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             socket,
             session,
             controlToken,
-            limits);
+            limits,
+            authorization,
+            RegisterAuthenticationNonce);
         lock (_sync)
         {
             if (_connection is not null)
@@ -256,9 +258,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         TaskCompletionSource<SidecarActionCapabilityResponse> Completion);
 
     private readonly WebSocket _socket;
-    private readonly SidecarCapabilitySession _session;
+    private SidecarCapabilitySession _session;
     private readonly string _controlToken;
     private readonly SidecarPayloadLimits _limits;
+    private readonly SidecarHostAuthorization _authorization;
+    private readonly Func<string, bool> _registerAuthenticationNonce;
     private readonly ConcurrentDictionary<Guid, PendingAction> _actions = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarStorageCapabilityResponse>> _storage = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
@@ -271,18 +275,24 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         WebSocket socket,
         SidecarCapabilitySession session,
         string controlToken,
-        SidecarPayloadLimits limits)
+        SidecarPayloadLimits limits,
+        SidecarHostAuthorization authorization,
+        Func<string, bool> registerAuthenticationNonce)
     {
         _socket = socket;
         _session = session;
         _controlToken = controlToken;
         _limits = limits;
+        _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
+        _registerAuthenticationNonce = registerAuthenticationNonce
+            ?? throw new ArgumentNullException(nameof(registerAuthenticationNonce));
         SendGate = new SemaphoreSlim(1, 1);
     }
 
     public SemaphoreSlim SendGate { get; }
 
-    public SidecarCapabilitySessionBinding Binding => _session.Binding;
+    public SidecarCapabilitySessionBinding Binding =>
+        Volatile.Read(ref _session).Binding;
 
     public SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
@@ -490,6 +500,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
                         CompleteTerminal(OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
                         break;
+                    case OutOfProcessCapabilityFrameKind.CapabilityRebind:
+                        await HandleRebindAsync(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarCapabilitySessionBinding>(frame.Payload),
+                            linked.Token);
+                        break;
                     case OutOfProcessCapabilityFrameKind.Error:
                         throw ReadError(frame.Payload);
                     default:
@@ -574,6 +589,68 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             _limits.ProtocolMessageBytes,
             SendGate,
             ct);
+    }
+
+    private async Task HandleRebindAsync(
+        SidecarCapabilitySessionBinding binding,
+        CancellationToken ct)
+    {
+        while (!_actions.IsEmpty || !_storage.IsEmpty || !_terminals.IsEmpty)
+            await Task.Delay(TimeSpan.FromMilliseconds(5), ct);
+
+        SidecarCapabilityValidationResult validation;
+        if (!string.Equals(binding.ModuleId, _authorization.ModuleId, StringComparison.Ordinal)
+            || binding.ProtocolVersion != OutOfProcessModuleHostProtocol.Version)
+        {
+            validation = SidecarCapabilityValidationResult.Reject(
+                SidecarCapabilityErrors.Unauthorized,
+                "The capability binding rotation identifies a different module or protocol.");
+        }
+        else
+        {
+            var authenticate = new Func<SidecarCapabilityAuthenticationAuthority, bool>(
+                authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken));
+            validation = SidecarCapabilitySessionValidator.Validate(
+                binding,
+                authenticate,
+                _registerAuthenticationNonce,
+                DateTimeOffset.UtcNow,
+                RegisterAuthenticationNonce: true);
+            if (validation.Accepted
+                && !OutOfProcessCapabilitySecurity.ValidateGrant(
+                    binding.Grant,
+                    _authorization,
+                    binding.GraphId,
+                    binding.ModuleId,
+                    DateTimeOffset.UtcNow))
+            {
+                validation = SidecarCapabilityValidationResult.Reject(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The rotated capability grant is not authorized for this module graph.");
+            }
+        }
+
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.CapabilityRebindAccepted,
+            validation,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
+        if (!validation.Accepted)
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                validation.Message ?? "The rotated capability binding was rejected.");
+
+        var authenticateSession = new Func<SidecarCapabilityAuthenticationAuthority, bool>(
+            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken));
+        Volatile.Write(
+            ref _session,
+            new SidecarCapabilitySession(
+                binding,
+                authenticateSession,
+                _registerAuthenticationNonce,
+                DateTimeOffset.UtcNow));
     }
 
     private async Task SendCancellationAsync(

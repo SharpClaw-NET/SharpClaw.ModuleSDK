@@ -19,6 +19,8 @@ internal static class OutOfProcessCapabilityFrameKind
     public const string StorageRequest = "storage_request";
     public const string StorageResponse = "storage_response";
     public const string CapabilityCancellation = "capability_cancellation";
+    public const string CapabilityRebind = "capability_rebind";
+    public const string CapabilityRebindAccepted = "capability_rebind_accepted";
     public const string Error = "error";
 }
 

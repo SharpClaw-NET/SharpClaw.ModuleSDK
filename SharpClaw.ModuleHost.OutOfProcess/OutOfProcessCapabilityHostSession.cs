@@ -8,7 +8,7 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 {
     private readonly WebSocket _socket;
-    private readonly SidecarCapabilitySession _session;
+    private SidecarCapabilitySession _session;
     private readonly string _controlToken;
     private readonly SidecarPayloadLimits _limits;
     private readonly OutOfProcessCapabilityHostOptions _options;
@@ -17,6 +17,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _capabilityQueue;
+    private readonly object _rotationSync = new();
+    private TaskCompletionSource? _rotationReady;
+    private TaskCompletionSource<SidecarCapabilityValidationResult>? _rotationAcknowledgement;
+    private Task? _rotationTask;
+    private int _completedCallsForBinding;
+    private readonly SemaphoreSlim _rotationGate = new(1, 1);
     private int _disposed;
 
     private sealed class ActiveCall(CancellationTokenSource cancellation)
@@ -39,9 +45,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         _limits = limits;
         _options = options;
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
-        var authenticate = new Func<SidecarCapabilityAuthenticationAuthority, bool>(
-            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, controlToken));
-        _session = new SidecarCapabilitySession(binding, authenticate, _ => true, DateTimeOffset.UtcNow);
+        _session = CreateSession(binding, controlToken);
         SendGate = new SemaphoreSlim(1, 1);
         _capabilityQueue = new BoundedExecutionQueue(
             Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
@@ -49,6 +53,17 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     }
 
     public SemaphoreSlim SendGate { get; }
+
+    private SidecarCapabilitySession Session => Volatile.Read(ref _session);
+
+    private static SidecarCapabilitySession CreateSession(
+        SidecarCapabilitySessionBinding binding,
+        string controlToken) =>
+        new(
+            binding,
+            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, controlToken),
+            _ => true,
+            DateTimeOffset.UtcNow);
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -81,6 +96,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     case OutOfProcessCapabilityFrameKind.CapabilityCancellation:
                         CancelCall(OutOfProcessCapabilityWire.Deserialize<OutOfProcessCapabilityCancellation>(frame.Payload));
                         break;
+                    case OutOfProcessCapabilityFrameKind.CapabilityRebindAccepted:
+                        CompleteRebind(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarCapabilityValidationResult>(frame.Payload));
+                        break;
                     case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
                         CompleteTerminal(
                             OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
@@ -102,7 +121,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         finally
         {
-            _session.Disconnect();
+            Session.Disconnect();
+            lock (_rotationSync)
+            {
+                _rotationAcknowledgement?.TrySetException(
+                    new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Disconnected,
+                        "The sidecar capability channel disconnected."));
+                _rotationReady?.TrySetException(
+                    new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Disconnected,
+                        "The sidecar capability channel disconnected."));
+            }
             foreach (var terminal in _terminals.Values)
             {
                 terminal.TrySetException(new OutOfProcessCapabilityException(
@@ -119,7 +149,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         _disconnect.Cancel();
-        _session.Disconnect();
+        Session.Disconnect();
+        lock (_rotationSync)
+        {
+            _rotationAcknowledgement?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+            _rotationReady?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+        }
         foreach (var call in _calls.Values)
             call.Cancellation.Cancel();
         foreach (var terminal in _terminals.Values)
@@ -141,6 +178,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         {
         }
         await _capabilityQueue.DisposeAsync();
+        await _rotationGate.WaitAsync(CancellationToken.None);
+        _rotationGate.Release();
+        _rotationGate.Dispose();
         SendGate.Dispose();
         _disconnect.Dispose();
     }
@@ -149,6 +189,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
+        await WaitForRotationAsync(channelCt);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleActionRequestAsync(request, ct),
                 channelCt,
@@ -169,6 +210,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         SidecarStorageCapabilityRequest request,
         CancellationToken channelCt)
     {
+        await WaitForRotationAsync(channelCt);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleStorageRequestAsync(request, ct),
                 channelCt,
@@ -213,9 +255,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         if (cancellation.Cancellation.CancellationId != cancellation.Call.CancellationId
             || !string.Equals(
                 cancellation.Cancellation.AuthorityHash,
-                SidecarCapabilitySessionValidator.ComputeBindingHash(_session.Binding),
+                SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
                 StringComparison.Ordinal)
-            || cancellation.Cancellation.ExpiresAt < DateTimeOffset.UtcNow)
+            || cancellation.Cancellation.ExpiresAt < cancellation.Call.Deadline)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
@@ -252,16 +294,141 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         if (!_calls.TryGetValue(callId, out var active)
             || Interlocked.Exchange(ref active.Completed, 1) != 0)
             return false;
-        return _session.CompleteCall(callId, terminalCallCount).Accepted;
+        return CompleteSessionCall(callId, terminalCallCount);
     }
 
-    private void FinishCall(Guid callId, ActiveCall? active)
+    private async ValueTask FinishCallAsync(
+        Guid callId,
+        ActiveCall? active,
+        CancellationToken channelCt)
     {
         if (active is null || !_calls.TryRemove(callId, out var removed))
             return;
         if (Interlocked.Exchange(ref removed.Completed, 1) == 0)
-            _session.CompleteCall(callId, 0);
+            CompleteSessionCall(callId, 0);
         removed.Cancellation.Dispose();
+        await StartRotationIfReadyAsync(channelCt);
+    }
+
+    private bool CompleteSessionCall(Guid callId, int terminalCallCount)
+    {
+        var session = Session;
+        var result = session.CompleteCall(callId, terminalCallCount);
+        if (result.Accepted
+            && Interlocked.Increment(ref _completedCallsForBinding)
+                >= session.Binding.ConcurrencyLimits.MaximumCallsPerRequest)
+        {
+            lock (_rotationSync)
+            {
+                _rotationReady ??= new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        return result.Accepted;
+    }
+
+    private async Task WaitForRotationAsync(CancellationToken ct)
+    {
+        Task? rotation;
+        lock (_rotationSync)
+            rotation = _rotationReady?.Task;
+        if (rotation is not null)
+            await rotation.WaitAsync(ct);
+    }
+
+    private async ValueTask StartRotationIfReadyAsync(CancellationToken ct)
+    {
+        Task? rotation;
+        await _rotationGate.WaitAsync(ct);
+        try
+        {
+            lock (_rotationSync)
+            {
+                if (_rotationReady is null || !_calls.IsEmpty)
+                    return;
+                if (_rotationTask is null || _rotationTask.IsCompleted)
+                    _rotationTask = RotateBindingAsync(_rotationReady, ct);
+                rotation = _rotationTask;
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
+        await rotation!;
+    }
+
+    private async Task RotateBindingAsync(
+        TaskCompletionSource ready,
+        CancellationToken ct)
+    {
+        var acknowledgement = new TaskCompletionSource<SidecarCapabilityValidationResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_rotationSync)
+            _rotationAcknowledgement = acknowledgement;
+
+        try
+        {
+            var nextBinding = OutOfProcessCapabilitySecurity.CreateBinding(
+                Session.Binding.GraphId,
+                Session.Binding.ModuleId,
+                Session.Binding.ProtocolVersion,
+                _options.Grant,
+                _limits,
+                _controlToken);
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.CapabilityRebind,
+                nextBinding,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                ct);
+            var accepted = await acknowledgement.Task.WaitAsync(ct);
+            if (!accepted.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    accepted.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    accepted.Message ?? "The sidecar rejected the capability binding rotation.");
+            }
+
+            Volatile.Write(ref _session, CreateSession(nextBinding, _controlToken));
+            Interlocked.Exchange(ref _completedCallsForBinding, 0);
+            lock (_rotationSync)
+            {
+                _rotationAcknowledgement = null;
+                _rotationReady = null;
+                ready.TrySetResult();
+                _rotationTask = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            ready.TrySetException(ex);
+            _disconnect.Cancel();
+            throw;
+        }
+        finally
+        {
+            lock (_rotationSync)
+            {
+                if (_rotationAcknowledgement == acknowledgement)
+                    _rotationAcknowledgement = null;
+            }
+        }
+    }
+
+    private void CompleteRebind(SidecarCapabilityValidationResult result)
+    {
+        lock (_rotationSync)
+        {
+            if (_rotationAcknowledgement is null)
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The host received an unsolicited capability binding acknowledgement.");
+            _rotationAcknowledgement.TrySetResult(result);
+        }
     }
 
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
@@ -421,7 +588,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         finally
         {
-            FinishCall(request.Call.CallId, active);
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
     }
 
@@ -541,7 +708,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         finally
         {
-            FinishCall(request.Call.CallId, active);
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
     }
 
