@@ -700,7 +700,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             new SidecarCapabilitySession(
                 binding,
                 authenticateSession,
-                _registerAuthenticationNonce,
+                _ => true,
                 DateTimeOffset.UtcNow));
         TaskCompletionSource? rebind;
         lock (_rotationSync)
