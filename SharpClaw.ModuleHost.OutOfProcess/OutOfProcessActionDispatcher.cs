@@ -24,7 +24,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             descriptor.DefaultTimeout > TimeSpan.Zero
                 ? descriptor.DefaultTimeout
                 : TimeSpan.FromMinutes(1));
-        var call = _transport.CreateCall(SidecarCapabilityKind.Action, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Action, deadline, cancellationToken);
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
         var request = new SidecarActionCapabilityRequest(
             call,

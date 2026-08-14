@@ -76,8 +76,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     internal SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
-        DateTimeOffset deadline) =>
-        GetRequiredConnection().CreateCall(capability, deadline);
+        DateTimeOffset deadline,
+        CancellationToken ct = default) =>
+        GetRequiredConnection().CreateCall(capability, deadline, ct);
 
     internal ValueTask<SidecarActionCapabilityResponse> InvokeActionAsync(
         SidecarActionCapabilityRequest request,
@@ -268,6 +269,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _retiredCalls = new();
     private readonly CancellationTokenSource _disconnect = new();
+    private readonly object _rotationSync = new();
+    private TaskCompletionSource? _rebindReady;
+    private int _completedCallsForBinding;
     private long _sequence;
     private int _disposed;
 
@@ -296,8 +300,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     public SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
-        DateTimeOffset deadline)
+        DateTimeOffset deadline,
+        CancellationToken ct = default)
     {
+        WaitForRebindIfReady(ct);
         var sequence = Interlocked.Increment(ref _sequence);
         var callId = Guid.NewGuid();
         return new SidecarCapabilityCallIdentity(
@@ -311,6 +317,32 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             capability,
             sequence,
             deadline);
+    }
+
+    private void WaitForRebindIfReady(CancellationToken ct)
+    {
+        Task? rebind;
+        lock (_rotationSync)
+            rebind = _rebindReady?.Task;
+        rebind?.WaitAsync(ct).GetAwaiter().GetResult();
+    }
+
+    private bool CompleteCall(Guid callId, int terminalCallCount)
+    {
+        var session = Volatile.Read(ref _session);
+        var result = session.CompleteCall(callId, terminalCallCount);
+        if (result.Accepted
+            && Interlocked.Increment(ref _completedCallsForBinding)
+                >= session.Binding.ConcurrencyLimits.MaximumCallsPerRequest)
+        {
+            lock (_rotationSync)
+            {
+                _rebindReady ??= new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        return result.Accepted;
     }
 
     public async ValueTask<SidecarActionCapabilityResponse> InvokeActionAsync(
@@ -335,7 +367,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var pending = new PendingAction(request, terminal, completion);
         if (!_actions.TryAdd(request.Call.CallId, pending))
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             throw new OutOfProcessCapabilityException("sidecar_replay", "The action call identifier was reused.");
         }
 
@@ -356,7 +388,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             ThrowIfRejected(validation);
-            ThrowIfRejected(_session.CompleteCall(
+            ThrowIfRejected(CompleteCall(
                 request.Call.CallId,
                 response.Outcome.TerminalCallCount));
             return response;
@@ -375,7 +407,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             throw;
         }
         finally
@@ -432,7 +464,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var completion = NewCompletion<SidecarStorageCapabilityResponse>();
         if (!_storage.TryAdd(request.Call.CallId, completion))
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             throw new OutOfProcessCapabilityException("sidecar_replay", "The storage call identifier was reused.");
         }
         var retainPending = false;
@@ -450,7 +482,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request,
                 response,
                 Binding));
-            ThrowIfRejected(_session.CompleteCall(request.Call.CallId, 0));
+            ThrowIfRejected(CompleteCall(request.Call.CallId, 0));
             return response;
         }
         catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
@@ -462,7 +494,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             throw;
         }
         finally
@@ -524,6 +556,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         finally
         {
             _session.Disconnect();
+            lock (_rotationSync)
+            {
+                _rebindReady?.TrySetException(failure ?? new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Disconnected,
+                    "The sidecar capability channel disconnected."));
+            }
             FailPending(failure ?? new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Disconnected,
                 "The sidecar capability channel disconnected."));
@@ -536,6 +574,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             return;
         _disconnect.Cancel();
         _session.Disconnect();
+        lock (_rotationSync)
+        {
+            _rebindReady?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
+        }
         FailPending(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         try
         {
@@ -651,6 +694,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 authenticateSession,
                 _registerAuthenticationNonce,
                 DateTimeOffset.UtcNow));
+        TaskCompletionSource? rebind;
+        lock (_rotationSync)
+        {
+            rebind = _rebindReady;
+            _rebindReady = null;
+            Interlocked.Exchange(ref _completedCallsForBinding, 0);
+        }
+        rebind?.TrySetResult();
     }
 
     private async Task SendCancellationAsync(
@@ -703,13 +754,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             if (validation.Accepted)
-                _session.CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount);
+                CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount);
             else
-                _session.CompleteCall(request.Call.CallId, 0);
+                CompleteCall(request.Call.CallId, 0);
         }
         catch
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             _retiredCalls[request.Call.CallId] = DateTimeOffset.UtcNow.AddSeconds(30);
         }
         finally
@@ -729,11 +780,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request,
                 response,
                 Binding);
-            _session.CompleteCall(request.Call.CallId, validation.Accepted ? 0 : 0);
+            CompleteCall(request.Call.CallId, validation.Accepted ? 0 : 0);
         }
         catch
         {
-            _session.CompleteCall(request.Call.CallId, 0);
+            CompleteCall(request.Call.CallId, 0);
             _retiredCalls[request.Call.CallId] = DateTimeOffset.UtcNow.AddSeconds(30);
         }
         finally

@@ -49,7 +49,7 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ValidateStorage(storageName);
         ArgumentException.ThrowIfNullOrWhiteSpace(operation);
         var deadline = Deadline();
-        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
         var payload = Payload(
             new OutOfProcessStorageInvokePayload(operation, value),
             typeof(OutOfProcessStorageInvokePayload));
@@ -75,7 +75,7 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ValidateStorage(storageName);
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
-        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
         var transportRequest = SidecarStorageCapabilityRequest.CommitMutationAndOutbox(
             call,
             _moduleId,
@@ -98,7 +98,7 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ValidateStorage(storageName);
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
-        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
         var transportRequest = SidecarStorageCapabilityRequest.Claim(
             call,
             _moduleId,
@@ -121,7 +121,7 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ValidateStorage(storageName);
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
-        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
         var transportRequest = SidecarStorageCapabilityRequest.RenewClaim(
             call,
             _moduleId,
@@ -144,7 +144,7 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ValidateStorage(storageName);
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
-        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
+        var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
         var transportRequest = SidecarStorageCapabilityRequest.RecoverClaim(
             call,
             _moduleId,
