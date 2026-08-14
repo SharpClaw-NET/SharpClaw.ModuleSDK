@@ -288,14 +288,16 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         DateTimeOffset deadline)
     {
         var sequence = Interlocked.Increment(ref _sequence);
+        var cancellationId = Guid.NewGuid();
+        var callId = Guid.NewGuid();
         return new SidecarCapabilityCallIdentity(
             Binding.SessionId,
             Binding.RequestId,
-            Guid.NewGuid(),
-            Binding.CancellationId,
-            Binding.GraphId,
-            Binding.ModuleId,
+            cancellationId,
+            callId,
             $"{Binding.SessionId:N}:{sequence}:{Guid.NewGuid():N}",
+            Binding.ModuleId,
+            Binding.GraphId,
             capability,
             sequence,
             deadline);
