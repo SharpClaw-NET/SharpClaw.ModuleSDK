@@ -257,7 +257,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 cancellation.Cancellation.AuthorityHash,
                 SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
                 StringComparison.Ordinal)
-            || cancellation.Cancellation.ExpiresAt < cancellation.Call.Deadline)
+            || cancellation.Cancellation.ExpiresAt != cancellation.Call.Deadline)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
