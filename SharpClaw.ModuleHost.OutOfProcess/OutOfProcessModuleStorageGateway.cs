@@ -32,7 +32,6 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
             Cancellation(call, deadline),
             deadline);
         var response = _transport.InvokeStorageAsync(request, CancellationToken.None)
-            .AsTask()
             .GetAwaiter()
             .GetResult();
         return Deserialize<IReadOnlyList<ModuleStorageContractDescriptor>>(RequirePayload(response));

@@ -1080,7 +1080,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         SidecarSerializedPayload? resultPayload = null;
         if (outcome.Result is not null
-            && outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
+            && (outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred))
         {
             resultPayload = CreatePayload(
                 outcome.Result,
