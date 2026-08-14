@@ -409,16 +409,16 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             Binding);
         if (!responseValidation.Accepted)
         {
-            var payload = response.ResultPayload;
-            var canonicalBytes = payload is null
+            var resultPayload = response.ResultPayload;
+            var canonicalBytes = resultPayload is null
                 ? Array.Empty<byte>()
-                : SidecarCapabilityTransportCodec.Serialize(payload.Value);
+                : SidecarCapabilityTransportCodec.Serialize(resultPayload.Value);
             throw new OutOfProcessCapabilityException(
                 responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
                 $"{responseValidation.Message} resultHash={response.ResultIdentity?.ContentHash}; "
-                + $"payloadHash={payload?.ContentHash}; computedHash="
+                + $"payloadHash={resultPayload?.ContentHash}; computedHash="
                 + $"{SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes)}; "
-                + $"resultLength={payload?.ByteLength}; computedLength={canonicalBytes.Length}.");
+                + $"resultLength={resultPayload?.ByteLength}; computedLength={canonicalBytes.Length}.");
         }
             ThrowIfRejected(_session.CompleteCall(request.Call.CallId, response.GetPayloadBytes()));
             return response;
