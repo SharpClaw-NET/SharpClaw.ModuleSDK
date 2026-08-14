@@ -619,16 +619,15 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         CancellationToken ct,
         ModuleStorageContractFailure? failure = null)
     {
-        var payload = EmptyPayload();
         await SendStorageResponseAsync(
             request,
             new SidecarStorageCapabilityResponse(
                 new SidecarStorageResultIdentity(
                     Guid.NewGuid(),
                     request.Call.CallId,
-                    payload.ContentHash,
+                    string.Empty,
                     false),
-                payload,
+                null!,
                 failure ?? new ModuleStorageContractFailure(
                     code ?? SidecarCapabilityErrors.HostFailure,
                     message ?? "The storage request failed.",
