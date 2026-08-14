@@ -708,6 +708,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             rebind = _rebindReady;
             _rebindReady = null;
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
+            Interlocked.Exchange(ref _sequence, 0);
         }
         rebind?.TrySetResult();
     }
