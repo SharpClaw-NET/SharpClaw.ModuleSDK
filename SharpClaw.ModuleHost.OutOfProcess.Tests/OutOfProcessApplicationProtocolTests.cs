@@ -190,11 +190,112 @@ public sealed class OutOfProcessApplicationProtocolTests
         deniedTerminalCalls.Should().Be(0);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task SelfOwnedDefinitionCannotShadowAHostActionKey()
+    {
+        await using var client = await CreateClientAsync();
+        var definition = client.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.OwnedAction.Key) with
+        {
+            ActionKey = ApplicationSmokeModule.HostAction.Key,
+        };
+        var discovery = client.Discovery with
+        {
+            ActionDefinitions = client.Discovery.ActionDefinitions
+                .Select(item => item.ActionKey == ApplicationSmokeModule.OwnedAction.Key
+                    ? definition
+                    : item)
+                .ToArray(),
+        };
+
+        AssertDiscoveryRejected(discovery, SidecarProtocolErrors.ShadowedHostKey);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task DuplicateSelfOwnedDefinitionsAreRejectedBeforeGrantExtraction()
+    {
+        await using var client = await CreateClientAsync();
+        var definition = client.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
+        var discovery = client.Discovery with
+        {
+            ActionDefinitions = client.Discovery.ActionDefinitions
+                .Append(definition)
+                .ToArray(),
+        };
+
+        AssertDiscoveryRejected(discovery, SidecarProtocolErrors.DuplicateDescriptor);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task DuplicateSelfOwnedSubscriptionsAreRejectedBeforeGrantExtraction()
+    {
+        await using var client = await CreateClientAsync();
+        var subscription = client.Discovery.Actions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
+        var discovery = client.Discovery with
+        {
+            Actions = client.Discovery.Actions
+                .Append(subscription)
+                .ToArray(),
+        };
+
+        AssertDiscoveryRejected(discovery, SidecarProtocolErrors.DuplicateDescriptor);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task OversizedFullDiscoveryIsRejectedBeforeGrantExtraction()
+    {
+        await using var client = await CreateClientAsync();
+        var discovery = client.Discovery with
+        {
+            ContractHash = new string(
+                'x',
+                client.HostLimits.ProtocolMessageBytes + 1024),
+        };
+
+        AssertDiscoveryRejected(discovery, SidecarProtocolErrors.ModulePayloadTooLarge);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task SelfOwnedDefinitionMustSupportTheNegotiatedProtocol()
+    {
+        await using var client = await CreateClientAsync();
+        var definition = client.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.OwnedAction.Key) with
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(2),
+        };
+        var discovery = client.Discovery with
+        {
+            ActionDefinitions = client.Discovery.ActionDefinitions
+                .Select(item => item.ActionKey == ApplicationSmokeModule.OwnedAction.Key
+                    ? definition
+                    : item)
+                .ToArray(),
+        };
+
+        AssertDiscoveryRejected(discovery, SidecarProtocolErrors.UnsupportedVersion);
+    }
+
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
         OutOfProcessModuleClient.CreateAuthorizedAsync(
             _controlAddress,
             _controlToken,
             _catalog);
+
+    private void AssertDiscoveryRejected(
+        SidecarDiscoveryEnvelope discovery,
+        string expectedCode)
+    {
+        var validation = SidecarDiscoveryValidator.Validate(discovery, _catalog);
+        validation.Accepted.Should().BeFalse(
+            $"Validator accepted {discovery.Actions.Count} actions and {discovery.ActionDefinitions.Count} definitions.");
+        var act = () => SidecarAuthorizationFactory.Create(discovery, _catalog);
+
+        act.Should().Throw<SidecarDiscoveryAuthorizationException>()
+            .Which.Code.Should().Be(expectedCode);
+    }
 
     private static HookInvokeStart CreateStart(
         OutOfProcessModuleClient client,

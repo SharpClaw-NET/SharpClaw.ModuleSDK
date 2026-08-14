@@ -235,20 +235,51 @@ public static class SidecarAuthorizationFactory
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(hostCatalog);
-        var selfActions = FindSelfOwnedActions(discovery);
-        var selfEvents = FindSelfOwnedEvents(discovery);
-        ValidateSelfOwnedActionSubscriptions(selfActions);
-        ValidateSelfOwnedEventSubscriptions(selfEvents);
-        var validationDiscovery = RemoveSelfOwnedSubscriptions(
-            discovery,
-            selfActions,
-            selfEvents);
-        var validation = SidecarDiscoveryValidator.Validate(validationDiscovery, hostCatalog);
-        if (!validation.Accepted)
+        var validation = SidecarDiscoveryValidator.Validate(discovery, hostCatalog);
+        if (!validation.Accepted
+            && !string.Equals(
+                validation.ErrorCode,
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                StringComparison.Ordinal))
         {
             throw new SidecarDiscoveryAuthorizationException(
                 validation.ErrorCode ?? SidecarProtocolErrors.UnsupportedCapability,
                 validation.ErrorMessage ?? "The sidecar discovery was rejected.");
+        }
+
+        ValidateUniqueSubscriptions(discovery);
+        var selfActions = FindSelfOwnedActions(discovery);
+        var selfEvents = FindSelfOwnedEvents(discovery);
+        if (!validation.Accepted
+            && !OnlyUnknownSubscriptionsAreSelfOwned(
+                discovery,
+                hostCatalog,
+                selfActions,
+                selfEvents))
+        {
+            throw new SidecarDiscoveryAuthorizationException(
+                validation.ErrorCode ?? SidecarProtocolErrors.UnsupportedCapability,
+                validation.ErrorMessage ?? "The sidecar discovery was rejected.");
+        }
+
+        ValidateSelfOwnedActionSubscriptions(
+            selfActions,
+            hostCatalog.NegotiatedProtocolVersion);
+        ValidateSelfOwnedEventSubscriptions(
+            selfEvents,
+            hostCatalog.NegotiatedProtocolVersion);
+        var validationDiscovery = RemoveSelfOwnedSubscriptions(
+            discovery,
+            selfActions,
+            selfEvents);
+        var hostValidation = SidecarDiscoveryValidator.Validate(
+            validationDiscovery,
+            hostCatalog);
+        if (!hostValidation.Accepted)
+        {
+            throw new SidecarDiscoveryAuthorizationException(
+                hostValidation.ErrorCode ?? SidecarProtocolErrors.UnsupportedCapability,
+                hostValidation.ErrorMessage ?? "The sidecar discovery was rejected.");
         }
 
         var actionGrants = selfActions
@@ -366,13 +397,72 @@ public static class SidecarAuthorizationFactory
         };
     }
 
+    private static bool OnlyUnknownSubscriptionsAreSelfOwned(
+        SidecarDiscoveryEnvelope discovery,
+        SidecarHostDescriptorCatalog hostCatalog,
+        IReadOnlyList<SelfOwnedAction> selfActions,
+        IReadOnlyList<SelfOwnedEvent> selfEvents)
+    {
+        var selfActionSubscriptions = selfActions
+            .Select(value => value.Subscription)
+            .ToHashSet();
+        var selfEventSubscriptions = selfEvents
+            .Select(value => value.Subscription)
+            .ToHashSet();
+        var unknownAction = discovery.Actions.Any(subscription =>
+            !hostCatalog.Actions.Any(descriptor => Matches(subscription, descriptor))
+            && !selfActionSubscriptions.Contains(subscription));
+        var unknownEvent = discovery.Events.Any(subscription =>
+            !hostCatalog.Events.Any(descriptor => Matches(subscription, descriptor))
+            && !selfEventSubscriptions.Contains(subscription));
+        return !unknownAction && !unknownEvent;
+    }
+
+    private static void ValidateUniqueSubscriptions(SidecarDiscoveryEnvelope discovery)
+    {
+        var actionSubscriptions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var subscription in discovery.Actions)
+        {
+            var identity = subscription.TargetKind == SidecarHookTargetKind.Exact
+                ? $"exact:{subscription.ActionKey?.Value}"
+                : $"{subscription.TargetKind}:{subscription.Category}";
+            if (!actionSubscriptions.Add(identity))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.DuplicateDescriptor,
+                    "The discovery contains duplicate action subscriptions.");
+            }
+        }
+
+        var eventSubscriptions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var subscription in discovery.Events)
+        {
+            var identity = subscription.TargetKind == SidecarHookTargetKind.Exact
+                ? $"exact:{subscription.EventKey?.Value}"
+                : $"{subscription.TargetKind}:{subscription.Category}";
+            if (!eventSubscriptions.Add(identity))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.DuplicateDescriptor,
+                    "The discovery contains duplicate event subscriptions.");
+            }
+        }
+    }
+
     private static void ValidateSelfOwnedActionSubscriptions(
-        IReadOnlyList<SelfOwnedAction> subscriptions)
+        IReadOnlyList<SelfOwnedAction> subscriptions,
+        int negotiatedProtocolVersion)
     {
         foreach (var self in subscriptions)
         {
             var subscription = self.Subscription;
             var definition = self.Definition;
+            if (!definition.ProtocolVersionRange.Contains(negotiatedProtocolVersion))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedVersion,
+                    "A self-owned action definition does not support the negotiated protocol version.");
+            }
             if (!subscription.VersionRange.Contains(definition.Version))
             {
                 throw new SidecarDiscoveryAuthorizationException(
@@ -402,12 +492,19 @@ public static class SidecarAuthorizationFactory
     }
 
     private static void ValidateSelfOwnedEventSubscriptions(
-        IReadOnlyList<SelfOwnedEvent> subscriptions)
+        IReadOnlyList<SelfOwnedEvent> subscriptions,
+        int negotiatedProtocolVersion)
     {
         foreach (var self in subscriptions)
         {
             var subscription = self.Subscription;
             var definition = self.Definition;
+            if (!definition.ProtocolVersionRange.Contains(negotiatedProtocolVersion))
+            {
+                throw new SidecarDiscoveryAuthorizationException(
+                    SidecarProtocolErrors.UnsupportedVersion,
+                    "A self-owned event definition does not support the negotiated protocol version.");
+            }
             if (!subscription.VersionRange.Contains(definition.Version))
             {
                 throw new SidecarDiscoveryAuthorizationException(
