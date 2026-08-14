@@ -147,6 +147,43 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(1);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task CapabilitySessionRotatesAfterMaximumCalls()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants)));
+
+        for (var i = 0; i < 3; i++)
+        {
+            var result = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                [],
+                new RequestPrincipal($"capability-rotation-{i}"));
+
+            result.Result.Succeeded.Should().BeTrue(
+                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+                + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+        }
+
+        storage.ListContractsCalls.Should().Be(3);
+        storage.InvokeCalls.Should().Be(3);
+        dispatcher.RunCalls.Should().Be(3);
+        dispatcher.TerminalCalls.Should().Be(3);
+    }
+
     [Test, CancelAfter(15000)]
     public async Task AuthorizationHookAllowsOneTerminalCallAndDeniesBeforeTheTerminalCall()
     {
