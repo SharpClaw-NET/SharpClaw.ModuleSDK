@@ -173,6 +173,12 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     socket,
                     HostLimits.ProtocolMessageBytes,
                     ct);
+                if (string.Equals(frame.Kind, OutOfProcessCapabilityFrameKind.Error, StringComparison.Ordinal))
+                {
+                    var failure = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(
+                        frame.Payload);
+                    throw new OutOfProcessCapabilityException(failure.Code, failure.Message);
+                }
                 if (!string.Equals(
                         frame.Kind,
                         OutOfProcessCapabilityFrameKind.BindAccepted,

@@ -263,6 +263,24 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
+                using var sendGate = new SemaphoreSlim(1, 1);
+                try
+                {
+                    await OutOfProcessCapabilityWire.SendAsync(
+                        socket,
+                        OutOfProcessCapabilityFrameKind.Error,
+                        new SidecarSafeFailureIdentity(
+                            Guid.NewGuid(),
+                            ex.Code,
+                            ex.Message,
+                            Retryable: false),
+                        _runtime.Graph.PayloadLimits.ProtocolMessageBytes,
+                        sendGate,
+                        CancellationToken.None);
+                }
+                catch (Exception) when (socket.State is WebSocketState.Aborted or WebSocketState.Closed)
+                {
+                }
                 await socket.CloseAsync(
                     WebSocketCloseStatus.PolicyViolation,
                     ex.Code,
