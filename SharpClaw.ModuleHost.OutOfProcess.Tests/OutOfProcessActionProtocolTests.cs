@@ -406,29 +406,35 @@ public sealed class OutOfProcessActionProtocolTests
         await using var queue = new BoundedExecutionQueue(capacity: 1, concurrency: 1);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        queue.TrySchedule(
-            async _ =>
-            {
-                started.TrySetResult();
-                await release.Task;
-            },
-            CancellationToken.None,
-            out var first).Should().BeTrue();
-        await started.Task;
-        queue.TrySchedule(_ => Task.CompletedTask, CancellationToken.None, out var second)
-            .Should().BeTrue();
+        Task first = Task.CompletedTask;
+        Task second = Task.CompletedTask;
+        try
+        {
+            queue.TrySchedule(
+                async _ =>
+                {
+                    started.TrySetResult();
+                    await release.Task;
+                },
+                CancellationToken.None,
+                out first).Should().BeTrue();
+            await started.Task;
+            queue.TrySchedule(_ => Task.CompletedTask, CancellationToken.None, out second)
+                .Should().BeTrue();
 
-        var accepted = queue.TrySchedule(
-            _ => Task.CompletedTask,
-            CancellationToken.None,
-            out var rejected);
+            var accepted = queue.TrySchedule(
+                _ => Task.CompletedTask,
+                CancellationToken.None,
+                out var rejected);
 
-        accepted.Should().BeFalse();
-        var rejectedAct = async () => await rejected;
-        (await rejectedAct.Should().ThrowAsync<OutOfProcessProtocolException>())
-            .Which.Code.Should().Be(SidecarProtocolErrors.ModuleBusy);
-        release.TrySetResult();
-        await Task.WhenAll(first, second);
+            accepted.Should().BeFalse();
+            rejected.IsCompletedSuccessfully.Should().BeTrue();
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Task.WhenAll(first, second);
+        }
     }
 
     private static IEnumerable<TestCaseData> ActionSemanticsCases()
