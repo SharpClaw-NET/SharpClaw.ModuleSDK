@@ -49,6 +49,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 terminal,
                 terminalRequest,
                 identity,
+                _transport.Binding.SafeFailure,
                 ct),
             cancellationToken);
         return CreateOutcome<TResult>(response);
@@ -79,6 +80,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
         Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
         SidecarActionTerminalTransportRequest request,
         SidecarActionDescriptorIdentity identity,
+        SidecarSafeFailureIdentity safeFailure,
         CancellationToken ct)
     {
         var action = Deserialize<TAction>(request.EffectiveAction);
@@ -99,7 +101,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                     payload.ContentHash),
                 new SidecarTerminalExecutionResult(payload, null!, Completed: true),
                 request.Receipt,
-                null!);
+                safeFailure);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -113,14 +115,10 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                     EmptyPayload().ContentHash),
                 new SidecarTerminalExecutionResult(
                     EmptyPayload(),
-                    new SidecarSafeFailureIdentity(
-                        Guid.NewGuid(),
-                        SidecarCapabilityErrors.HostFailure,
-                        "The module terminal callback failed.",
-                        Retryable: false),
+                    safeFailure,
                     Completed: false),
                 request.Receipt,
-                null!);
+                safeFailure);
         }
     }
 

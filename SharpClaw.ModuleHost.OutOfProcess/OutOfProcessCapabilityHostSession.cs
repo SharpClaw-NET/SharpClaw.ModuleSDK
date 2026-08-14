@@ -593,7 +593,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 alreadyCommitted),
             payload,
             null!,
-            null!,
+            _session.Binding.SafeFailure,
             Completed: true);
     }
 
@@ -635,7 +635,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     request.StorageName,
                     null,
                     null),
-                null!,
+                _session.Binding.SafeFailure,
                 Completed: true),
             ct);
     }
@@ -702,8 +702,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 continuationRequestId,
                 false,
                 null!,
-                null!),
-            null!,
+                _session.Binding.SafeFailure),
+            _session.Binding.SafeFailure,
             Completed: true);
     }
 
