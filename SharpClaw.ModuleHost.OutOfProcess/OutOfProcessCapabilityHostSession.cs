@@ -689,7 +689,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             error!,
             uncertainty!,
             terminalReceipt,
-            null!,
+            _session.Binding.SafeFailure,
             terminalReceipt is null ? 0 : 1);
         return new SidecarActionCapabilityResponse(
             new SidecarActionResultIdentity(
