@@ -143,6 +143,53 @@ public sealed class OutOfProcessApplicationProtocolTests
         deniedTerminalCalls.Should().Be(0);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task SelfOwnedActionGrantAllowsOneTerminalCallAndDeniesBeforeTheTerminalCall()
+    {
+        await using var client = await CreateClientAsync();
+        var grant = client.Authorization.ActionGrants.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
+        grant.ActionVersion.Should().Be(ApplicationSmokeModule.OwnedAction.Version);
+        grant.Capabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
+        grant.SensitiveApproved.Should().BeFalse();
+
+        var allowedTerminalCalls = 0;
+        var allowed = await client.InvokeActionAsync(
+            CreateStart(
+                client,
+                ApplicationSmokeModule.OwnedAction,
+                ApplicationSmokeModule.OwnedActionHookId,
+                "allow"),
+            (request, ct) =>
+            {
+                if (request.Command == SidecarContinuationCommand.ContinueOriginal)
+                    allowedTerminalCalls++;
+                return ValueTask.FromResult(CreateContinuation(request, "allowed"));
+            });
+
+        allowed.Completion.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"action error {allowed.Completion.Error?.Code}: {allowed.Completion.Error?.Message}");
+        allowedTerminalCalls.Should().Be(1);
+
+        var deniedTerminalCalls = 0;
+        var denied = await client.InvokeActionAsync(
+            CreateStart(
+                client,
+                ApplicationSmokeModule.OwnedAction,
+                ApplicationSmokeModule.OwnedActionHookId,
+                "deny"),
+            (request, ct) =>
+            {
+                if (request.Command == SidecarContinuationCommand.ContinueOriginal)
+                    deniedTerminalCalls++;
+                return ValueTask.FromResult(CreateContinuation(request, "denied"));
+            });
+
+        denied.Completion.Kind.Should().Be(ActionOutcomeKind.Cancelled);
+        deniedTerminalCalls.Should().Be(0);
+    }
+
     private Task<OutOfProcessModuleClient> CreateClientAsync() =>
         OutOfProcessModuleClient.CreateAuthorizedAsync(
             _controlAddress,
@@ -152,8 +199,19 @@ public sealed class OutOfProcessApplicationProtocolTests
     private static HookInvokeStart CreateStart(
         OutOfProcessModuleClient client,
         string mode)
+        => CreateStart(
+            client,
+            ApplicationSmokeModule.HostAction,
+            ApplicationSmokeModule.HostActionHookId,
+            mode);
+
+    private static HookInvokeStart CreateStart(
+        OutOfProcessModuleClient client,
+        ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> action,
+        string hookId,
+        string mode)
     {
-        var descriptor = HostDescriptor();
+        var descriptor = ToDescriptor(action);
         var grant = client.Authorization.ActionGrants.Single(item =>
             item.ActionKey == descriptor.ActionKey);
         var invocationId = Guid.NewGuid();
@@ -168,7 +226,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 invocationId,
                 null,
                 Guid.NewGuid(),
-                ApplicationSmokeModule.HostActionHookId,
+                hookId,
                 descriptor.ActionKey,
                 descriptor.Version,
                 SidecarPayloadMode.Typed,
@@ -192,14 +250,17 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new ContinuationHandle(
                     Guid.NewGuid(),
                     invocationId,
-                    ApplicationSmokeModule.HostActionHookId,
+                    hookId,
                     deadline,
                     1)));
     }
 
-    private static SidecarHostActionDescriptor HostDescriptor()
+    private static SidecarHostActionDescriptor HostDescriptor() =>
+        ToDescriptor(ApplicationSmokeModule.HostAction);
+
+    private static SidecarHostActionDescriptor ToDescriptor(
+        ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> descriptor)
     {
-        var descriptor = ApplicationSmokeModule.HostAction;
         return new SidecarHostActionDescriptor(
             descriptor.Key,
             descriptor.Version,

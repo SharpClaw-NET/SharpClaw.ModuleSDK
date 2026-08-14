@@ -235,7 +235,14 @@ public static class SidecarAuthorizationFactory
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(hostCatalog);
-        var validationDiscovery = RemoveSelfOwnedSubscriptions(discovery);
+        var selfActions = FindSelfOwnedActions(discovery);
+        var selfEvents = FindSelfOwnedEvents(discovery);
+        ValidateSelfOwnedActionSubscriptions(selfActions);
+        ValidateSelfOwnedEventSubscriptions(selfEvents);
+        var validationDiscovery = RemoveSelfOwnedSubscriptions(
+            discovery,
+            selfActions,
+            selfEvents);
         var validation = SidecarDiscoveryValidator.Validate(validationDiscovery, hostCatalog);
         if (!validation.Accepted)
         {
@@ -244,7 +251,15 @@ public static class SidecarAuthorizationFactory
                 validation.ErrorMessage ?? "The sidecar discovery was rejected.");
         }
 
-        var actionGrants = validationDiscovery.Actions
+        var actionGrants = selfActions
+            .Select(self => new ActionCapabilityGrant(
+                self.Definition.ActionKey,
+                self.Definition.Version,
+                self.Subscription.Capabilities,
+                SensitiveApproved: self.Definition.ContainsSensitiveData,
+                AcceptUnknownSchemas: self.Subscription.AcceptUnknownNonSensitiveSchemas
+                    && !self.Definition.ContainsSensitiveData))
+            .Concat(validationDiscovery.Actions
             .SelectMany(subscription => hostCatalog.Actions
                 .Where(descriptor => Matches(subscription, descriptor))
                 .Select(descriptor => new ActionCapabilityGrant(
@@ -253,10 +268,18 @@ public static class SidecarAuthorizationFactory
                     subscription.Capabilities,
                     SensitiveApproved: descriptor.ContainsSensitiveData,
                     AcceptUnknownSchemas: subscription.AcceptUnknownNonSensitiveSchemas
-                        && !descriptor.ContainsSensitiveData)))
+                        && !descriptor.ContainsSensitiveData))))
             .Distinct()
             .ToArray();
-        var eventGrants = validationDiscovery.Events
+        var eventGrants = selfEvents
+            .Select(self => new EventCapabilityGrant(
+                self.Definition.EventKey,
+                self.Definition.Version,
+                self.Subscription.Capabilities,
+                SensitiveApproved: self.Definition.ContainsSensitiveData,
+                AcceptUnknownSchemas: self.Subscription.AcceptUnknownNonSensitiveSchemas
+                    && !self.Definition.ContainsSensitiveData))
+            .Concat(validationDiscovery.Events
             .SelectMany(subscription => hostCatalog.Events
                 .Where(descriptor => Matches(subscription, descriptor))
                 .Select(descriptor => new EventCapabilityGrant(
@@ -265,7 +288,7 @@ public static class SidecarAuthorizationFactory
                     subscription.Capabilities,
                     SensitiveApproved: descriptor.ContainsSensitiveData,
                     AcceptUnknownSchemas: subscription.AcceptUnknownNonSensitiveSchemas
-                        && !descriptor.ContainsSensitiveData)))
+                        && !descriptor.ContainsSensitiveData))))
             .Distinct()
             .ToArray();
         return new SidecarHostAuthorization(
@@ -275,39 +298,64 @@ public static class SidecarAuthorizationFactory
             hostCatalog.SensitiveWildcardApproval);
     }
 
-    private static SidecarDiscoveryEnvelope RemoveSelfOwnedSubscriptions(
-        SidecarDiscoveryEnvelope discovery)
-    {
-        var selfActions = discovery.Actions
-            .Where(subscription =>
-                subscription.TargetKind == SidecarHookTargetKind.Exact
-                && subscription.ActionKey is { } key
-                && discovery.ActionDefinitions.Any(definition => definition.ActionKey == key))
-            .ToArray();
-        var selfEvents = discovery.Events
-            .Where(subscription =>
-                subscription.TargetKind == SidecarHookTargetKind.Exact
-                && subscription.EventKey is { } key
-                && discovery.EventDefinitions.Any(definition => definition.EventKey == key))
-            .ToArray();
-        ValidateSelfOwnedActionSubscriptions(selfActions, discovery.ActionDefinitions);
-        ValidateSelfOwnedEventSubscriptions(selfEvents, discovery.EventDefinitions);
+    private static IReadOnlyList<SelfOwnedAction> FindSelfOwnedActions(
+        SidecarDiscoveryEnvelope discovery) => discovery.Actions
+        .Where(subscription =>
+            subscription.TargetKind == SidecarHookTargetKind.Exact
+            && subscription.ActionKey is not null)
+        .Select(subscription =>
+        {
+            var definition = discovery.ActionDefinitions.SingleOrDefault(item =>
+                item.ActionKey == subscription.ActionKey!.Value);
+            return definition is null
+                ? null
+                : new SelfOwnedAction(subscription, definition);
+        })
+        .Where(value => value is not null)
+        .Select(value => value!)
+        .ToArray();
 
+    private static IReadOnlyList<SelfOwnedEvent> FindSelfOwnedEvents(
+        SidecarDiscoveryEnvelope discovery) => discovery.Events
+        .Where(subscription =>
+            subscription.TargetKind == SidecarHookTargetKind.Exact
+            && subscription.EventKey is not null)
+        .Select(subscription =>
+        {
+            var definition = discovery.EventDefinitions.SingleOrDefault(item =>
+                item.EventKey == subscription.EventKey!.Value);
+            return definition is null
+                ? null
+                : new SelfOwnedEvent(subscription, definition);
+        })
+        .Where(value => value is not null)
+        .Select(value => value!)
+        .ToArray();
+
+    private static SidecarDiscoveryEnvelope RemoveSelfOwnedSubscriptions(
+        SidecarDiscoveryEnvelope discovery,
+        IReadOnlyList<SelfOwnedAction> selfActions,
+        IReadOnlyList<SelfOwnedEvent> selfEvents)
+    {
+        var selfActionSubscriptions = selfActions
+            .Select(value => value.Subscription)
+            .ToHashSet();
+        var selfEventSubscriptions = selfEvents
+            .Select(value => value.Subscription)
+            .ToHashSet();
         var selfActionKeys = selfActions
-            .Where(subscription => subscription.ActionKey is not null)
-            .Select(subscription => subscription.ActionKey!.Value)
+            .Select(value => value.Definition.ActionKey)
             .ToHashSet();
         var selfEventKeys = selfEvents
-            .Where(subscription => subscription.EventKey is not null)
-            .Select(subscription => subscription.EventKey!.Value)
+            .Select(value => value.Definition.EventKey)
             .ToHashSet();
         return discovery with
         {
             Actions = discovery.Actions
-                .Where(subscription => !selfActions.Contains(subscription))
+                .Where(subscription => !selfActionSubscriptions.Contains(subscription))
                 .ToArray(),
             Events = discovery.Events
-                .Where(subscription => !selfEvents.Contains(subscription))
+                .Where(subscription => !selfEventSubscriptions.Contains(subscription))
                 .ToArray(),
             ActionDefinitions = discovery.ActionDefinitions
                 .Where(definition => !selfActionKeys.Contains(definition.ActionKey))
@@ -319,12 +367,12 @@ public static class SidecarAuthorizationFactory
     }
 
     private static void ValidateSelfOwnedActionSubscriptions(
-        IReadOnlyList<SidecarActionSubscription> subscriptions,
-        IReadOnlyList<SidecarActionDefinition> definitions)
+        IReadOnlyList<SelfOwnedAction> subscriptions)
     {
-        foreach (var subscription in subscriptions)
+        foreach (var self in subscriptions)
         {
-            var definition = definitions.Single(item => item.ActionKey == subscription.ActionKey);
+            var subscription = self.Subscription;
+            var definition = self.Definition;
             if (!subscription.VersionRange.Contains(definition.Version))
             {
                 throw new SidecarDiscoveryAuthorizationException(
@@ -354,12 +402,12 @@ public static class SidecarAuthorizationFactory
     }
 
     private static void ValidateSelfOwnedEventSubscriptions(
-        IReadOnlyList<SidecarEventSubscription> subscriptions,
-        IReadOnlyList<SidecarEventDefinition> definitions)
+        IReadOnlyList<SelfOwnedEvent> subscriptions)
     {
-        foreach (var subscription in subscriptions)
+        foreach (var self in subscriptions)
         {
-            var definition = definitions.Single(item => item.EventKey == subscription.EventKey);
+            var subscription = self.Subscription;
+            var definition = self.Definition;
             if (!subscription.VersionRange.Contains(definition.Version))
             {
                 throw new SidecarDiscoveryAuthorizationException(
@@ -423,6 +471,14 @@ public static class SidecarAuthorizationFactory
             SidecarHookTargetKind.Wildcard => true,
             _ => false,
         };
+
+    private sealed record SelfOwnedAction(
+        SidecarActionSubscription Subscription,
+        SidecarActionDefinition Definition);
+
+    private sealed record SelfOwnedEvent(
+        SidecarEventSubscription Subscription,
+        SidecarEventDefinition Definition);
 }
 
 /// <summary>Reports a rejected sidecar discovery authorization.</summary>
