@@ -212,7 +212,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();
 
-        Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+        Assert.That(
+            async () => await pending,
+            Throws.InstanceOf<OperationCanceledException>());
         await storage.InvocationCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         storage.BlockInvoke = false;
