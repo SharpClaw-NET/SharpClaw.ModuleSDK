@@ -303,10 +303,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             static (action, _) => ValueTask.FromResult(
                 new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
-        var carrierEntered = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var carrierRelease = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new OutOfProcessCapabilityHostOptions(
             storage,
             dispatcher,
@@ -317,14 +313,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry())
-        {
-            BeforeCarrierSessionBeginAsync = async () =>
-            {
-                carrierEntered.TrySetResult();
-                await carrierRelease.Task;
-            },
-        };
+            new OutOfProcessHostActionEntryContextRegistry());
         await client.ConnectCapabilitiesAsync(options);
 
         var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
@@ -342,6 +331,16 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
+
+        var carrierEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var carrierRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        options.BeforeCarrierSessionBeginAsync = async () =>
+        {
+            carrierEntered.TrySetResult();
+            await carrierRelease.Task;
+        };
 
         var hostEntryTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
