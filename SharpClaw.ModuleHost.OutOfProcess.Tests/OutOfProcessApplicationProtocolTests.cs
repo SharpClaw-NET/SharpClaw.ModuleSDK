@@ -97,10 +97,26 @@ public sealed class OutOfProcessApplicationProtocolTests
         client.Application.CliCommands.Should().ContainSingle(command =>
             command.Descriptor.Name == ApplicationSmokeModule.CliName);
 
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.CliName,
             ["identity"],
-            new RequestPrincipal("test-user"));
+            IssueCliContext(client, ApplicationSmokeModule.CliName, "test-user"));
 
         result.ModuleId.Should().Be(client.Discovery.ModuleId);
         result.ContractHash.Should().Be(client.Discovery.ContractHash);
@@ -128,12 +144,13 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
-                client.Authorization.EventGrants)));
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
             [],
-            new RequestPrincipal("capability-test"));
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "capability-test"));
 
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -165,14 +182,18 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
-                client.Authorization.EventGrants)));
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
 
         for (var i = 0; i < 3; i++)
         {
             var result = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
                 [],
-                new RequestPrincipal($"capability-rotation-{i}"));
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"capability-rotation-{i}"));
 
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -211,18 +232,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new HostActionEntryRequestContext(
-                Guid.Empty,
-                ApplicationSmokeModule.HostEntryCaller,
-                ApplicationSmokeModule.HostEntryFeatures,
-                ApplicationSmokeModule.HostEntryTraceId,
-                ApplicationSmokeModule.HostEntryIdempotencyKey,
-                grantExpiresAt)));
+            new OutOfProcessHostActionEntryContextRegistry()));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [],
-            new RequestPrincipal("agent-entry"));
+            IssueHostEntryContext(client, grantExpiresAt));
 
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -263,18 +278,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new HostActionEntryRequestContext(
-                Guid.Empty,
-                ApplicationSmokeModule.HostEntryCaller,
-                ApplicationSmokeModule.HostEntryFeatures,
-                ApplicationSmokeModule.HostEntryTraceId,
-                ApplicationSmokeModule.HostEntryIdempotencyKey,
-                grantExpiresAt)));
+            new OutOfProcessHostActionEntryContextRegistry()));
 
         var rejected = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [mismatch],
-            new RequestPrincipal("context-test"));
+            IssueHostEntryContext(client, grantExpiresAt));
 
         rejected.Result.Succeeded.Should().BeFalse();
         rejected.Result.Error?.Code.Should().Be("host_entry_failed");
@@ -300,13 +309,14 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
-                client.Authorization.EventGrants)));
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
 
         using var cancellation = new CancellationTokenSource();
         var pending = client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
             [],
-            new RequestPrincipal("capability-cancellation"),
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "capability-cancellation"),
             ct: cancellation.Token).AsTask();
         await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();
@@ -320,7 +330,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var followUp = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
             [],
-            new RequestPrincipal("capability-after-cancellation"));
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "capability-after-cancellation"));
 
         followUp.Result.Succeeded.Should().BeTrue(
             $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}; "
@@ -503,6 +513,34 @@ public sealed class OutOfProcessApplicationProtocolTests
             _controlAddress,
             _controlToken,
             _catalog);
+
+    private static HostActionEntryRequestContext IssueCliContext(
+        OutOfProcessModuleClient client,
+        string command,
+        string subject,
+        DateTimeOffset? deadline = null) =>
+        client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            command,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("cli", command),
+            new RequestPrincipal(subject),
+            ExtensionFeatureSet.Empty,
+            deadline ?? DateTimeOffset.UtcNow.AddMinutes(1));
+
+    private static HostActionEntryRequestContext IssueHostEntryContext(
+        OutOfProcessModuleClient client,
+        DateTimeOffset deadline) =>
+        client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.HostEntryCliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-entry", "action"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            deadline);
 
     private void AssertDiscoveryRejected(
         SidecarDiscoveryEnvelope discovery,

@@ -19,6 +19,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private OutOfProcessCapabilityHostSession? _capabilitySession;
     private Task? _capabilityRun;
+    private OutOfProcessHostActionEntryContextRegistry? _hostActionEntryContexts;
 
     private OutOfProcessModuleClient(
         Uri controlAddress,
@@ -50,6 +51,12 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     /// <summary>Gets the host payload limits.</summary>
     public SidecarPayloadLimits HostLimits { get; }
 
+    /// <summary>Gets the one-use host context registry for this capability binding.</summary>
+    public OutOfProcessHostActionEntryContextRegistry HostActionEntryContexts =>
+        Volatile.Read(ref _hostActionEntryContexts)
+        ?? throw new InvalidOperationException(
+            "The sidecar capability channel is not connected.");
+
     /// <summary>Creates a capability grant for this authorized module.</summary>
     public SidecarCapabilityGrant CreateCapabilityGrant(
         DateTimeOffset? expiresAt = null) =>
@@ -57,6 +64,28 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             Discovery,
             Authorization,
             expiresAt);
+
+    /// <summary>Issues one host context for a typed ingress carrier.</summary>
+    public HostActionEntryRequestContext IssueHostActionContext<TAction, TResult>(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string secondaryIdentity,
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        DateTimeOffset deadline,
+        Guid? invocationId = null) =>
+        HostActionEntryContexts.Issue(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            action,
+            caller,
+            features,
+            deadline,
+            invocationId);
 
     /// <summary>Discovers and authorizes one sidecar against immutable host descriptors.</summary>
     public static async Task<OutOfProcessModuleClient> CreateAuthorizedAsync(
@@ -151,8 +180,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             OutOfProcessModuleHostProtocol.Version,
             grant,
             HostLimits,
-            _controlToken,
-            options.HostActionContext);
+            _controlToken);
         var socket = new ClientWebSocket();
         socket.Options.SetRequestHeader(
             OutOfProcessModuleHostProtocol.TokenHeaderName,
@@ -198,6 +226,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                         accepted.Code ?? SidecarCapabilityErrors.Unauthorized,
                         accepted.Message ?? "The sidecar rejected the capability binding.");
                 }
+
+                options.HostActionEntryContexts.Bind(binding);
             }
             finally
             {
@@ -212,6 +242,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 options,
                 Authorization);
             _capabilitySession = session;
+            Volatile.Write(ref _hostActionEntryContexts, options.HostActionEntryContexts);
             _capabilityRun = session.RunAsync(CancellationToken.None);
         }
         catch
@@ -308,13 +339,26 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     public async ValueTask<SidecarCliExecutionResponse> InvokeCliAsync(
         string command,
         IReadOnlyList<string> arguments,
-        RequestPrincipal caller,
-        DateTimeOffset? deadline = null,
+        HostActionEntryRequestContext hostActionContext,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
         ArgumentNullException.ThrowIfNull(arguments);
-        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(hostActionContext);
+        var now = DateTimeOffset.UtcNow;
+        if (!hostActionContext.IsWellFormed(now)
+            || hostActionContext.Ingress != HostActionEntryIngress.Cli
+            || hostActionContext.Contribution is null
+            || !string.Equals(
+                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                command,
+                StringComparison.Ordinal)
+            || hostActionContext.InvocationId == Guid.Empty)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The CLI host action context is invalid for the requested command.");
+        }
         if (!Application.CliCommands.Any(item =>
                 string.Equals(item.Descriptor.Name, command, StringComparison.Ordinal)
                 || item.Descriptor.Aliases.Contains(command, StringComparer.Ordinal)))
@@ -330,8 +374,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             Discovery.ContractHash,
             command,
             arguments,
-            caller,
-            deadline ?? DateTimeOffset.UtcNow.AddMinutes(1));
+            hostActionContext);
         using var response = await _httpClient.PostAsJsonAsync(
             OutOfProcessModuleHostProtocol.ApplicationCliPath,
             request,
@@ -461,6 +504,23 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(start);
+        var now = DateTimeOffset.UtcNow;
+        var hostActionContext = start.HostActionContext;
+        if (!start.IsWellFormed(now)
+            || hostActionContext is null
+            || !hostActionContext.IsWellFormed(now)
+            || hostActionContext.Ingress != HostActionEntryIngress.Tool
+            || hostActionContext.InvocationId != start.InvocationId
+            || hostActionContext.Contribution is null
+            || !string.Equals(
+                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                start.ToolName,
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The tool host action context is invalid for the requested tool.");
+        }
         using var socket = new ClientWebSocket();
         socket.Options.SetRequestHeader(
             OutOfProcessModuleHostProtocol.TokenHeaderName,

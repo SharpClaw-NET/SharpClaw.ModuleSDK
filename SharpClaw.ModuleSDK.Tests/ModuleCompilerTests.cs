@@ -40,8 +40,7 @@ public sealed class ModuleCompilerTests
             "call-1",
             "sample.echo",
             JsonSerializer.SerializeToElement(new { text = "hello" }),
-            RequestPrincipal.Anonymous,
-            ExtensionFeatureSet.Empty);
+            CreateToolContext());
 
         var result = await graph.ToolDispatch.InvokeAsync(
             "sample.echo",
@@ -314,6 +313,49 @@ public sealed class ModuleCompilerTests
     public sealed record EchoAction(string Text);
     public sealed record EchoResult(string Text);
     public sealed record ChangedEvent(string Text);
+
+    private static HostActionEntryRequestContext CreateToolContext()
+    {
+        var action = new EchoAction("hello");
+        var descriptor = CompleteModule.HostAction;
+        var inputSchema = ModuleSchemaIdentity.ActionInput(
+            descriptor.Key,
+            descriptor.Version,
+            typeof(EchoAction));
+        var payload = SidecarCapabilityTransportCodec.Serialize(action);
+        using var document = JsonDocument.Parse(payload);
+        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        return new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)),
+            HostActionEntryIngress.Tool,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            RequestPrincipal.Anonymous,
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            deadline)
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(
+                    HostActionEntryIngress.Tool,
+                    "sample.echo",
+                    "sample-handler"),
+                new HostActionEntryLineage(
+                    descriptor.Key,
+                    descriptor.Version,
+                    "descriptor-hash",
+                    typeof(EchoAction).AssemblyQualifiedName!,
+                    inputSchema.Version,
+                    inputSchema.ContentHash,
+                    SidecarCapabilityTransportCodec.ComputeSha256(canonical),
+                    canonical.Length)),
+        };
+    }
 
     private sealed class CompleteModule : ISharpClawModule
     {

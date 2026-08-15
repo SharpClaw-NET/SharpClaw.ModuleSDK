@@ -36,8 +36,7 @@ internal static class OutOfProcessHandlerSession
                 start.InvocationId.ToString("D"),
                 start.ToolName,
                 start.Input,
-                start.Caller,
-                ExtensionFeatureSet.Empty);
+                start.HostActionContext);
             var result = await runtime.Graph.ToolDispatch.InvokeAsync(
                 start.ToolName,
                 runtime.Services,

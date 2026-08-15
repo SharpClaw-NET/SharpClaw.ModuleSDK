@@ -400,8 +400,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 Session.Binding.ProtocolVersion,
                 _options.Grant,
                 _limits,
-                _controlToken,
-                _options.HostActionContext);
+                _controlToken);
             await OutOfProcessCapabilityWire.SendAsync(
                 _socket,
                 OutOfProcessCapabilityFrameKind.CapabilityRebind,
@@ -417,6 +416,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     accepted.Message ?? "The sidecar rejected the capability binding rotation.");
             }
 
+            _options.HostActionEntryContexts.Bind(nextBinding);
             Volatile.Write(ref _session, CreateSession(nextBinding, _controlToken));
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
             lock (_rotationSync)
@@ -472,9 +472,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             return false;
 
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
-            return request.Snapshot is null;
+            return request.Snapshot is null && request.HostContext is not null;
 
         return request.Snapshot is not null
+            && request.HostContext is null
             && string.Equals(
                 request.Snapshot.ContractHash,
                 _options.ActionSnapshot.ContractHash,
@@ -758,10 +759,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var action = Deserialize<TAction>(request.Action);
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
         {
-            var context = _session.Binding.HostActionContext
+            var context = request.HostContext
                 ?? throw new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.Unauthorized,
-                    "The capability binding has no host action context.");
+                    "The host action request has no host context.");
             if (hostTerminal is null)
             {
                 throw new OutOfProcessCapabilityException(
@@ -772,11 +773,15 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             var entryRequest = new HostActionEntryRequest<TAction, TResult>(
                 descriptor,
                 action,
-                context.Caller,
-                context.Features,
-                context.TraceId,
-                context.IdempotencyKey,
-                request.Deadline);
+                context);
+            if (!_options.HostActionEntryContexts.TryConsume(
+                    entryRequest,
+                    DateTimeOffset.UtcNow))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The host action context is invalid, expired, or already used.");
+            }
             var issued = _session.IssueHostActionEntry(
                 entryRequest,
                 request.Call.CallId,

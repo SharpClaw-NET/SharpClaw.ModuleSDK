@@ -343,7 +343,24 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         }
 
         var now = DateTimeOffset.UtcNow;
-        if (request.Deadline <= now)
+        var hostActionContext = request.HostActionContext;
+        if (hostActionContext is null
+            || !hostActionContext.IsWellFormed(now)
+            || hostActionContext.Ingress != HostActionEntryIngress.Cli
+            || hostActionContext.InvocationId != request.InvocationId
+            || hostActionContext.Contribution is null
+            || !string.Equals(
+                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                request.Command,
+                StringComparison.Ordinal))
+        {
+            return Results.BadRequest(new
+            {
+                error = SidecarProtocolErrors.MalformedMessage,
+            });
+        }
+
+        if (hostActionContext.Deadline <= now)
         {
             return JsonResult(new SidecarCliExecutionResponse(
                 _runtime.Graph.Identity.Id,
@@ -357,7 +374,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linked.CancelAfter(request.Deadline - now);
+        linked.CancelAfter(hostActionContext.Deadline - now);
         ModuleCliResult result;
         try
         {
@@ -371,8 +388,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                     request.InvocationId,
                     contribution.Descriptor.Name,
                     request.Arguments,
-                    request.Caller,
-                    request.Deadline),
+                    hostActionContext),
                 linked.Token);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)

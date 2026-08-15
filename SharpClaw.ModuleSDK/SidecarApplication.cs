@@ -31,8 +31,7 @@ public sealed record SidecarCliInvocation(
     string ContractHash,
     string Command,
     IReadOnlyList<string> Arguments,
-    RequestPrincipal Caller,
-    DateTimeOffset Deadline);
+    HostActionEntryRequestContext HostActionContext);
 
 /// <summary>Returns one module CLI result with graph identity.</summary>
 public sealed record SidecarCliExecutionResponse(

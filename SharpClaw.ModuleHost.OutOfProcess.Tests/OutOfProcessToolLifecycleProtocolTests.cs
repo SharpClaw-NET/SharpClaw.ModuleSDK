@@ -209,8 +209,7 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                 JsonSerializer.SerializeToElement(
                     new { mode, text },
                     OutOfProcessProtocolCodec.JsonOptions),
-                new RequestPrincipal("test-user"),
-                ExtensionFeatureSet.Empty),
+                CreateStandaloneContext(invocationId, mode)),
             CancellationToken.None);
         return result.Content
             ?? throw new InvalidOperationException("The in-process tool returned no content.");
@@ -242,11 +241,27 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         await _inProcessModule.StopAsync(CancellationToken.None);
     }
 
-    private Task<OutOfProcessModuleClient> CreateClientAsync() =>
-        OutOfProcessModuleClient.CreateAuthorizedAsync(
+    private async Task<OutOfProcessModuleClient> CreateClientAsync()
+    {
+        var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
             _controlAddress,
             _controlToken,
             _catalog);
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new EmptyStorageGateway(),
+            new EmptyActionDispatcher(),
+            client.CreateCapabilityGrant(),
+            ["tool-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+        return client;
+    }
 
     private static SidecarToolHandlerInvokeStart CreateToolStart(
         OutOfProcessModuleClient client,
@@ -254,21 +269,34 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         string? text)
     {
         var definition = client.Discovery.ToolHandlers.Single();
+        var invocationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        var hostActionContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            definition.HandlerId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("tool", mode),
+            new RequestPrincipal("test-user"),
+            ExtensionFeatureSet.Empty,
+            deadline,
+            invocationId);
         return SidecarMessageHeaderFactory.CreateMeasured(
             OutOfProcessModuleHostProtocol.Version,
             sequence: 1,
-            DateTimeOffset.UtcNow.AddSeconds(10),
+            deadline,
             client.HostLimits.ActionInputBytes,
             header => new SidecarToolHandlerInvokeStart(
                 header,
-                Guid.NewGuid(),
+                invocationId,
                 definition.ToolName,
                 definition.HandlerId,
                 JsonSerializer.SerializeToElement(
                     new { mode, text },
                     OutOfProcessProtocolCodec.JsonOptions),
                 definition.InputSchema,
-                new RequestPrincipal("test-user")));
+                new RequestPrincipal("test-user"),
+                hostActionContext));
     }
 
     private static SidecarLifecycleHandlerInvokeStart CreateLifecycleStart(
@@ -313,6 +341,122 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             Runtime: ModuleManifestRuntimeInfo.DotNet,
             ModuleType: typeof(ToolLifecycleSmokeModule).FullName,
             HostMode: ModuleManifestRuntimeInfo.HostModeInProcess);
+
+    private static HostActionEntryRequestContext CreateStandaloneContext(
+        Guid invocationId,
+        string mode)
+    {
+        var descriptor = ApplicationSmokeModule.HostAction;
+        var action = new ApplicationSmokeAction("tool", mode);
+        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+        var bytes = SidecarCapabilityTransportCodec.Serialize(action);
+        using var document = JsonDocument.Parse(bytes);
+        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        var contribution = new HostActionEntryContribution(
+            new HostActionEntryIngressBinding(
+                HostActionEntryIngress.Tool,
+                ToolLifecycleSmokeModule.ToolName,
+                "in-process"),
+            new HostActionEntryLineage(
+                identity.Key,
+                identity.Version,
+                identity.DescriptorHash,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.InputSchemaHash,
+                SidecarCapabilityTransportCodec.ComputeSha256(canonical),
+                canonical.Length));
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        return new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)),
+            HostActionEntryIngress.Tool,
+            invocationId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new RequestPrincipal("test-user"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            deadline)
+        {
+            Contribution = contribution,
+        };
+    }
+
+    private sealed class EmptyStorageGateway : IModuleStorageGateway
+    {
+        public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() => [];
+
+        public Task<JsonElement> InvokeAsync(
+            string moduleId,
+            string storageName,
+            string operation,
+            JsonElement parameters,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageMutationAndOutboxRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRenewalRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRecoveryRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class EmptyActionDispatcher : IActionDispatcher
+    {
+        public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct) =>
+            new EmptyActionOutcome<TResult>(await terminal(action, ct));
+
+        public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct) =>
+            await terminal(action, ct);
+    }
+
+    private sealed class EmptyActionOutcome<TResult>(TResult result) : IActionOutcome<TResult>
+    {
+        public ActionOutcomeKind Kind => ActionOutcomeKind.Completed;
+
+        public TResult Result => result;
+
+        public ContinuationToken? Continuation => null;
+
+        public ExecutionError? Error => null;
+
+        public ActionUncertainty? Uncertainty => null;
+    }
 
     private static async Task<Uri> FindFreeAddressAsync()
     {

@@ -16,6 +16,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string CliName = "application.inspect";
     public const string CapabilityCliName = "application.capabilities";
     public const string HostEntryCliName = "application.host-entry";
+    public const string HostEntryToolName = "application.host-entry-tool";
 
     public static RequestPrincipal HostEntryCaller { get; } =
         new(
@@ -82,6 +83,18 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         module.Hooks.For(OwnedAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(OwnedActionHookId));
+        module.Tools.Add<HostEntryToolHandler>(new ToolDescriptor(
+            HostEntryToolName,
+            "Invokes the host-owned application action through the tool ingress.",
+            JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new
+                {
+                    value = new { type = "string" },
+                },
+                required = new[] { "value" },
+            })));
     }
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
@@ -142,64 +155,71 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             try
             {
-                var caller = HostEntryCaller;
-                var features = HostEntryFeatures;
-                var traceId = HostEntryTraceId;
-                var idempotencyKey = HostEntryIdempotencyKey;
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+                var hostActionContext = invocation.HostActionContext;
                 switch (invocation.Arguments.FirstOrDefault())
                 {
                     case "caller":
-                        caller = new RequestPrincipal(
+                        hostActionContext = hostActionContext with
+                        {
+                            Caller = new RequestPrincipal(
                             "spoofed-agent",
-                            HostEntryCaller.DisplayName,
-                            HostEntryCaller.Roles,
-                            HostEntryCaller.IsAuthenticated);
+                                hostActionContext.Caller.DisplayName,
+                                hostActionContext.Caller.Roles,
+                                hostActionContext.Caller.IsAuthenticated),
+                        };
                         break;
                     case "roles":
-                        caller = new RequestPrincipal(
-                            HostEntryCaller.SubjectId,
-                            HostEntryCaller.DisplayName,
-                            new HashSet<string>(["spoofed-role"], StringComparer.Ordinal),
-                            HostEntryCaller.IsAuthenticated);
+                        hostActionContext = hostActionContext with
+                        {
+                            Caller = new RequestPrincipal(
+                                hostActionContext.Caller.SubjectId,
+                                hostActionContext.Caller.DisplayName,
+                                new HashSet<string>(["spoofed-role"], StringComparer.Ordinal),
+                                hostActionContext.Caller.IsAuthenticated),
+                        };
                         break;
                     case "authentication":
-                        caller = new RequestPrincipal(
-                            HostEntryCaller.SubjectId,
-                            HostEntryCaller.DisplayName,
-                            HostEntryCaller.Roles,
-                            IsAuthenticated: false);
+                        hostActionContext = hostActionContext with
+                        {
+                            Caller = new RequestPrincipal(
+                                hostActionContext.Caller.SubjectId,
+                                hostActionContext.Caller.DisplayName,
+                                hostActionContext.Caller.Roles,
+                                IsAuthenticated: false),
+                        };
                         break;
                     case "features":
-                        features = new ExtensionFeatureSet(
-                        [
-                            new ExtensionFeature(
-                                "application.test-feature",
-                                1,
-                                Id,
-                                128,
-                                JsonSerializer.SerializeToElement(true)),
-                        ]);
+                        hostActionContext = hostActionContext with
+                        {
+                            Features = new ExtensionFeatureSet(
+                            [
+                                new ExtensionFeature(
+                                    "application.test-feature",
+                                    1,
+                                    Id,
+                                    128,
+                                    JsonSerializer.SerializeToElement(true)),
+                            ]),
+                        };
                         break;
                     case "trace":
-                        traceId = Guid.NewGuid();
+                        hostActionContext = hostActionContext with { TraceId = Guid.NewGuid() };
                         break;
                     case "idempotency":
-                        idempotencyKey = Guid.NewGuid();
+                        hostActionContext = hostActionContext with { IdempotencyKey = Guid.NewGuid() };
                         break;
                     case "expiry":
-                        deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+                        hostActionContext = hostActionContext with
+                        {
+                            Deadline = DateTimeOffset.UtcNow.AddMinutes(5),
+                        };
                         break;
                 }
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
                     new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                         HostAction,
                         new ApplicationSmokeAction("host-entry", "action"),
-                        caller,
-                        features,
-                        traceId,
-                        idempotencyKey,
-                        deadline),
+                        hostActionContext),
                     ct);
                 return new ModuleCliResult(
                     outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred,
@@ -215,6 +235,23 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     [new ModuleCliOutput("stderr", $"{ex.GetType().FullName}: {ex.Message}")],
                     new ExecutionError("host_entry_failed", ex.Message));
             }
+        }
+    }
+
+    public sealed class HostEntryToolHandler(IHostActionEntry hostActionEntry) : IToolHandler
+    {
+        public async ValueTask<ToolResult> InvokeAsync(
+            ToolInvocation invocation,
+            CancellationToken ct)
+        {
+            var value = invocation.Arguments.GetProperty("value").GetString() ?? string.Empty;
+            var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
+                new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
+                    HostAction,
+                    new ApplicationSmokeAction("host-tool", value),
+                    invocation.HostActionContext),
+                ct);
+            return ToolResult.Text($"host-tool:{outcome.Kind}:{outcome.Result?.Value}");
         }
     }
 

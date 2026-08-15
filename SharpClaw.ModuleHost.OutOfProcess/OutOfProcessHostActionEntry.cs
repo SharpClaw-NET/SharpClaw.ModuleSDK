@@ -23,13 +23,21 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The host action entry request is invalid or expired.");
         }
 
-        var hostContext = _transport.Binding.HostActionContext;
-        if (hostContext is null
-            || !HostActionEntryAuthorityValidator.MatchesRequestContext(request, hostContext))
+        var context = request.Context;
+        if (context is null
+            || context.Ingress != HostActionEntryIngress.Tool
+                && context.Ingress != HostActionEntryIngress.Cli
+                && context.Ingress != HostActionEntryIngress.Endpoint
+                && context.Ingress != HostActionEntryIngress.CrossModule
+            || context.Contribution is null
+            || !HostActionEntryAuthorityValidator.MatchesLineage(
+                context.Contribution.Lineage,
+                request.Descriptor,
+                request.Action))
         {
             throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
-                "The host action entry request context does not match the authenticated host context.");
+                "The host action entry request context does not match the typed host authority.");
         }
 
         var call = _transport.CreateCall(
@@ -50,7 +58,8 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             identity,
             actionPayload,
             cancellation,
-            request.Deadline);
+            request.Deadline,
+            context);
         var response = await _transport.InvokeActionAsync(
             sidecarRequest,
             terminal: null,

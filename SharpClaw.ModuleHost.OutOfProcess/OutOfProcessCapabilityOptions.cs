@@ -197,7 +197,7 @@ public sealed class OutOfProcessCapabilityHostOptions
         IEnumerable<string> ownedStorageNames,
         OutOfProcessActionDescriptorCatalog actionDescriptors,
         ActionPipelineSnapshot actionSnapshot,
-        HostActionEntryRequestContext? hostActionContext = null)
+        OutOfProcessHostActionEntryContextRegistry hostActionEntryContexts)
     {
         StorageGateway = storageGateway
             ?? throw new ArgumentNullException(nameof(storageGateway));
@@ -208,7 +208,8 @@ public sealed class OutOfProcessCapabilityHostOptions
             ?? throw new ArgumentNullException(nameof(actionDescriptors));
         ActionSnapshot = actionSnapshot
             ?? throw new ArgumentNullException(nameof(actionSnapshot));
-        HostActionContext = hostActionContext;
+        HostActionEntryContexts = hostActionEntryContexts
+            ?? throw new ArgumentNullException(nameof(hostActionEntryContexts));
         ArgumentNullException.ThrowIfNull(ownedStorageNames);
         OwnedStorageNames = new HashSet<string>(
             ownedStorageNames.Where(value => !string.IsNullOrWhiteSpace(value)),
@@ -237,8 +238,8 @@ public sealed class OutOfProcessCapabilityHostOptions
     /// <summary>Gets the host-owned action pipeline snapshot used for every dispatch.</summary>
     public ActionPipelineSnapshot ActionSnapshot { get; }
 
-    /// <summary>Gets the host-issued context for authority-free module action entry calls.</summary>
-    public HostActionEntryRequestContext? HostActionContext { get; }
+    /// <summary>Gets the one-use host context registry for ingress carriers.</summary>
+    public OutOfProcessHostActionEntryContextRegistry HostActionEntryContexts { get; }
 
 }
 
