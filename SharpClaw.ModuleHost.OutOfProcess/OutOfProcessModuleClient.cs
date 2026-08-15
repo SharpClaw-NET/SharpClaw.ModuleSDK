@@ -369,7 +369,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
 
         var request = new SidecarCliInvocation(
-            Guid.NewGuid(),
+            hostActionContext.InvocationId,
             Discovery.ModuleId,
             Discovery.ContractHash,
             command,
