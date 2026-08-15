@@ -12,14 +12,14 @@ public static class OutOfProcessActionDescriptorIdentity
         ActionDescriptor<TAction, TResult> descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        var input = SharpClaw.ModuleSDK.ModuleSchemaIdentity.ActionInput(
-            descriptor.Key,
-            descriptor.Version,
-            typeof(TAction));
-        var result = SharpClaw.ModuleSDK.ModuleSchemaIdentity.ActionResult(
-            descriptor.Key,
-            descriptor.Version,
-            typeof(TResult));
+        var input = descriptor.InputSchema
+            ?? throw new ArgumentException(
+                "The action descriptor must declare an input schema.",
+                nameof(descriptor));
+        var result = descriptor.ResultSchema
+            ?? throw new ArgumentException(
+                "The action descriptor must declare a result schema.",
+                nameof(descriptor));
         var identity = Create(
             descriptor.Key,
             descriptor.Version,
