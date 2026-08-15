@@ -122,7 +122,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
         }
     }
 
-    private static IActionOutcome<TResult> CreateOutcome<TResult>(
+    internal static IActionOutcome<TResult> CreateOutcome<TResult>(
         SidecarActionCapabilityResponse response)
     {
         var outcome = response.Outcome;
@@ -136,7 +136,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             outcome.Continuation);
     }
 
-    private static SidecarSerializedPayload Payload<T>(
+    internal static SidecarSerializedPayload Payload<T>(
         T value,
         string typeIdentity,
         int schemaVersion)

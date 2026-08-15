@@ -151,7 +151,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             OutOfProcessModuleHostProtocol.Version,
             grant,
             HostLimits,
-            _controlToken);
+            _controlToken,
+            options.HostActionContext);
         var socket = new ClientWebSocket();
         socket.Options.SetRequestHeader(
             OutOfProcessModuleHostProtocol.TokenHeaderName,

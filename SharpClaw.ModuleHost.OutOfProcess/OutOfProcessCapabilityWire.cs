@@ -242,7 +242,8 @@ internal static class OutOfProcessCapabilitySecurity
         int protocolVersion,
         SidecarCapabilityGrant grant,
         SidecarPayloadLimits payloadLimits,
-        string controlToken)
+        string controlToken,
+        HostActionEntryRequestContext? hostActionContext = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(graphId);
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
@@ -281,6 +282,27 @@ internal static class OutOfProcessCapabilitySecurity
                 Retryable: true),
             KeyId,
             proof);
+        if (hostActionContext is not null)
+        {
+            var boundHostActionContext = hostActionContext with
+            {
+                RequestId = binding.RequestId,
+            };
+            if (hostActionContext.RequestId != Guid.Empty
+                || !boundHostActionContext.IsWellFormed(issuedAt)
+                || boundHostActionContext.ExpiresAt > expiresAt)
+            {
+                throw new ArgumentException(
+                    "The host action context is not valid for the capability binding.",
+                    nameof(hostActionContext));
+            }
+
+            binding = binding with
+            {
+                HostActionContext = boundHostActionContext,
+            };
+        }
+
         var bindingHash = SidecarCapabilitySessionValidator.ComputeBindingHash(binding);
         var signature = ComputeAuthenticationSignature(controlToken, proof, bindingHash);
         return binding with
@@ -344,6 +366,31 @@ internal static class OutOfProcessCapabilitySecurity
         return Convert.ToHexString(HMACSHA256.HashData(
             Encoding.UTF8.GetBytes(controlToken),
             Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateHostActionEntryProof(
+        HostActionEntryAuthority authority,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-action-entry|"
+            + HostActionEntryAuthorityValidator.ComputeAuthorityHash(authority);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static bool ValidateHostActionEntryProof(
+        HostActionEntryAuthority authority,
+        string controlToken)
+    {
+        if (authority is null || string.IsNullOrWhiteSpace(authority.Proof))
+            return false;
+        var expected = CreateHostActionEntryProof(authority with { Proof = string.Empty }, controlToken);
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(authority.Proof));
     }
 
     private static string ComputeAuthenticationSignature(

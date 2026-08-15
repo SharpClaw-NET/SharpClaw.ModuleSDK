@@ -116,7 +116,8 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
             {
                 if (descriptor.ServiceType == typeof(IModuleStorageGateway)
                     || descriptor.ServiceType == typeof(IActionDispatcher)
-                    || descriptor.ServiceType == typeof(ISidecarCapabilityTransport))
+                    || descriptor.ServiceType == typeof(ISidecarCapabilityTransport)
+                    || descriptor.ServiceType == typeof(IHostActionEntry))
                 {
                     throw new InvalidOperationException(
                         $"The module cannot register host-owned service '{descriptor.ServiceType.FullName}'.");
@@ -131,6 +132,8 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
                     graph.Storage.Select(value => value.StorageName)));
             services.AddSingleton<IActionDispatcher>(
                 new OutOfProcessActionDispatcher(capabilityTransport));
+            services.AddSingleton<IHostActionEntry>(
+                new OutOfProcessHostActionEntry(capabilityTransport));
             services.AddSingleton(module);
             services.AddSingleton(graph);
             var provider = services.BuildServiceProvider(new ServiceProviderOptions

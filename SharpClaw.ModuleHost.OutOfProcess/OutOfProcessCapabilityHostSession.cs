@@ -400,7 +400,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 Session.Binding.ProtocolVersion,
                 _options.Grant,
                 _limits,
-                _controlToken);
+                _controlToken,
+                _options.HostActionContext);
             await OutOfProcessCapabilityWire.SendAsync(
                 _socket,
                 OutOfProcessCapabilityFrameKind.CapabilityRebind,
@@ -456,23 +457,28 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
-        if (!string.Equals(
-                request.Snapshot.ContractHash,
-                _options.ActionSnapshot.ContractHash,
-                StringComparison.Ordinal))
-            return false;
-
-        var authorizationGrant = _authorization.ActionGrants.SingleOrDefault(grant =>
-            grant.ActionKey == request.Descriptor.Key
-            && grant.ActionVersion == request.Descriptor.Version);
         var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
             grant.ActionKey == request.Descriptor.Key
             && grant.ActionVersion == request.Descriptor.Version);
-        return authorizationGrant is not null
-            && snapshotGrant is not null
-            && authorizationGrant.Capabilities == snapshotGrant.Capabilities
-            && authorizationGrant.SensitiveApproved == snapshotGrant.SensitiveApproved
-            && authorizationGrant.AcceptUnknownSchemas == snapshotGrant.AcceptUnknownSchemas;
+        var authorizationGrant = _authorization.ActionGrants.SingleOrDefault(grant =>
+            grant.ActionKey == request.Descriptor.Key
+            && grant.ActionVersion == request.Descriptor.Version);
+        if (authorizationGrant is null || snapshotGrant is null)
+            return false;
+
+        if (authorizationGrant.Capabilities != snapshotGrant.Capabilities
+            || authorizationGrant.SensitiveApproved != snapshotGrant.SensitiveApproved
+            || authorizationGrant.AcceptUnknownSchemas != snapshotGrant.AcceptUnknownSchemas)
+            return false;
+
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry)
+            return request.Snapshot is null;
+
+        return request.Snapshot is not null
+            && string.Equals(
+                request.Snapshot.ContractHash,
+                _options.ActionSnapshot.ContractHash,
+                StringComparison.Ordinal);
     }
 
     private SidecarCapabilityCallIdentity CreateExpectedCall(
@@ -746,9 +752,74 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         ActionDescriptor<TAction, TResult> descriptor,
         SidecarActionDescriptorIdentity identity,
         SidecarActionCapabilityRequest request,
+        Func<TAction, CancellationToken, ValueTask<TResult>>? hostTerminal,
         CancellationToken ct)
     {
         var action = Deserialize<TAction>(request.Action);
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry)
+        {
+            var context = _session.Binding.HostActionContext
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The capability binding has no host action context.");
+            if (hostTerminal is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.UnknownAction,
+                    "The host action descriptor has no registered terminal entry.");
+            }
+
+            var entryRequest = new HostActionEntryRequest<TAction, TResult>(
+                descriptor,
+                action,
+                context.Caller,
+                context.Features,
+                context.TraceId,
+                context.IdempotencyKey,
+                request.Deadline);
+            var issued = _session.IssueHostActionEntry(
+                entryRequest,
+                request.Call.CallId,
+                DateTimeOffset.UtcNow,
+                authority => OutOfProcessCapabilitySecurity.CreateHostActionEntryProof(
+                    authority,
+                    _controlToken),
+                out var transport);
+            if (!issued.Accepted || transport is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    issued.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    issued.Message ?? "The host action entry authority was rejected.");
+            }
+
+            var authorityValidation = _session.ValidateHostActionEntry(
+                transport,
+                DateTimeOffset.UtcNow,
+                authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
+                    authority,
+                    _controlToken));
+            if (!authorityValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    authorityValidation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    authorityValidation.Message ?? "The host action entry authority was rejected.");
+            }
+
+            var hostOutcome = await _options.ActionDispatcher.RunAsync(
+                descriptor,
+                action,
+                hostTerminal,
+                _options.ActionSnapshot,
+                ct);
+            return new OutOfProcessActionDispatchResult(
+                hostOutcome.Kind,
+                hostOutcome.Result,
+                hostOutcome.Error,
+                hostOutcome.Uncertainty,
+                hostOutcome.Continuation,
+                0);
+        }
+
         var outcome = await _options.ActionDispatcher.RunAsync(
             descriptor,
             action,

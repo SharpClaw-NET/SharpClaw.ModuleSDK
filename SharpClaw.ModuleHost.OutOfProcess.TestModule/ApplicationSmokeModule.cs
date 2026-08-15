@@ -15,6 +15,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string OwnedActionHookId = "application.owned.authorization";
     public const string CliName = "application.inspect";
     public const string CapabilityCliName = "application.capabilities";
+    public const string HostEntryCliName = "application.host-entry";
 
     public const ActionInterceptionCapabilities HostCapabilities =
         ActionInterceptionCapabilities.Inspect
@@ -40,6 +41,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             ProtocolVersionRange = ContractVersionRange.Exact(1),
             SafePoints = [ActionSafePoint.BeforeContinuation, ActionSafePoint.BeforeTerminal],
+            InputSchema = new JsonSchemaReference("application.smoke.action", 1, "application-smoke-action"),
+            ResultSchema = new JsonSchemaReference("application.smoke.result", 1, "application-smoke-result"),
         };
 
     public static ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> OwnedAction { get; } =
@@ -81,6 +84,12 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             "Exercises host-owned action and storage capabilities.",
             new JsonSchemaReference("application.capabilities.input", 1, "application-input"),
             new JsonSchemaReference("application.capabilities.result", 1, "application-result")));
+        application.Cli.Add<HostEntryCliHandler>(new ModuleCliCommandDescriptor(
+            HostEntryCliName,
+            ["app-host-entry"],
+            "Exercises the host-owned action entry.",
+            new JsonSchemaReference("application.host-entry.input", 1, "application-input"),
+            new JsonSchemaReference("application.host-entry.result", 1, "application-result")));
     }
 
     public sealed class AuthorizationHook : IActionInterceptor<ApplicationSmokeAction, ApplicationSmokeResult>
@@ -109,6 +118,41 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     }
 
     public sealed class ApplicationEndpoint;
+
+    public sealed class HostEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
+    {
+        public async ValueTask<ModuleCliResult> ExecuteAsync(
+            ModuleCliInvocation invocation,
+            CancellationToken ct)
+        {
+            try
+            {
+                var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
+                    new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
+                        HostAction,
+                        new ApplicationSmokeAction("host-entry", "action"),
+                        new RequestPrincipal("module-agent"),
+                        ExtensionFeatureSet.Empty,
+                        Guid.NewGuid(),
+                        Guid.NewGuid(),
+                        DateTimeOffset.UtcNow.AddSeconds(30)),
+                    ct);
+                return new ModuleCliResult(
+                    outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred,
+                    [new ModuleCliOutput(
+                        "stdout",
+                        $"host-entry:{outcome.Kind}:{outcome.Result?.Value}")],
+                    outcome.Error);
+            }
+            catch (Exception ex)
+            {
+                return new ModuleCliResult(
+                    false,
+                    [new ModuleCliOutput("stderr", $"{ex.GetType().FullName}: {ex.Message}")],
+                    new ExecutionError("host_entry_failed", ex.Message));
+            }
+        }
+    }
 
     public sealed class CapabilityCliHandler(
         ISharpClawModule module,

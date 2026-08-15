@@ -121,6 +121,12 @@ public sealed class OutOfProcessActionDescriptorCatalog
 
     /// <summary>Adds one typed descriptor to the immutable host lookup set.</summary>
     public void Add<TAction, TResult>(ActionDescriptor<TAction, TResult> descriptor)
+        => Add<TAction, TResult>(descriptor, hostTerminal: null);
+
+    /// <summary>Adds one typed descriptor and its host-owned terminal entry.</summary>
+    public void Add<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        Func<TAction, CancellationToken, ValueTask<TResult>>? hostTerminal)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
@@ -130,7 +136,12 @@ public sealed class OutOfProcessActionDescriptorCatalog
             typeof(TAction),
             typeof(TResult),
             (session, request, cancellationToken) =>
-                session.DispatchAsync(descriptor, identity, request, cancellationToken));
+                session.DispatchAsync(
+                    descriptor,
+                    identity,
+                    request,
+                    hostTerminal,
+                    cancellationToken));
         if (!_registrations.TryAdd(Key(identity), registration))
         {
             throw new InvalidOperationException(
@@ -185,7 +196,8 @@ public sealed class OutOfProcessCapabilityHostOptions
         SidecarCapabilityGrant grant,
         IEnumerable<string> ownedStorageNames,
         OutOfProcessActionDescriptorCatalog actionDescriptors,
-        ActionPipelineSnapshot actionSnapshot)
+        ActionPipelineSnapshot actionSnapshot,
+        HostActionEntryRequestContext? hostActionContext = null)
     {
         StorageGateway = storageGateway
             ?? throw new ArgumentNullException(nameof(storageGateway));
@@ -196,6 +208,7 @@ public sealed class OutOfProcessCapabilityHostOptions
             ?? throw new ArgumentNullException(nameof(actionDescriptors));
         ActionSnapshot = actionSnapshot
             ?? throw new ArgumentNullException(nameof(actionSnapshot));
+        HostActionContext = hostActionContext;
         ArgumentNullException.ThrowIfNull(ownedStorageNames);
         OwnedStorageNames = new HashSet<string>(
             ownedStorageNames.Where(value => !string.IsNullOrWhiteSpace(value)),
@@ -223,6 +236,9 @@ public sealed class OutOfProcessCapabilityHostOptions
 
     /// <summary>Gets the host-owned action pipeline snapshot used for every dispatch.</summary>
     public ActionPipelineSnapshot ActionSnapshot { get; }
+
+    /// <summary>Gets the host-issued context for authority-free module action entry calls.</summary>
+    public HostActionEntryRequestContext? HostActionContext { get; }
 
 }
 

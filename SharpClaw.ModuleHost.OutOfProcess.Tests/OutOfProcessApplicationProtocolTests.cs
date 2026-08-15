@@ -185,6 +185,50 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(3);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task HostActionEntryUsesHostContextSnapshotAndSingletonDispatcher()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (action, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new HostActionEntryRequestContext(
+                Guid.Empty,
+                new RequestPrincipal("host-entry"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(2))));
+
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.HostEntryCliName,
+            [],
+            new RequestPrincipal("agent-entry"));
+
+        result.Result.Succeeded.Should().BeTrue(
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+        result.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:entry-terminal:action");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
+    }
+
     [Test, CancelAfter(30000)]
     public async Task CapabilityCancellationStopsHostOperationAndKeepsSessionUsable()
     {
