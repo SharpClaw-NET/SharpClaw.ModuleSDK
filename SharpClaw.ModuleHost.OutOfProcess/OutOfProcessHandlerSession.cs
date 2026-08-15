@@ -79,7 +79,7 @@ internal static class OutOfProcessHandlerSession
         {
             throw;
         }
-        catch
+        catch (Exception ex)
         {
             terminal = protocol.Create(
                 SidecarProtocolMessageKind.ToolHandlerFailed,
@@ -89,7 +89,7 @@ internal static class OutOfProcessHandlerSession
                     start.HandlerId,
                     new ExecutionError(
                         "module_tool_failed",
-                        "The module tool handler failed.")));
+                        $"{ex.GetType().FullName}: {ex.Message}")));
         }
         await protocol.SendAsync(terminal, ct: ct);
     }
