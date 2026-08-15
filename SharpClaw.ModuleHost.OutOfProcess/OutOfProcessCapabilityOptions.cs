@@ -20,7 +20,7 @@ public static class OutOfProcessActionDescriptorIdentity
             descriptor.Key,
             descriptor.Version,
             typeof(TResult));
-        return Create(
+        var identity = Create(
             descriptor.Key,
             descriptor.Version,
             descriptor.Category,
@@ -28,6 +28,10 @@ public static class OutOfProcessActionDescriptorIdentity
             input,
             typeof(TResult),
             result);
+        return identity with
+        {
+            DescriptorHash = HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
+        };
     }
 
     /// <summary>Creates an identity from exact type and schema metadata.</summary>

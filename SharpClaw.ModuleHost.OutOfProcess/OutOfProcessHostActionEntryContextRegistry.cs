@@ -68,7 +68,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             new HostActionEntryLineage(
                 identity.Key,
                 identity.Version,
-                HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
+                identity.DescriptorHash,
                 identity.InputTypeIdentity,
                 inputSchema.Version,
                 inputSchemaHash,
