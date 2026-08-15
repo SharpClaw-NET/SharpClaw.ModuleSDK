@@ -189,6 +189,9 @@ public sealed class OutOfProcessApplicationProtocolTests
     public async Task HostActionEntryUsesHostContextSnapshotAndSingletonDispatcher()
     {
         await using var client = await CreateClientAsync();
+        var roles = ApplicationSmokeModule.HostEntryCaller.Roles;
+        roles.Should().NotBeNull();
+        roles!.Should().BeEquivalentTo(["module-agent", "module-operator"]);
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
         var descriptors = new OutOfProcessActionDescriptorCatalog();
