@@ -245,6 +245,7 @@ public sealed class OutOfProcessCapabilityHostOptions
     /// <summary>Gets the one-use host context registry for ingress carriers.</summary>
     public OutOfProcessHostActionEntryContextRegistry HostActionEntryContexts { get; }
 
+    internal Func<Task>? BeforeRotationStartAsync { get; set; }
 }
 
 /// <summary>Creates the capability grant shared by one authorized host and sidecar.</summary>

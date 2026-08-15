@@ -84,7 +84,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         DateTimeOffset deadline,
         Guid? invocationId = null)
     {
-        var context = HostActionEntryContexts.Issue(
+        var context = ConnectedCapabilitySession.IssueHostActionEntryContext(
             ingress,
             primaryIdentity,
             secondaryIdentity,

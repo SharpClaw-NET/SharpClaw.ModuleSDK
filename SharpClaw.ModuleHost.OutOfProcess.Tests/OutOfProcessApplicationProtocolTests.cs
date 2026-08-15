@@ -207,6 +207,86 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task ContextIssuanceWaitsForBindingRotationAtCallBudget()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (action, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        var rotationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry())
+        {
+            BeforeRotationStartAsync = async () =>
+            {
+                rotationEntered.TrySetResult();
+                await rotationRelease.Task;
+            },
+        };
+        await client.ConnectCapabilitiesAsync(options);
+
+        const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
+        for (var i = 0; i < maximumCalls; i++)
+        {
+            var result = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"rotation-issuance-{i}"));
+
+            result.Result.Succeeded.Should().BeTrue(
+                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
+        }
+
+        await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var contextTask = Task.Run(() => IssueHostEntryContext(client, grantExpiresAt));
+        (await Task.WhenAny(contextTask, Task.Delay(250))).Should().NotBe(contextTask);
+
+        rotationRelease.TrySetResult();
+        var context = await contextTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var hostEntry = await client.InvokeCliAsync(
+            ApplicationSmokeModule.HostEntryCliName,
+            [],
+            context);
+
+        hostEntry.Result.Succeeded.Should().BeTrue(
+            $"CLI error {hostEntry.Result.Error?.Code}: {hostEntry.Result.Error?.Message}; "
+            + string.Join(" | ", hostEntry.Result.Output.Select(item => item.Text)));
+        hostEntry.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:entry-terminal:action");
+
+        var afterRotation = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "rotation-issuance-after"));
+
+        afterRotation.Result.Succeeded.Should().BeTrue(
+            $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(maximumCalls + 1);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task PendingHostActionCarrierActivationRetriesBindingRotation()
     {
         await using var client = await CreateClientAsync();

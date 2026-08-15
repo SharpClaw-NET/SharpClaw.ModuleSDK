@@ -79,6 +79,57 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         return context;
     }
 
+    internal HostActionEntryRequestContext IssueHostActionEntryContext<TAction, TResult>(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+    {
+        while (true)
+        {
+            Task? rotation = null;
+            _rotationGate.Wait(_disconnect.Token);
+            try
+            {
+                lock (_rotationSync)
+                {
+                    if (_rotationReady is null
+                        && (_rotationTask is null || _rotationTask.IsCompleted))
+                    {
+                        return _options.HostActionEntryContexts.Issue(
+                            ingress,
+                            primaryIdentity,
+                            secondaryIdentity,
+                            descriptor,
+                            action,
+                            caller,
+                            features,
+                            traceId,
+                            idempotencyKey,
+                            deadline,
+                            invocationId);
+                    }
+
+                    rotation = _rotationTask ?? _rotationReady?.Task;
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            RequestRotationRetry();
+            rotation?.GetAwaiter().GetResult();
+        }
+    }
+
     internal HostActionEntryCarrierAuthority BeginHostActionEntryCarrier(
         HostActionEntryRequestContext context)
     {
@@ -470,10 +521,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var now = DateTimeOffset.UtcNow;
         Session.SweepExpiredHostActionEntryCarriers(now);
         _options.HostActionEntryContexts.SweepExpired(now);
-        Task? rotation;
+        Task? rotation = null;
         await _rotationGate.WaitAsync(ct);
         try
         {
+            Func<Task>? beforeRotationStart;
+            TaskCompletionSource ready;
             lock (_rotationSync)
             {
                 if (_rotationReady is null
@@ -483,18 +536,32 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     .NextPendingContextExpiration();
                 if (nextPendingExpiration is not null)
                     return nextPendingExpiration;
+
+                ready = _rotationReady;
+                beforeRotationStart = _options.BeforeRotationStartAsync;
+                _options.BeforeRotationStartAsync = null;
+            }
+
+            if (beforeRotationStart is not null)
+                await beforeRotationStart();
+
+            lock (_rotationSync)
+            {
+                if (_rotationReady is null || !_calls.IsEmpty)
+                    return null;
                 if (_rotationTask is null || _rotationTask.IsCompleted)
-                    _rotationTask = RotateBindingAsync(_rotationReady, ct);
+                    _rotationTask = RotateBindingAsync(ready, ct);
                 rotation = _rotationTask;
             }
+
+            if (rotation is not null)
+                await rotation;
+            return null;
         }
         finally
         {
             _rotationGate.Release();
         }
-
-        await rotation!;
-        return null;
     }
 
     internal void RequestRotationRetry()
