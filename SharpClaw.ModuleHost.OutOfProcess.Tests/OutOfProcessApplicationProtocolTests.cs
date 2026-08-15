@@ -276,6 +276,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         var definition = client.Discovery.ToolHandlers.Single(item =>
             item.ToolName == ApplicationSmokeModule.HostEntryToolName);
         var invocationId = Guid.NewGuid();
+        var traceId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Tool,
@@ -285,6 +287,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ApplicationSmokeAction("host-tool", "tool-value"),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
+            traceId,
+            idempotencyKey,
             deadline,
             invocationId);
         var start = CreateHostEntryToolStart(
@@ -298,6 +302,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         start.HostActionContext.Should().BeEquivalentTo(context);
         start.HostActionContext!.Caller.Should().BeEquivalentTo(ApplicationSmokeModule.HostEntryCaller);
         start.HostActionContext.Features.Should().BeEquivalentTo(ApplicationSmokeModule.HostEntryFeatures);
+        start.HostActionContext.TraceId.Should().Be(traceId);
+        start.HostActionContext.IdempotencyKey.Should().Be(idempotencyKey);
         start.HostActionContext.Deadline.Should().Be(deadline);
         start.HostActionContext.Contribution!.Lineage.ActionKey.Should().Be(
             ApplicationSmokeModule.HostAction.Key);
@@ -355,6 +361,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ApplicationSmokeAction("host-tool", "tool-value"),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
             deadline,
             invocationId);
         var hostileCaller = new RequestPrincipal(
@@ -656,6 +664,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ApplicationSmokeAction("cli", command),
             new RequestPrincipal(subject),
             ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
             deadline ?? DateTimeOffset.UtcNow.AddMinutes(1));
 
     private static HostActionEntryRequestContext IssueHostEntryContext(
@@ -669,6 +679,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             new ApplicationSmokeAction("host-entry", "action"),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
             deadline);
 
     private static SidecarToolHandlerInvokeStart CreateHostEntryToolStart(

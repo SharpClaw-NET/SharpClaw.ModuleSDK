@@ -279,6 +279,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             new ApplicationSmokeAction("tool", mode),
             new RequestPrincipal("test-user"),
             ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
             deadline,
             invocationId);
         return SidecarMessageHeaderFactory.CreateMeasured(

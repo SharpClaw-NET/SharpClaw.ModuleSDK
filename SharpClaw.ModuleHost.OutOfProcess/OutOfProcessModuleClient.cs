@@ -57,6 +57,11 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         ?? throw new InvalidOperationException(
             "The sidecar capability channel is not connected.");
 
+    private OutOfProcessCapabilityHostSession ConnectedCapabilitySession =>
+        Volatile.Read(ref _capabilitySession)
+        ?? throw new InvalidOperationException(
+            "The sidecar capability channel is not connected.");
+
     /// <summary>Creates a capability grant for this authorized module.</summary>
     public SidecarCapabilityGrant CreateCapabilityGrant(
         DateTimeOffset? expiresAt = null) =>
@@ -74,6 +79,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         TAction action,
         RequestPrincipal caller,
         ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
         DateTimeOffset deadline,
         Guid? invocationId = null) =>
         HostActionEntryContexts.Issue(
@@ -84,6 +91,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             action,
             caller,
             features,
+            traceId,
+            idempotencyKey,
             deadline,
             invocationId);
 
@@ -370,31 +379,52 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 $"CLI command '{command}' is not declared by the sidecar.");
         }
 
-        var request = new SidecarCliInvocation(
-            hostActionContext.InvocationId,
-            Discovery.ModuleId,
-            Discovery.ContractHash,
-            command,
-            arguments,
-            hostActionContext);
-        using var response = await _httpClient.PostAsJsonAsync(
-            OutOfProcessModuleHostProtocol.ApplicationCliPath,
-            request,
-            OutOfProcessProtocolCodec.JsonOptions,
-            ct);
-        if (!response.IsSuccessStatusCode)
+        var carrierAuthority = ConnectedCapabilitySession
+            .BeginHostActionEntryCarrier(hostActionContext);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        try
         {
-            var failure = await response.Content.ReadAsStringAsync(ct);
-            throw new OutOfProcessProtocolException(
-                "module_cli_http_failed",
-                $"The sidecar rejected the CLI request with HTTP {(int)response.StatusCode}: {failure}");
-        }
-        return await response.Content.ReadFromJsonAsync<SidecarCliExecutionResponse>(
+            var request = new SidecarCliInvocation(
+                hostActionContext.InvocationId,
+                Discovery.ModuleId,
+                Discovery.ContractHash,
+                command,
+                arguments,
+                hostActionContext);
+            using var response = await _httpClient.PostAsJsonAsync(
+                OutOfProcessModuleHostProtocol.ApplicationCliPath,
+                request,
                 OutOfProcessProtocolCodec.JsonOptions,
-                ct)
-            ?? throw new OutOfProcessProtocolException(
-                SidecarProtocolErrors.MalformedMessage,
-                "The sidecar returned no CLI execution response.");
+                ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var failure = await response.Content.ReadAsStringAsync(ct);
+                throw new OutOfProcessProtocolException(
+                    "module_cli_http_failed",
+                    $"The sidecar rejected the CLI request with HTTP {(int)response.StatusCode}: {failure}");
+            }
+            var result = await response.Content.ReadFromJsonAsync<SidecarCliExecutionResponse>(
+                    OutOfProcessProtocolCodec.JsonOptions,
+                    ct)
+                ?? throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar returned no CLI execution response.");
+            completion = result.Result.Succeeded
+                ? HostActionEntryCarrierCompletionKind.Succeeded
+                : HostActionEntryCarrierCompletionKind.Failed;
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
+        }
+        finally
+        {
+            ConnectedCapabilitySession.CompleteHostActionEntryCarrier(
+                carrierAuthority,
+                completion);
+        }
     }
 
     /// <summary>Runs one event interceptor exchange.</summary>
@@ -533,49 +563,65 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 SidecarProtocolErrors.MalformedMessage,
                 "The tool host action context is invalid for the requested tool.");
         }
-        using var socket = new ClientWebSocket();
-        socket.Options.SetRequestHeader(
-            OutOfProcessModuleHostProtocol.TokenHeaderName,
-            _controlToken);
-        await socket.ConnectAsync(ExchangeUri(), ct);
-        var state = new SidecarProtocolState(
-            SidecarExchangeKind.ToolHandler,
-            Guid.Empty,
-            Guid.Empty,
-            SidecarProtocolPhase.Negotiated,
-            LastSequence: 0,
-            start.Header.Deadline,
-            start.Header.ProtocolVersion,
-            HostLimits,
-            HostAuthorization: Authorization);
-        var protocol = new OutOfProcessProtocolSession(socket, state);
+        var carrierAuthority = ConnectedCapabilitySession
+            .BeginHostActionEntryCarrier(hostActionContext);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        ClientWebSocket? socket = null;
         try
         {
+            socket = new ClientWebSocket();
+            socket.Options.SetRequestHeader(
+                OutOfProcessModuleHostProtocol.TokenHeaderName,
+                _controlToken);
+            await socket.ConnectAsync(ExchangeUri(), ct);
+            var state = new SidecarProtocolState(
+                SidecarExchangeKind.ToolHandler,
+                Guid.Empty,
+                Guid.Empty,
+                SidecarProtocolPhase.Negotiated,
+                LastSequence: 0,
+                start.Header.Deadline,
+                start.Header.ProtocolVersion,
+                HostLimits,
+                HostAuthorization: Authorization);
+            var protocol = new OutOfProcessProtocolSession(socket, state);
             await protocol.SendAsync(start, ct: ct);
             var frame = await protocol.ReceiveAsync(ct);
             await protocol.CloseAsync(
                 WebSocketCloseStatus.NormalClosure,
                 "completed",
                 ct);
-            return frame.Message switch
+            if (frame.Message is SidecarToolHandlerResult result)
             {
-                SidecarToolHandlerResult result => result,
-                SidecarToolHandlerCancelled cancelled => throw new OutOfProcessProtocolException(
-                    cancelled.Code,
-                    cancelled.Message),
-                SidecarToolHandlerFailed failed => throw new OutOfProcessProtocolException(
-                    failed.Error.Code,
-                    failed.Error.Message),
-                SidecarProtocolError protocolError => throw Error(protocolError),
-                _ => throw new OutOfProcessProtocolException(
-                    SidecarProtocolErrors.MalformedMessage,
-                    "The sidecar did not return a tool handler result."),
-            };
+                completion = HostActionEntryCarrierCompletionKind.Succeeded;
+                return result;
+            }
+            if (frame.Message is SidecarToolHandlerCancelled cancelled)
+            {
+                completion = HostActionEntryCarrierCompletionKind.Cancelled;
+                throw new OutOfProcessProtocolException(cancelled.Code, cancelled.Message);
+            }
+            if (frame.Message is SidecarToolHandlerFailed failed)
+                throw new OutOfProcessProtocolException(failed.Error.Code, failed.Error.Message);
+            if (frame.Message is SidecarProtocolError protocolError)
+                throw Error(protocolError);
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The sidecar did not return a tool handler result.");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            await TryCloseAsync(socket, "cancelled");
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            if (socket is not null)
+                await TryCloseAsync(socket, "cancelled");
             throw;
+        }
+        finally
+        {
+            socket?.Dispose();
+            ConnectedCapabilitySession.CompleteHostActionEntryCarrier(
+                carrierAuthority,
+                completion);
         }
     }
 

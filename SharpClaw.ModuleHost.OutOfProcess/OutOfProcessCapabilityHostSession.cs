@@ -77,6 +77,76 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         return context;
     }
 
+    internal HostActionEntryCarrierAuthority BeginHostActionEntryCarrier(
+        HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The host action context has no ingress contribution.");
+        }
+        if (!_options.HostActionEntryContexts.TryBeginCarrier(context))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The host action context is not pending for a carrier.");
+        }
+
+        var carrier = new HostActionEntryCarrierIdentity(
+            context.Ingress,
+            context.InvocationId,
+            context.Contribution.IngressBinding);
+        try
+        {
+            var validation = Session.BeginHostActionEntryCarrier(
+                context,
+                carrier,
+                DateTimeOffset.UtcNow,
+                out var authority);
+            if (!validation.Accepted || authority is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    validation.Message
+                        ?? "The host action entry carrier was rejected.");
+            }
+
+            return authority;
+        }
+        catch
+        {
+            _options.HostActionEntryContexts.RestorePendingCarrier(context);
+            throw;
+        }
+    }
+
+    internal void CompleteHostActionEntryCarrier(
+        HostActionEntryCarrierAuthority authority,
+        HostActionEntryCarrierCompletionKind completion)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        try
+        {
+            var validation = Session.CompleteHostActionEntryCarrier(
+                authority,
+                completion,
+                DateTimeOffset.UtcNow);
+            if (!validation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    validation.Message
+                        ?? "The host action entry carrier completion was rejected.");
+            }
+        }
+        finally
+        {
+            _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
+        }
+    }
+
     private static SidecarCapabilitySession CreateSession(
         SidecarCapabilitySessionBinding binding,
         string controlToken) =>
@@ -385,13 +455,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private async ValueTask StartRotationIfReadyAsync(CancellationToken ct)
     {
+        var now = DateTimeOffset.UtcNow;
+        Session.SweepExpiredHostActionEntryCarriers(now);
+        _options.HostActionEntryContexts.SweepExpired(now);
         Task? rotation;
         await _rotationGate.WaitAsync(ct);
         try
         {
             lock (_rotationSync)
             {
-                if (_rotationReady is null || !_calls.IsEmpty)
+                if (_rotationReady is null
+                    || !_calls.IsEmpty
+                    || _options.HostActionEntryContexts.HasPendingContexts)
                     return;
                 if (_rotationTask is null || _rotationTask.IsCompleted)
                     _rotationTask = RotateBindingAsync(_rotationReady, ct);
@@ -439,10 +514,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     accepted.Message ?? "The sidecar rejected the capability binding rotation.");
             }
 
+            var rotation = Session.RotateBinding(nextBinding, DateTimeOffset.UtcNow);
+            if (!rotation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    rotation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    rotation.Message
+                        ?? "The capability session rejected binding rotation.");
+            }
             _options.HostActionEntryContexts.Bind(
                 nextBinding,
-                IssueHostActionEntryContext);
-            Volatile.Write(ref _session, CreateSession(nextBinding, _controlToken));
+                IssueHostActionEntryContext,
+                preserveActiveContexts: true);
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
             lock (_rotationSync)
             {

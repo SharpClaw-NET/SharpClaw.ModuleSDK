@@ -7,6 +7,7 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 public sealed class OutOfProcessHostActionEntryContextRegistry
 {
     private readonly ConcurrentDictionary<Guid, IssuedContext> _issued = new();
+    private readonly ConcurrentDictionary<Guid, IssuedContext> _active = new();
     private SidecarCapabilitySessionBinding? _binding;
     private Func<HostActionEntryContextRequest, HostActionEntryRequestContext>? _issuer;
 
@@ -19,6 +20,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         TAction action,
         RequestPrincipal caller,
         ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
         DateTimeOffset deadline,
         Guid? invocationId = null)
     {
@@ -26,6 +29,14 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(features);
         ArgumentException.ThrowIfNullOrWhiteSpace(primaryIdentity);
+        if (traceId == Guid.Empty)
+            throw new ArgumentException("The host action context trace ID is required.", nameof(traceId));
+        if (idempotencyKey == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "The host action context idempotency key is required.",
+                nameof(idempotencyKey));
+        }
         if (ingress == HostActionEntryIngress.CrossModule)
             ArgumentException.ThrowIfNullOrWhiteSpace(secondaryIdentity);
 
@@ -81,8 +92,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             binding.CancellationId,
             caller,
             features,
-            Guid.NewGuid(),
-            Guid.NewGuid(),
+            traceId,
+            idempotencyKey,
             deadline,
             binding.ExpiresAt)
         {
@@ -109,11 +120,14 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 
     internal void Bind(
         SidecarCapabilitySessionBinding binding,
-        Func<HostActionEntryContextRequest, HostActionEntryRequestContext> issuer)
+        Func<HostActionEntryContextRequest, HostActionEntryRequestContext> issuer,
+        bool preserveActiveContexts = false)
     {
         ArgumentNullException.ThrowIfNull(binding);
         ArgumentNullException.ThrowIfNull(issuer);
         _issued.Clear();
+        if (!preserveActiveContexts)
+            _active.Clear();
         Volatile.Write(ref _issuer, issuer);
         Volatile.Write(ref _binding, binding);
     }
@@ -125,8 +139,51 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             return;
 
         _issued.Clear();
+        _active.Clear();
         Volatile.Write(ref _issuer, null);
         Volatile.Write(ref _binding, null);
+    }
+
+    internal bool HasPendingContexts => !_issued.IsEmpty;
+
+    internal void SweepExpired(DateTimeOffset now)
+    {
+        foreach (var pair in _issued)
+        {
+            if (pair.Value.Context.ExpiresAt <= now)
+                _issued.TryRemove(pair.Key, out _);
+        }
+
+        foreach (var pair in _active)
+        {
+            if (pair.Value.Context.ExpiresAt <= now)
+                _active.TryRemove(pair.Key, out _);
+        }
+    }
+
+    internal bool TryBeginCarrier(HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (!_issued.TryRemove(context.CapabilityId, out var issued))
+            return false;
+        if (_active.TryAdd(context.CapabilityId, issued))
+            return true;
+
+        _issued.TryAdd(context.CapabilityId, issued);
+        return false;
+    }
+
+    internal void RestorePendingCarrier(HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (_active.TryRemove(context.CapabilityId, out var issued))
+            _issued.TryAdd(context.CapabilityId, issued);
+    }
+
+    internal void CompleteCarrier(Guid capabilityId)
+    {
+        _issued.TryRemove(capabilityId, out _);
+        _active.TryRemove(capabilityId, out _);
     }
 
     internal static bool MatchesCaller(
@@ -155,7 +212,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     {
         ArgumentNullException.ThrowIfNull(request);
         var context = request.Context;
-        if (!_issued.TryRemove(context.CapabilityId, out var issued))
+        if (!_active.TryRemove(context.CapabilityId, out var issued))
             return false;
 
         var binding = Volatile.Read(ref _binding);
@@ -164,10 +221,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             request.Descriptor);
         return binding is not null
             && context.IsWellFormed(now)
-            && issued.RequestId == binding.RequestId
-            && issued.CancellationId == binding.CancellationId
-            && context.RequestId == binding.RequestId
-            && context.CancellationId == binding.CancellationId
+            && issued.RequestId == context.RequestId
+            && issued.CancellationId == context.CancellationId
             && HostActionEntryAuthorityValidator.SameContext(issued.Context, context)
             && context.Contribution is not null
             && lineageMatches;
