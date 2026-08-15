@@ -350,7 +350,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             || hostActionContext.InvocationId != request.InvocationId
             || hostActionContext.Contribution is null
             || !string.Equals(
-                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
                 request.Command,
                 StringComparison.Ordinal))
         {

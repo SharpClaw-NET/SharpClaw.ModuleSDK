@@ -779,7 +779,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     DateTimeOffset.UtcNow))
             {
                 throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.SpoofedIdentity,
+                    SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                     "The host action context is invalid, expired, or already used.");
             }
             var issued = _session.IssueHostActionEntry(

@@ -350,7 +350,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             || hostActionContext.Ingress != HostActionEntryIngress.Cli
             || hostActionContext.Contribution is null
             || !string.Equals(
-                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
                 command,
                 StringComparison.Ordinal)
             || hostActionContext.InvocationId == Guid.Empty)
@@ -513,7 +513,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             || hostActionContext.InvocationId != start.InvocationId
             || hostActionContext.Contribution is null
             || !string.Equals(
-                hostActionContext.Contribution.Binding.PrimaryIdentity,
+                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
                 start.ToolName,
                 StringComparison.Ordinal))
         {
