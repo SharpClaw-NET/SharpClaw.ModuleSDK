@@ -25,15 +25,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             new HashSet<string>(["module-agent", "module-operator"], StringComparer.Ordinal));
 
     public static ExtensionFeatureSet HostEntryFeatures { get; } =
-        new ExtensionFeatureSet(
-        [
-            new ExtensionFeature(
-                "application.host-entry",
-                1,
-                Id,
-                128,
-                JsonSerializer.SerializeToElement("enabled")),
-        ]);
+        ExtensionFeatureSet.Empty;
 
     public static Guid HostEntryTraceId { get; } =
         new("11111111-1111-4111-8111-111111111111");
