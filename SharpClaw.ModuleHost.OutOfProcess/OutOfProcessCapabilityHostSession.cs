@@ -1159,11 +1159,16 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 registration.Identity.ResultSchemaVersion);
         }
 
-        var continuationRequestId = request.Continuation?.ContinuationRequestId
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The action request has no continuation identity.");
         _session.TryGetTerminalReceipt(request.Call.CallId, out var terminalReceipt);
+        SidecarTerminalContinuationResponse? continuation = null;
+        if (request.Continuation is not null)
+        {
+            continuation = new SidecarTerminalContinuationResponse(
+                request.Continuation.ContinuationRequestId,
+                false,
+                null,
+                _session.Binding.SafeFailure);
+        }
 
         var envelope = new SidecarActionOutcomeEnvelope(
             outcome.Kind,
@@ -1183,11 +1188,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 registration.Identity.ResultTypeIdentity,
                 resultPayload?.ContentHash ?? string.Empty),
             envelope,
-            new SidecarTerminalContinuationResponse(
-                continuationRequestId,
-                false,
-                null!,
-                _session.Binding.SafeFailure),
+            continuation,
             _session.Binding.SafeFailure,
             Completed: true);
     }
