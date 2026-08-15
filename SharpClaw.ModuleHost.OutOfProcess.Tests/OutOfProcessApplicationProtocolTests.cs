@@ -328,7 +328,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         session.TryGetActiveHostActionEntryCarrier(
             context!.CapabilityId,
             out var preserved).Should().BeTrue();
-        preserved.Should().BeEquivalentTo(authority);
+        preserved.Should().NotBeNull();
+        preserved!.Should().BeEquivalentTo(authority);
 
         var completed = session.CompleteHostActionEntryCarrier(
             authority!,
