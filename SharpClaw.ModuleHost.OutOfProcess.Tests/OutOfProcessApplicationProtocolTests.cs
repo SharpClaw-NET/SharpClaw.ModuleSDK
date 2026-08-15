@@ -322,8 +322,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(1);
 
         var replay = async () => await client.InvokeToolAsync(start);
-        (await replay.Should().ThrowAsync<OutOfProcessProtocolException>())
-            .Which.Code.Should().Be("module_tool_failed");
+        (await replay.Should().ThrowAsync<OutOfProcessCapabilityException>())
+            .Which.Code.Should().Be(SidecarCapabilityErrors.Replay);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
     }
