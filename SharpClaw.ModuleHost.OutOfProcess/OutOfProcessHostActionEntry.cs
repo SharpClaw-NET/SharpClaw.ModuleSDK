@@ -24,16 +24,22 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         }
 
         var context = request.Context;
+        var lineageMatches = context?.Contribution is { } contribution
+            && (context.Ingress == HostActionEntryIngress.Tool
+                ? HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
+                    contribution.Lineage,
+                    request.Descriptor)
+                : HostActionEntryAuthorityValidator.MatchesLineage(
+                    contribution.Lineage,
+                    request.Descriptor,
+                    request.Action));
         if (context is null
             || context.Ingress != HostActionEntryIngress.Tool
                 && context.Ingress != HostActionEntryIngress.Cli
                 && context.Ingress != HostActionEntryIngress.Endpoint
                 && context.Ingress != HostActionEntryIngress.CrossModule
             || context.Contribution is null
-            || !HostActionEntryAuthorityValidator.MatchesLineage(
-                context.Contribution.Lineage,
-                request.Descriptor,
-                request.Action))
+            || !lineageMatches)
         {
             throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,

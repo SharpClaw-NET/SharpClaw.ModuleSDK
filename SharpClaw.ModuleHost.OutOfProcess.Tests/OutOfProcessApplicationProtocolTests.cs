@@ -301,6 +301,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         start.HostActionContext.Deadline.Should().Be(deadline);
         start.HostActionContext.Contribution!.Lineage.ActionKey.Should().Be(
             ApplicationSmokeModule.HostAction.Key);
+        start.HostActionContext.Contribution.Lineage.IsPayloadBound.Should().BeFalse();
         start.InputSchema.Should().Be(definition.InputSchema);
 
         var result = await client.InvokeToolAsync(start);

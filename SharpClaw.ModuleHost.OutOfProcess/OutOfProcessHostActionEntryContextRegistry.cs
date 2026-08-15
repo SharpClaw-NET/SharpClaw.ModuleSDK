@@ -41,10 +41,12 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         }
 
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
-        var payload = OutOfProcessActionDispatcher.Payload(
-            action,
-            identity.InputTypeIdentity,
-            identity.InputSchemaVersion);
+        var payload = ingress == HostActionEntryIngress.Tool
+            ? null
+            : OutOfProcessActionDispatcher.Payload(
+                action,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion);
         var contribution = new HostActionEntryContribution(
             new HostActionEntryIngressBinding(
                 ingress,
@@ -55,12 +57,12 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             new HostActionEntryLineage(
                 identity.Key,
                 identity.Version,
-                identity.DescriptorHash,
+                HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.InputSchemaHash,
-                payload.ContentHash,
-                payload.ByteLength));
+                payload?.ContentHash,
+                payload?.ByteLength));
         var context = new HostActionEntryRequestContext(
             Guid.NewGuid(),
             Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
@@ -141,6 +143,14 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             return false;
 
         var binding = Volatile.Read(ref _binding);
+        var lineageMatches = context.Ingress == HostActionEntryIngress.Tool
+            ? HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
+                context.Contribution?.Lineage,
+                request.Descriptor)
+            : HostActionEntryAuthorityValidator.MatchesLineage(
+                context.Contribution?.Lineage,
+                request.Descriptor,
+                request.Action);
         return binding is not null
             && context.IsWellFormed(now)
             && issued.RequestId == binding.RequestId
@@ -149,10 +159,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             && context.CancellationId == binding.CancellationId
             && HostActionEntryAuthorityValidator.SameContext(issued.Context, context)
             && context.Contribution is not null
-            && HostActionEntryAuthorityValidator.MatchesLineage(
-                context.Contribution.Lineage,
-                request.Descriptor,
-                request.Action);
+            && lineageMatches;
     }
 
     private sealed record IssuedContext(
