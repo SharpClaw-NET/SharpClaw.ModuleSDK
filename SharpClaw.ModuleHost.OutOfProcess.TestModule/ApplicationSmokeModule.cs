@@ -20,9 +20,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public static RequestPrincipal HostEntryCaller { get; } =
         new(
             "module-agent",
-            "Module Agent",
-            new HashSet<string>(["module-agent"], StringComparer.Ordinal),
-            IsAuthenticated: true);
+            "Module Agent");
 
     public static ExtensionFeatureSet HostEntryFeatures { get; } =
         ExtensionFeatureSet.Empty;
