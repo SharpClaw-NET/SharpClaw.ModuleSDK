@@ -67,7 +67,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             Guid.NewGuid(),
             Guid.NewGuid(),
             deadline,
-            deadline)
+            binding.ExpiresAt)
         {
             Contribution = contribution,
         };
