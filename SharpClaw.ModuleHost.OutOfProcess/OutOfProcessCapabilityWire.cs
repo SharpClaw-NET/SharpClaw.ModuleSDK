@@ -275,7 +275,9 @@ internal static class OutOfProcessCapabilitySecurity
             Guid.NewGuid(),
             expiresAt,
             payloadLimits,
-            new SidecarConcurrencyLimits(32, DefaultMaximumCallsPerRequest),
+            new SidecarConcurrencyLimits(
+                32,
+                OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest),
             new SidecarSafeFailureIdentity(
                 Guid.NewGuid(),
                 "sidecar_capability_failed",
