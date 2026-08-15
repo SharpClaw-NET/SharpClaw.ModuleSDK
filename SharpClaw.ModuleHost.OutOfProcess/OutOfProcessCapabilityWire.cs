@@ -37,6 +37,8 @@ internal sealed record OutOfProcessCapabilityCancellation(
 
 internal static class OutOfProcessCapabilityWire
 {
+    internal const int DefaultMaximumCallsPerRequest = 8;
+
     private const int FrameOverheadBytes = 65_536;
 
     public static async ValueTask SendAsync<T>(
@@ -273,7 +275,7 @@ internal static class OutOfProcessCapabilitySecurity
             Guid.NewGuid(),
             expiresAt,
             payloadLimits,
-            new SidecarConcurrencyLimits(32, 8),
+            new SidecarConcurrencyLimits(32, DefaultMaximumCallsPerRequest),
             new SidecarSafeFailureIdentity(
                 Guid.NewGuid(),
                 "sidecar_capability_failed",

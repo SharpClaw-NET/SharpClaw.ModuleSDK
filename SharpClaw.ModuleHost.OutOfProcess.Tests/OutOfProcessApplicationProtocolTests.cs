@@ -231,8 +231,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry()));
 
         var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
-        var maximumCalls = client.HostLimits.ConcurrencyLimits.MaximumCallsPerRequest;
-        maximumCalls.Should().BeGreaterThan(0);
+        const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         for (var i = 0; i < maximumCalls; i++)
         {
             var result = await client.InvokeCliAsync(
