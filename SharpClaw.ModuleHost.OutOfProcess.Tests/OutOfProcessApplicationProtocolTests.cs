@@ -268,6 +268,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             _ => true,
             now);
         var descriptor = ApplicationSmokeModule.HostAction;
+        var inputSchema = descriptor.InputSchema
+            ?? throw new AssertionException("The rotation test action has no input schema.");
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
         var deadline = binding.ExpiresAt.AddSeconds(-2);
         var contribution = new HostActionEntryContribution(
@@ -280,8 +282,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 identity.Version,
                 identity.DescriptorHash,
                 identity.InputTypeIdentity,
-                descriptor.InputSchema.Version,
-                descriptor.InputSchema.ContentHash!,
+                inputSchema.Version,
+                inputSchema.ContentHash!,
                 null,
                 null));
         var request = new HostActionEntryContextRequest(
