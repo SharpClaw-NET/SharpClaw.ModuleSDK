@@ -249,7 +249,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     Authorization);
                 options.HostActionEntryContexts.Bind(
                     binding,
-                    session.IssueHostActionEntryContext);
+                    session.IssueHostActionEntryContext,
+                    issueCoordinator: session.ExecuteContextIssuance);
 
                 _capabilitySession = session;
                 Volatile.Write(ref _hostActionEntryContexts, options.HostActionEntryContexts);

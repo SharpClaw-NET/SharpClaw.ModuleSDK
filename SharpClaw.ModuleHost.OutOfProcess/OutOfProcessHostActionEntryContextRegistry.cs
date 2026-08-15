@@ -10,6 +10,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     private readonly ConcurrentDictionary<Guid, IssuedContext> _active = new();
     private SidecarCapabilitySessionBinding? _binding;
     private Func<HostActionEntryContextRequest, HostActionEntryRequestContext>? _issuer;
+    private Func<Func<HostActionEntryRequestContext>, HostActionEntryRequestContext>? _issueCoordinator;
 
     /// <summary>Issues a typed context for one host-owned ingress carrier.</summary>
     public HostActionEntryRequestContext Issue<TAction, TResult>(
@@ -24,6 +25,50 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid idempotencyKey,
         DateTimeOffset deadline,
         Guid? invocationId = null)
+    {
+        var coordinator = Volatile.Read(ref _issueCoordinator);
+        if (coordinator is null)
+        {
+            return IssueCore(
+                ingress,
+                primaryIdentity,
+                secondaryIdentity,
+                descriptor,
+                action,
+                caller,
+                features,
+                traceId,
+                idempotencyKey,
+                deadline,
+                invocationId);
+        }
+
+        return coordinator(() => IssueCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId));
+    }
+
+    private HostActionEntryRequestContext IssueCore<TAction, TResult>(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(caller);
@@ -121,7 +166,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     internal void Bind(
         SidecarCapabilitySessionBinding binding,
         Func<HostActionEntryContextRequest, HostActionEntryRequestContext> issuer,
-        bool preserveActiveContexts = false)
+        bool preserveActiveContexts = false,
+        Func<Func<HostActionEntryRequestContext>, HostActionEntryRequestContext>? issueCoordinator = null)
     {
         ArgumentNullException.ThrowIfNull(binding);
         ArgumentNullException.ThrowIfNull(issuer);
@@ -130,6 +176,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             _active.Clear();
         Volatile.Write(ref _issuer, issuer);
         Volatile.Write(ref _binding, binding);
+        Volatile.Write(ref _issueCoordinator, issueCoordinator);
     }
 
     internal void Invalidate(SidecarCapabilitySessionBinding binding)
@@ -142,6 +189,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         _active.Clear();
         Volatile.Write(ref _issuer, null);
         Volatile.Write(ref _binding, null);
+        Volatile.Write(ref _issueCoordinator, null);
     }
 
     internal bool HasPendingContexts => !_issued.IsEmpty;

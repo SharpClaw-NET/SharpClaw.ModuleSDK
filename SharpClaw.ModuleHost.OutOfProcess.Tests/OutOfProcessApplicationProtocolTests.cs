@@ -206,8 +206,11 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(3);
     }
 
-    [Test, CancelAfter(30000)]
-    public async Task ContextIssuanceWaitsForBindingRotationAtCallBudget()
+    [TestCase(false)]
+    [TestCase(true)]
+    [CancelAfter(30000)]
+    public async Task ContextIssuanceWaitsForBindingRotationAtCallBudget(
+        bool usePublicRegistry)
     {
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
@@ -258,7 +261,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
 
         await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var contextTask = Task.Run(() => IssueHostEntryContext(client, grantExpiresAt));
+        var contextTask = Task.Run(() => usePublicRegistry
+            ? IssueHostEntryContextThroughRegistry(client, grantExpiresAt)
+            : IssueHostEntryContext(client, grantExpiresAt));
         (await Task.WhenAny(contextTask, Task.Delay(250))).Should().NotBe(contextTask);
 
         rotationRelease.TrySetResult();
@@ -298,7 +303,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             static (action, _) => ValueTask.FromResult(
                 new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
-        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+        var carrierEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var carrierRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new OutOfProcessCapabilityHostOptions(
             storage,
             dispatcher,
             client.CreateCapabilityGrant(grantExpiresAt),
@@ -308,7 +317,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry())
+        {
+            BeforeCarrierSessionBeginAsync = async () =>
+            {
+                carrierEntered.TrySetResult();
+                await carrierRelease.Task;
+            },
+        };
+        await client.ConnectCapabilitiesAsync(options);
 
         var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
@@ -326,10 +343,14 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
 
-        var hostEntry = await client.InvokeCliAsync(
+        var hostEntryTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [],
-            pendingContext);
+            pendingContext));
+        await carrierEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        hostEntryTask.IsCompleted.Should().BeFalse();
+        carrierRelease.TrySetResult();
+        var hostEntry = await hostEntryTask.WaitAsync(TimeSpan.FromSeconds(5));
 
         hostEntry.Result.Succeeded.Should().BeTrue(
             $"CLI error {hostEntry.Result.Error?.Code}: {hostEntry.Result.Error?.Message}; "
@@ -908,6 +929,21 @@ public sealed class OutOfProcessApplicationProtocolTests
         OutOfProcessModuleClient client,
         DateTimeOffset deadline) =>
         client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.HostEntryCliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-entry", "action"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline);
+
+    private static HostActionEntryRequestContext IssueHostEntryContextThroughRegistry(
+        OutOfProcessModuleClient client,
+        DateTimeOffset deadline) =>
+        client.HostActionEntryContexts.Issue(
             HostActionEntryIngress.Cli,
             ApplicationSmokeModule.HostEntryCliName,
             client.Discovery.ModuleId,

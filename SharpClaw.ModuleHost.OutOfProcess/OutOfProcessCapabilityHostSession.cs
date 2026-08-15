@@ -91,7 +91,23 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         Guid idempotencyKey,
         DateTimeOffset deadline,
         Guid? invocationId = null)
+        => _options.HostActionEntryContexts.Issue(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+
+    internal HostActionEntryRequestContext ExecuteContextIssuance(
+        Func<HostActionEntryRequestContext> issue)
     {
+        ArgumentNullException.ThrowIfNull(issue);
         while (true)
         {
             Task? rotation = null;
@@ -102,20 +118,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 {
                     if (_rotationReady is null
                         && (_rotationTask is null || _rotationTask.IsCompleted))
-                    {
-                        return _options.HostActionEntryContexts.Issue(
-                            ingress,
-                            primaryIdentity,
-                            secondaryIdentity,
-                            descriptor,
-                            action,
-                            caller,
-                            features,
-                            traceId,
-                            idempotencyKey,
-                            deadline,
-                            invocationId);
-                    }
+                        return issue();
 
                     rotation = _rotationTask ?? _rotationReady?.Task;
                 }
@@ -140,19 +143,26 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 SidecarCapabilityErrors.MalformedMessage,
                 "The host action context has no ingress contribution.");
         }
-        if (!_options.HostActionEntryContexts.TryBeginCarrier(context))
-        {
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.Replay,
-                "The host action context is not pending for a carrier.");
-        }
-
-        var carrier = new HostActionEntryCarrierIdentity(
-            context.Ingress,
-            context.InvocationId,
-            context.Contribution.IngressBinding);
+        _rotationGate.Wait(_disconnect.Token);
         try
         {
+            if (!_options.HostActionEntryContexts.TryBeginCarrier(context))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The host action context is not pending for a carrier.");
+            }
+
+            RequestRotationRetry();
+            var beforeCarrierSessionBegin = _options.BeforeCarrierSessionBeginAsync;
+            _options.BeforeCarrierSessionBeginAsync = null;
+            if (beforeCarrierSessionBegin is not null)
+                beforeCarrierSessionBegin().GetAwaiter().GetResult();
+
+            var carrier = new HostActionEntryCarrierIdentity(
+                context.Ingress,
+                context.InvocationId,
+                context.Contribution.IngressBinding);
             var validation = Session.BeginHostActionEntryCarrier(
                 context,
                 carrier,
@@ -174,6 +184,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             _options.HostActionEntryContexts.RestorePendingCarrier(context);
             RequestRotationRetry();
             throw;
+        }
+        finally
+        {
+            _rotationGate.Release();
         }
     }
 
@@ -668,7 +682,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             _options.HostActionEntryContexts.Bind(
                 nextBinding,
                 IssueHostActionEntryContext,
-                preserveActiveContexts: true);
+                preserveActiveContexts: true,
+                issueCoordinator: ExecuteContextIssuance);
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
             lock (_rotationSync)
             {
