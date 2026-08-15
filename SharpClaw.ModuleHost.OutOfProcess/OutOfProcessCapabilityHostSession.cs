@@ -21,6 +21,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     private TaskCompletionSource? _rotationReady;
     private TaskCompletionSource<SidecarCapabilityValidationResult>? _rotationAcknowledgement;
     private Task? _rotationTask;
+    private Task? _rotationRetryTask;
+    private TaskCompletionSource _rotationRetryWake = CreateSignal();
     private int _completedCallsForBinding;
     private readonly SemaphoreSlim _rotationGate = new(1, 1);
     private int _disposed;
@@ -113,11 +115,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                         ?? "The host action entry carrier was rejected.");
             }
 
+            RequestRotationRetry();
             return authority;
         }
         catch
         {
             _options.HostActionEntryContexts.RestorePendingCarrier(context);
+            RequestRotationRetry();
             throw;
         }
     }
@@ -144,6 +148,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         finally
         {
             _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
+            RequestRotationRetry();
         }
     }
 
@@ -423,7 +428,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
         removed.Cancellation.Dispose();
-        await StartRotationIfReadyAsync(channelCt);
+        try
+        {
+            await StartRotationIfReadyAsync(channelCt);
+        }
+        finally
+        {
+            RequestRotationRetry();
+        }
     }
 
     private bool CompleteSessionCall(Guid callId, int terminalCallCount)
@@ -453,7 +465,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             await rotation.WaitAsync(ct);
     }
 
-    private async ValueTask StartRotationIfReadyAsync(CancellationToken ct)
+    private async ValueTask<DateTimeOffset?> StartRotationIfReadyAsync(CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
         Session.SweepExpiredHostActionEntryCarriers(now);
@@ -465,9 +477,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             lock (_rotationSync)
             {
                 if (_rotationReady is null
-                    || !_calls.IsEmpty
-                    || _options.HostActionEntryContexts.HasPendingContexts)
-                    return;
+                    || !_calls.IsEmpty)
+                    return null;
+                var nextPendingExpiration = _options.HostActionEntryContexts
+                    .NextPendingContextExpiration();
+                if (nextPendingExpiration is not null)
+                    return nextPendingExpiration;
                 if (_rotationTask is null || _rotationTask.IsCompleted)
                     _rotationTask = RotateBindingAsync(_rotationReady, ct);
                 rotation = _rotationTask;
@@ -479,7 +494,68 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
 
         await rotation!;
+        return null;
     }
+
+    internal void RequestRotationRetry()
+    {
+        lock (_rotationSync)
+        {
+            if (_rotationReady is null
+                || Volatile.Read(ref _disposed) != 0
+                || _disconnect.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _rotationRetryWake.TrySetResult();
+            if (_rotationRetryTask is null || _rotationRetryTask.IsCompleted)
+                _rotationRetryTask = RunRotationRetryAsync();
+        }
+    }
+
+    private async Task RunRotationRetryAsync()
+    {
+        try
+        {
+            while (!_disconnect.IsCancellationRequested)
+            {
+                var retryAt = await StartRotationIfReadyAsync(_disconnect.Token);
+                if (retryAt is null)
+                    return;
+
+                var delay = retryAt.Value - DateTimeOffset.UtcNow;
+                if (delay <= TimeSpan.Zero)
+                    continue;
+
+                Task wake;
+                lock (_rotationSync)
+                {
+                    if (_rotationRetryWake.Task.IsCompleted)
+                    {
+                        _rotationRetryWake = CreateSignal();
+                        continue;
+                    }
+
+                    wake = _rotationRetryWake.Task;
+                }
+
+                await Task.WhenAny(
+                    Task.Delay(delay, _disconnect.Token),
+                    wake);
+            }
+        }
+        catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            _disconnect.Cancel();
+        }
+    }
+
+    private static TaskCompletionSource CreateSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private async Task RotateBindingAsync(
         TaskCompletionSource ready,

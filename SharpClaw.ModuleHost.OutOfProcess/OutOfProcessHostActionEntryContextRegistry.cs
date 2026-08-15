@@ -146,6 +146,19 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 
     internal bool HasPendingContexts => !_issued.IsEmpty;
 
+    internal DateTimeOffset? NextPendingContextExpiration()
+    {
+        DateTimeOffset? next = null;
+        foreach (var pair in _issued)
+        {
+            var expiresAt = pair.Value.Context.ExpiresAt;
+            if (next is null || expiresAt < next.Value)
+                next = expiresAt;
+        }
+
+        return next;
+    }
+
     internal void SweepExpired(DateTimeOffset now)
     {
         foreach (var pair in _issued)

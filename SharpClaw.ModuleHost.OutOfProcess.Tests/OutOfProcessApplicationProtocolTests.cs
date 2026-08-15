@@ -206,6 +206,70 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(3);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task PendingHostActionCarrierActivationRetriesBindingRotation()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (action, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
+        var maximumCalls = client.HostLimits.ConcurrencyLimits.MaximumCallsPerRequest;
+        maximumCalls.Should().BeGreaterThan(0);
+        for (var i = 0; i < maximumCalls; i++)
+        {
+            var result = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"rotation-pending-{i}"));
+
+            result.Result.Succeeded.Should().BeTrue(
+                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
+        }
+
+        var hostEntry = await client.InvokeCliAsync(
+            ApplicationSmokeModule.HostEntryCliName,
+            [],
+            pendingContext);
+
+        hostEntry.Result.Succeeded.Should().BeTrue(
+            $"CLI error {hostEntry.Result.Error?.Code}: {hostEntry.Result.Error?.Message}; "
+            + string.Join(" | ", hostEntry.Result.Output.Select(item => item.Text)));
+        hostEntry.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:entry-terminal:action");
+
+        var afterRotation = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "rotation-after"));
+
+        afterRotation.Result.Succeeded.Should().BeTrue(
+            $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(maximumCalls + 1);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+    }
+
     [Test, CancelAfter(15000)]
     public async Task HostActionEntryUsesHostContextSnapshotAndSingletonDispatcher()
     {

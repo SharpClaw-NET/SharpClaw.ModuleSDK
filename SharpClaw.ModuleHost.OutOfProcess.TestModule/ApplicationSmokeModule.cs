@@ -275,6 +275,24 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             try
             {
+                if (string.Equals(
+                        invocation.Arguments.FirstOrDefault(),
+                        "single",
+                        StringComparison.Ordinal))
+                {
+                    var singleStorageResult = await storage.InvokeAsync(
+                        module.Identity.Id,
+                        "application-store",
+                        "echo",
+                        JsonSerializer.SerializeToElement(new { value = "single" }),
+                        ct);
+                    return new ModuleCliResult(
+                        true,
+                        [new ModuleCliOutput(
+                            "stdout",
+                            $"storage:{singleStorageResult.GetRawText()}")]);
+                }
+
                 var contracts = storage.ListContracts();
                 var storageResult = await storage.InvokeAsync(
                     module.Identity.Id,

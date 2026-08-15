@@ -82,8 +82,9 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId = null) =>
-        HostActionEntryContexts.Issue(
+        Guid? invocationId = null)
+    {
+        var context = HostActionEntryContexts.Issue(
             ingress,
             primaryIdentity,
             secondaryIdentity,
@@ -95,6 +96,9 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             idempotencyKey,
             deadline,
             invocationId);
+        ConnectedCapabilitySession.RequestRotationRetry();
+        return context;
+    }
 
     /// <summary>Discovers and authorizes one sidecar against immutable host descriptors.</summary>
     public static async Task<OutOfProcessModuleClient> CreateAuthorizedAsync(
