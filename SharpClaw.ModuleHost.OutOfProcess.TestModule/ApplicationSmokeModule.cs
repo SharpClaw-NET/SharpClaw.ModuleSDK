@@ -25,7 +25,15 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             new HashSet<string>(["module-agent", "module-operator"], StringComparer.Ordinal));
 
     public static ExtensionFeatureSet HostEntryFeatures { get; } =
-        ExtensionFeatureSet.Empty;
+        new ExtensionFeatureSet(
+        [
+            new ExtensionFeature(
+                "application.host-entry",
+                1,
+                Id,
+                128,
+                JsonSerializer.SerializeToElement("enabled")),
+        ]);
 
     public static Guid HostEntryTraceId { get; } =
         new("11111111-1111-4111-8111-111111111111");
@@ -251,7 +259,15 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     new ApplicationSmokeAction("host-tool", value),
                     invocation.HostActionContext),
                 ct);
-            return ToolResult.Text($"host-tool:{outcome.Kind}:{outcome.Result?.Value}");
+            var context = invocation.HostActionContext;
+            var roles = context.Caller.Roles is null
+                ? string.Empty
+                : string.Join(",", context.Caller.Roles.OrderBy(role => role, StringComparer.Ordinal));
+            return ToolResult.Text(
+                $"host-tool:{outcome.Kind}:{outcome.Result?.Value}"
+                + $":caller={context.Caller.SubjectId}:roles={roles}"
+                + $":trace={context.TraceId}:idempotency={context.IdempotencyKey}"
+                + $":deadline={context.Deadline:O}");
         }
     }
 

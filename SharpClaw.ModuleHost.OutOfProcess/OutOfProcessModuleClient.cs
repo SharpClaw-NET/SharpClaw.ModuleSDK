@@ -511,11 +511,15 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             || !hostActionContext.IsWellFormed(now)
             || hostActionContext.Ingress != HostActionEntryIngress.Tool
             || hostActionContext.InvocationId != start.InvocationId
+            || hostActionContext.Deadline != start.Header.Deadline
             || hostActionContext.Contribution is null
             || !string.Equals(
                 hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
                 start.ToolName,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal)
+            || !OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
+                hostActionContext.Caller,
+                start.Caller))
         {
             throw new OutOfProcessProtocolException(
                 SidecarProtocolErrors.MalformedMessage,

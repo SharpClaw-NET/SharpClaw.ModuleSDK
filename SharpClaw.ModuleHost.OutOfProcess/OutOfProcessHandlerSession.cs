@@ -26,6 +26,16 @@ internal static class OutOfProcessHandlerSession
                 SidecarProtocolErrors.UnsupportedSchema,
                 $"Tool handler '{start.HandlerId}' does not accept the supplied input schema.");
         }
+        if (start.HostActionContext is null
+            || start.HostActionContext.Deadline != start.Header.Deadline
+            || !OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
+                start.HostActionContext.Caller,
+                start.Caller))
+        {
+            throw new OutOfProcessCapabilityException(
+                SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
+                "The tool caller does not match the issued host action context.");
+        }
 
         ISidecarProtocolMessage terminal;
         try

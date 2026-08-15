@@ -249,6 +249,134 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task ToolHostActionEntryCarriesIssuedContextAndRejectsReplay()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (action, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var definition = client.Discovery.ToolHandlers.Single(item =>
+            item.ToolName == ApplicationSmokeModule.HostEntryToolName);
+        var invocationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            definition.HandlerId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-tool", "tool-value"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            deadline,
+            invocationId);
+        var start = CreateHostEntryToolStart(
+            client,
+            definition,
+            invocationId,
+            deadline,
+            context,
+            ApplicationSmokeModule.HostEntryCaller);
+
+        start.HostActionContext.Should().BeEquivalentTo(context);
+        start.HostActionContext!.Caller.Should().BeEquivalentTo(ApplicationSmokeModule.HostEntryCaller);
+        start.HostActionContext.Features.Should().BeEquivalentTo(ApplicationSmokeModule.HostEntryFeatures);
+        start.HostActionContext.Deadline.Should().Be(deadline);
+        start.HostActionContext.Contribution!.Lineage.ActionKey.Should().Be(
+            ApplicationSmokeModule.HostAction.Key);
+        start.InputSchema.Should().Be(definition.InputSchema);
+
+        var result = await client.InvokeToolAsync(start);
+        var tool = result.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!;
+        tool.Content.Should().Contain("host-tool:Completed:entry-terminal:tool-value");
+        tool.Content.Should().Contain("caller=module-agent");
+        tool.Content.Should().Contain("roles=module-agent,module-operator");
+        tool.Content.Should().Contain($"trace={context.TraceId}");
+        tool.Content.Should().Contain($"idempotency={context.IdempotencyKey}");
+        tool.Content.Should().Contain($"deadline={context.Deadline:O}");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+
+        var replay = async () => await client.InvokeToolAsync(start);
+        (await replay.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be("module_tool_failed");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task ToolHostActionEntryRejectsHostileCarrierCallerBeforeDispatch()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var definition = client.Discovery.ToolHandlers.Single(item =>
+            item.ToolName == ApplicationSmokeModule.HostEntryToolName);
+        var invocationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            definition.HandlerId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-tool", "tool-value"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            deadline,
+            invocationId);
+        var hostileCaller = new RequestPrincipal(
+            "spoofed-agent",
+            ApplicationSmokeModule.HostEntryCaller.DisplayName,
+            ApplicationSmokeModule.HostEntryCaller.Roles,
+            ApplicationSmokeModule.HostEntryCaller.IsAuthenticated);
+        var start = CreateHostEntryToolStart(
+            client,
+            definition,
+            invocationId,
+            deadline,
+            context,
+            hostileCaller);
+
+        var act = async () => await client.InvokeToolAsync(start);
+        (await act.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be(SidecarProtocolErrors.MalformedMessage);
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
     [TestCase("caller")]
     [TestCase("roles")]
     [TestCase("authentication")]
@@ -541,6 +669,30 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
             deadline);
+
+    private static SidecarToolHandlerInvokeStart CreateHostEntryToolStart(
+        OutOfProcessModuleClient client,
+        SidecarToolHandlerDefinition definition,
+        Guid invocationId,
+        DateTimeOffset deadline,
+        HostActionEntryRequestContext context,
+        RequestPrincipal caller) =>
+        SidecarMessageHeaderFactory.CreateMeasured(
+            OutOfProcessModuleHostProtocol.Version,
+            sequence: 1,
+            deadline,
+            client.HostLimits.ActionInputBytes,
+            header => new SidecarToolHandlerInvokeStart(
+                header,
+                invocationId,
+                definition.ToolName,
+                definition.HandlerId,
+                JsonSerializer.SerializeToElement(
+                    new { value = "tool-value" },
+                    OutOfProcessProtocolCodec.JsonOptions),
+                definition.InputSchema,
+                caller,
+                context));
 
     private void AssertDiscoveryRejected(
         SidecarDiscoveryEnvelope discovery,

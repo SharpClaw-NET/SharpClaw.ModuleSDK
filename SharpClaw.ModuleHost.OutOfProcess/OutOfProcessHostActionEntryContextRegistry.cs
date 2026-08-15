@@ -95,6 +95,36 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Volatile.Write(ref _binding, binding);
     }
 
+    internal void Invalidate(SidecarCapabilitySessionBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        if (!ReferenceEquals(Volatile.Read(ref _binding), binding))
+            return;
+
+        _issued.Clear();
+        Volatile.Write(ref _binding, null);
+    }
+
+    internal static bool MatchesCaller(
+        RequestPrincipal expected,
+        RequestPrincipal actual)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(actual);
+        if (!string.Equals(expected.SubjectId, actual.SubjectId, StringComparison.Ordinal)
+            || !string.Equals(expected.DisplayName, actual.DisplayName, StringComparison.Ordinal)
+            || expected.IsAuthenticated != actual.IsAuthenticated)
+        {
+            return false;
+        }
+
+        if (expected.Roles is null || actual.Roles is null)
+            return expected.Roles is null && actual.Roles is null;
+
+        return expected.Roles.Count == actual.Roles.Count
+            && expected.Roles.All(actual.Roles.Contains);
+    }
+
     internal bool TryConsume<TAction, TResult>(
         HostActionEntryRequest<TAction, TResult> request,
         DateTimeOffset now)

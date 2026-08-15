@@ -123,6 +123,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         finally
         {
+            var binding = Session.Binding;
+            _options.HostActionEntryContexts.Invalidate(binding);
             Session.Disconnect();
             lock (_rotationSync)
             {
@@ -151,6 +153,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         _disconnect.Cancel();
+        var binding = Session.Binding;
+        _options.HostActionEntryContexts.Invalidate(binding);
         Session.Disconnect();
         lock (_rotationSync)
         {
