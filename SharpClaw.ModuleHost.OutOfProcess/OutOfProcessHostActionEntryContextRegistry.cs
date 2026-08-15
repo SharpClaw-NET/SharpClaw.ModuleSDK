@@ -41,12 +41,16 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         }
 
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+        var inputSchema = descriptor.InputSchema
+            ?? throw new ArgumentException(
+                "The host action descriptor must declare an input schema.",
+                nameof(descriptor));
         var payload = ingress == HostActionEntryIngress.Tool
             ? null
             : OutOfProcessActionDispatcher.Payload(
                 action,
                 identity.InputTypeIdentity,
-                identity.InputSchemaVersion);
+                inputSchema.Version);
         var contribution = new HostActionEntryContribution(
             new HostActionEntryIngressBinding(
                 ingress,
@@ -59,8 +63,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 identity.Version,
                 HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
                 identity.InputTypeIdentity,
-                identity.InputSchemaVersion,
-                identity.InputSchemaHash,
+                inputSchema.Version,
+                inputSchema.ContentHash,
                 payload?.ContentHash,
                 payload?.ByteLength));
         var context = new HostActionEntryRequestContext(
