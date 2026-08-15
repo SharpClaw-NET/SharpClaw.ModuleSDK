@@ -28,7 +28,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             || !HostActionEntryAuthorityValidator.MatchesRequestContext(request, hostContext))
         {
             throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
+                SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The host action entry request context does not match the authenticated host context.");
         }
 
