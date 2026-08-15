@@ -227,23 +227,25 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                         accepted.Message ?? "The sidecar rejected the capability binding.");
                 }
 
-                options.HostActionEntryContexts.Bind(binding);
+                var session = new OutOfProcessCapabilityHostSession(
+                    socket,
+                    binding,
+                    _controlToken,
+                    HostLimits,
+                    options,
+                    Authorization);
+                options.HostActionEntryContexts.Bind(
+                    binding,
+                    session.IssueHostActionEntryContext);
+
+                _capabilitySession = session;
+                Volatile.Write(ref _hostActionEntryContexts, options.HostActionEntryContexts);
+                _capabilityRun = session.RunAsync(CancellationToken.None);
             }
             finally
             {
                 sendGate.Dispose();
             }
-
-            var session = new OutOfProcessCapabilityHostSession(
-                socket,
-                binding,
-                _controlToken,
-                HostLimits,
-                options,
-                Authorization);
-            _capabilitySession = session;
-            Volatile.Write(ref _hostActionEntryContexts, options.HostActionEntryContexts);
-            _capabilityRun = session.RunAsync(CancellationToken.None);
         }
         catch
         {

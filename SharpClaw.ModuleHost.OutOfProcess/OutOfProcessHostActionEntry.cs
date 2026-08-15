@@ -25,14 +25,9 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
 
         var context = request.Context;
         var lineageMatches = context?.Contribution is { } contribution
-            && (context.Ingress == HostActionEntryIngress.Tool
-                ? HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
-                    contribution.Lineage,
-                    request.Descriptor)
-                : HostActionEntryAuthorityValidator.MatchesLineage(
-                    contribution.Lineage,
-                    request.Descriptor,
-                    request.Action));
+            && HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
+                contribution.Lineage,
+                request.Descriptor);
         if (context is null
             || context.Ingress != HostActionEntryIngress.Tool
                 && context.Ingress != HostActionEntryIngress.Cli

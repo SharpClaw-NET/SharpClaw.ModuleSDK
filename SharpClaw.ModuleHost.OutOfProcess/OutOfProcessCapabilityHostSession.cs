@@ -58,6 +58,25 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private SidecarCapabilitySession Session => Volatile.Read(ref _session);
 
+    internal HostActionEntryRequestContext IssueHostActionEntryContext(
+        HostActionEntryContextRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var validation = Session.IssueHostActionEntryContext(
+            request,
+            DateTimeOffset.UtcNow,
+            out var context);
+        if (!validation.Accepted || context is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                validation.Message
+                    ?? "The capability session rejected the host action entry context.");
+        }
+
+        return context;
+    }
+
     private static SidecarCapabilitySession CreateSession(
         SidecarCapabilitySessionBinding binding,
         string controlToken) =>
@@ -533,7 +552,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 SidecarCapabilityKind.Action,
                 request.Action,
                 request.Action.ByteLength,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                hostContext: request.HostContext);
             if (!begin.Accepted)
             {
                 AbandonCall(request.Call.CallId, active);

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
@@ -9,6 +8,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 {
     private readonly ConcurrentDictionary<Guid, IssuedContext> _issued = new();
     private SidecarCapabilitySessionBinding? _binding;
+    private Func<HostActionEntryContextRequest, HostActionEntryRequestContext>? _issuer;
 
     /// <summary>Issues a typed context for one host-owned ingress carrier.</summary>
     public HostActionEntryRequestContext Issue<TAction, TResult>(
@@ -32,6 +32,9 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         var binding = Volatile.Read(ref _binding)
             ?? throw new InvalidOperationException(
                 "The capability binding must be accepted before issuing a host action context.");
+        var issuer = Volatile.Read(ref _issuer)
+            ?? throw new InvalidOperationException(
+                "The capability session must be ready before issuing a host action context.");
         var now = DateTimeOffset.UtcNow;
         if (deadline <= now || deadline > binding.ExpiresAt)
         {
@@ -45,12 +48,6 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             ?? throw new ArgumentException(
                 "The host action descriptor must declare an input schema.",
                 nameof(descriptor));
-        var payload = ingress == HostActionEntryIngress.Tool
-            ? null
-            : OutOfProcessActionDispatcher.Payload(
-                action,
-                identity.InputTypeIdentity,
-                inputSchema.Version);
         var contribution = new HostActionEntryContribution(
             new HostActionEntryIngressBinding(
                 ingress,
@@ -65,11 +62,9 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 identity.InputTypeIdentity,
                 inputSchema.Version,
                 inputSchema.ContentHash,
-                payload?.ContentHash,
-                payload?.ByteLength));
-        var context = new HostActionEntryRequestContext(
-            Guid.NewGuid(),
-            Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+                null,
+                null));
+        var request = new HostActionEntryContextRequest(
             ingress,
             invocationId ?? Guid.NewGuid(),
             binding.RequestId,
@@ -83,6 +78,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         {
             Contribution = contribution,
         };
+        var context = issuer(request);
+        ArgumentNullException.ThrowIfNull(context);
         if (!context.IsWellFormed(now))
         {
             throw new InvalidOperationException(
@@ -100,10 +97,14 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         return context;
     }
 
-    internal void Bind(SidecarCapabilitySessionBinding binding)
+    internal void Bind(
+        SidecarCapabilitySessionBinding binding,
+        Func<HostActionEntryContextRequest, HostActionEntryRequestContext> issuer)
     {
         ArgumentNullException.ThrowIfNull(binding);
+        ArgumentNullException.ThrowIfNull(issuer);
         _issued.Clear();
+        Volatile.Write(ref _issuer, issuer);
         Volatile.Write(ref _binding, binding);
     }
 
@@ -114,6 +115,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             return;
 
         _issued.Clear();
+        Volatile.Write(ref _issuer, null);
         Volatile.Write(ref _binding, null);
     }
 
@@ -147,14 +149,9 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             return false;
 
         var binding = Volatile.Read(ref _binding);
-        var lineageMatches = context.Ingress == HostActionEntryIngress.Tool
-            ? HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
-                context.Contribution?.Lineage,
-                request.Descriptor)
-            : HostActionEntryAuthorityValidator.MatchesLineage(
-                context.Contribution?.Lineage,
-                request.Descriptor,
-                request.Action);
+        var lineageMatches = HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
+            context.Contribution?.Lineage,
+            request.Descriptor);
         return binding is not null
             && context.IsWellFormed(now)
             && issued.RequestId == binding.RequestId
