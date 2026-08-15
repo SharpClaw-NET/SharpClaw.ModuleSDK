@@ -48,6 +48,16 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             ?? throw new ArgumentException(
                 "The host action descriptor must declare an input schema.",
                 nameof(descriptor));
+        var inputSchemaHash = inputSchema.ContentHash
+            ?? throw new ArgumentException(
+                "The host action descriptor must declare an input schema hash.",
+                nameof(descriptor));
+        if (string.IsNullOrWhiteSpace(inputSchemaHash))
+        {
+            throw new ArgumentException(
+                "The host action descriptor must declare an input schema hash.",
+                nameof(descriptor));
+        }
         var contribution = new HostActionEntryContribution(
             new HostActionEntryIngressBinding(
                 ingress,
@@ -61,7 +71,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
                 identity.InputTypeIdentity,
                 inputSchema.Version,
-                inputSchema.ContentHash,
+                inputSchemaHash,
                 null,
                 null));
         var request = new HostActionEntryContextRequest(

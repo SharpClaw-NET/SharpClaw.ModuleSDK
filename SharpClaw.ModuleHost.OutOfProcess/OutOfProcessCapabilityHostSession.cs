@@ -439,7 +439,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                     accepted.Message ?? "The sidecar rejected the capability binding rotation.");
             }
 
-            _options.HostActionEntryContexts.Bind(nextBinding);
+            _options.HostActionEntryContexts.Bind(
+                nextBinding,
+                IssueHostActionEntryContext);
             Volatile.Write(ref _session, CreateSession(nextBinding, _controlToken));
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
             lock (_rotationSync)
