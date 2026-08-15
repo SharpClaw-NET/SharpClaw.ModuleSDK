@@ -250,6 +250,96 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(15000)]
+    public async Task ActiveHostActionCarrierSurvivesBindingRotation()
+    {
+        await using var client = await CreateClientAsync();
+        var grant = client.CreateCapabilityGrant(DateTimeOffset.UtcNow.AddMinutes(2));
+        var binding = OutOfProcessCapabilitySecurity.CreateBinding(
+            client.Discovery.ContractHash,
+            client.Discovery.ModuleId,
+            OutOfProcessModuleHostProtocol.Version,
+            grant,
+            client.HostLimits,
+            _controlToken);
+        var now = DateTimeOffset.UtcNow;
+        var session = new SidecarCapabilitySession(
+            binding,
+            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken),
+            _ => true,
+            now);
+        var descriptor = ApplicationSmokeModule.HostAction;
+        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+        var deadline = binding.ExpiresAt.AddSeconds(-2);
+        var contribution = new HostActionEntryContribution(
+            new HostActionEntryIngressBinding(
+                HostActionEntryIngress.Tool,
+                "rotation-tool",
+                null),
+            new HostActionEntryLineage(
+                identity.Key,
+                identity.Version,
+                identity.DescriptorHash,
+                identity.InputTypeIdentity,
+                descriptor.InputSchema.Version,
+                descriptor.InputSchema.ContentHash!,
+                null,
+                null));
+        var request = new HostActionEntryContextRequest(
+            HostActionEntryIngress.Tool,
+            Guid.NewGuid(),
+            binding.RequestId,
+            binding.CancellationId,
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            binding.ExpiresAt)
+        {
+            Contribution = contribution,
+        };
+
+        var issued = session.IssueHostActionEntryContext(request, now, out var context);
+        issued.Accepted.Should().BeTrue(issued.Message);
+        context.Should().NotBeNull();
+        var carrier = new HostActionEntryCarrierIdentity(
+            request.Ingress,
+            request.InvocationId,
+            contribution.IngressBinding);
+        var started = session.BeginHostActionEntryCarrier(
+            context!,
+            carrier,
+            now,
+            out var authority);
+        started.Accepted.Should().BeTrue(started.Message);
+        authority.Should().NotBeNull();
+
+        var replacement = OutOfProcessCapabilitySecurity.CreateBinding(
+            client.Discovery.ContractHash,
+            client.Discovery.ModuleId,
+            OutOfProcessModuleHostProtocol.Version,
+            grant,
+            client.HostLimits,
+            _controlToken);
+        var rotated = session.RotateBinding(replacement, DateTimeOffset.UtcNow);
+        rotated.Accepted.Should().BeTrue(rotated.Message);
+        session.BindingGeneration.Should().Be(2);
+        session.ActiveHostActionEntryCarrierCount.Should().Be(1);
+        session.TryGetActiveHostActionEntryCarrier(
+            context!.CapabilityId,
+            out var preserved).Should().BeTrue();
+        preserved.Should().BeEquivalentTo(authority);
+
+        var completed = session.CompleteHostActionEntryCarrier(
+            authority!,
+            HostActionEntryCarrierCompletionKind.Succeeded,
+            DateTimeOffset.UtcNow);
+        completed.Accepted.Should().BeTrue(completed.Message);
+        session.ActiveHostActionEntryCarrierCount.Should().Be(0);
+        session.CompletedHostActionEntryTombstoneCount.Should().Be(1);
+    }
+
+    [Test, CancelAfter(15000)]
     public async Task ToolHostActionEntryCarriesIssuedContextAndRejectsReplay()
     {
         await using var client = await CreateClientAsync();

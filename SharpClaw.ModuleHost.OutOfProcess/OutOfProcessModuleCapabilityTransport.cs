@@ -693,15 +693,15 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 validation.Code ?? SidecarCapabilityErrors.Unauthorized,
                 validation.Message ?? "The rotated capability binding was rejected.");
 
-        var authenticateSession = new Func<SidecarCapabilityAuthenticationAuthority, bool>(
-            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken));
-        Volatile.Write(
-            ref _session,
-            new SidecarCapabilitySession(
-                binding,
-                authenticateSession,
-                _ => true,
-                DateTimeOffset.UtcNow));
+        var rotation = Volatile.Read(ref _session).RotateBinding(
+            binding,
+            DateTimeOffset.UtcNow);
+        if (!rotation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                rotation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                rotation.Message ?? "The rotated capability binding could not replace the active binding.");
+        }
         TaskCompletionSource? rebind;
         lock (_rotationSync)
         {

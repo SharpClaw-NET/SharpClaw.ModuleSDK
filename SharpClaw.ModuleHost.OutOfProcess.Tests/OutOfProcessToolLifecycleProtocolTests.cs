@@ -124,6 +124,34 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
     }
 
     [Test, CancelAfter(15000)]
+    public async Task FailedToolCarrierIsRevokedBeforeTheNextCarrier()
+    {
+        await using var client = await CreateClientAsync();
+
+        var failed = async () => await client.InvokeToolAsync(CreateToolStart(client, "fail", null));
+
+        (await failed.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be("module_tool_failed");
+        var next = await client.InvokeToolAsync(CreateToolStart(client, "echo", "after-failure"));
+        next.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Content.Should().Be("after-failure");
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task CancelledToolCarrierIsRevokedBeforeTheNextCarrier()
+    {
+        await using var client = await CreateClientAsync();
+
+        var cancelled = async () => await client.InvokeToolAsync(CreateToolStart(client, "cancel", null));
+
+        (await cancelled.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be("tool_cancelled");
+        var next = await client.InvokeToolAsync(CreateToolStart(client, "echo", "after-cancel"));
+        next.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Content.Should().Be("after-cancel");
+    }
+
+    [Test, CancelAfter(15000)]
     public async Task LifecycleStartAndStopChangeToolVisibleState()
     {
         await using var client = await CreateClientAsync();
