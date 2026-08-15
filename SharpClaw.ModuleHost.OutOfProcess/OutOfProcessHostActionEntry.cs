@@ -19,7 +19,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         if (!request.IsWellFormed(now))
         {
             throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.InvalidPayload,
+                SidecarCapabilityErrors.MalformedMessage,
                 "The host action entry request is invalid or expired.");
         }
 
