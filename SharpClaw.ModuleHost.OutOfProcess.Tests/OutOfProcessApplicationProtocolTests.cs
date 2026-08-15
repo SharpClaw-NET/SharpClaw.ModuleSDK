@@ -196,10 +196,12 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.HostAction,
             static (action, _) => ValueTask.FromResult(
                 new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        var grant = client.CreateCapabilityGrant(grantExpiresAt);
         await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
             storage,
             dispatcher,
-            client.CreateCapabilityGrant(),
+            grant,
             ["application-store"],
             descriptors,
             new ActionPipelineSnapshot(
@@ -212,7 +214,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ExtensionFeatureSet.Empty,
                 Guid.NewGuid(),
                 Guid.NewGuid(),
-                DateTimeOffset.UtcNow.AddMinutes(2))));
+                grantExpiresAt)));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
