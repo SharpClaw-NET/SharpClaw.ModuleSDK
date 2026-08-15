@@ -380,7 +380,13 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             request,
             OutOfProcessProtocolCodec.JsonOptions,
             ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var failure = await response.Content.ReadAsStringAsync(ct);
+            throw new OutOfProcessProtocolException(
+                "module_cli_http_failed",
+                $"The sidecar rejected the CLI request with HTTP {(int)response.StatusCode}: {failure}");
+        }
         return await response.Content.ReadFromJsonAsync<SidecarCliExecutionResponse>(
                 OutOfProcessProtocolCodec.JsonOptions,
                 ct)
