@@ -210,10 +210,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.EventGrants),
             new HostActionEntryRequestContext(
                 Guid.Empty,
-                new RequestPrincipal("host-entry"),
-                ExtensionFeatureSet.Empty,
-                Guid.NewGuid(),
-                Guid.NewGuid(),
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                ApplicationSmokeModule.HostEntryTraceId,
+                ApplicationSmokeModule.HostEntryIdempotencyKey,
                 grantExpiresAt)));
 
         var result = await client.InvokeCliAsync(
@@ -229,6 +229,55 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
         dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
+    }
+
+    [TestCase("caller")]
+    [TestCase("roles")]
+    [TestCase("authentication")]
+    [TestCase("features")]
+    [TestCase("trace")]
+    [TestCase("idempotency")]
+    [TestCase("expiry")]
+    [CancelAfter(15000)]
+    public async Task HostActionEntryRejectsMismatchedRequestContextBeforeDispatch(string mismatch)
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (action, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new HostActionEntryRequestContext(
+                Guid.Empty,
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                ApplicationSmokeModule.HostEntryTraceId,
+                ApplicationSmokeModule.HostEntryIdempotencyKey,
+                grantExpiresAt)));
+
+        var rejected = await client.InvokeCliAsync(
+            ApplicationSmokeModule.HostEntryCliName,
+            [mismatch],
+            new RequestPrincipal("context-test"));
+
+        rejected.Result.Succeeded.Should().BeFalse();
+        rejected.Result.Error?.Code.Should().Be("host_entry_failed");
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
     }
 
     [Test, CancelAfter(30000)]

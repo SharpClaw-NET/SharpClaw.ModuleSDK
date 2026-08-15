@@ -23,6 +23,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The host action entry request is invalid or expired.");
         }
 
+        var hostContext = _transport.Binding.HostActionContext;
+        if (hostContext is null
+            || !HostActionEntryAuthorityValidator.MatchesRequestContext(request, hostContext))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The host action entry request context does not match the authenticated host context.");
+        }
+
         var call = _transport.CreateCall(
             SidecarCapabilityKind.Action,
             request.Deadline,

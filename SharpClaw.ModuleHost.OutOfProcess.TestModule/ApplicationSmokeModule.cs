@@ -17,6 +17,22 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string CapabilityCliName = "application.capabilities";
     public const string HostEntryCliName = "application.host-entry";
 
+    public static RequestPrincipal HostEntryCaller { get; } =
+        new(
+            "module-agent",
+            "Module Agent",
+            new HashSet<string>(["module-agent"], StringComparer.Ordinal),
+            IsAuthenticated: true);
+
+    public static ExtensionFeatureSet HostEntryFeatures { get; } =
+        ExtensionFeatureSet.Empty;
+
+    public static Guid HostEntryTraceId { get; } =
+        new("11111111-1111-4111-8111-111111111111");
+
+    public static Guid HostEntryIdempotencyKey { get; } =
+        new("22222222-2222-4222-8222-222222222222");
+
     public const ActionInterceptionCapabilities HostCapabilities =
         ActionInterceptionCapabilities.Inspect
         | ActionInterceptionCapabilities.Wrap
@@ -127,15 +143,64 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             try
             {
+                var caller = HostEntryCaller;
+                var features = HostEntryFeatures;
+                var traceId = HostEntryTraceId;
+                var idempotencyKey = HostEntryIdempotencyKey;
+                var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+                switch (invocation.Arguments.FirstOrDefault())
+                {
+                    case "caller":
+                        caller = new RequestPrincipal(
+                            "spoofed-agent",
+                            HostEntryCaller.DisplayName,
+                            HostEntryCaller.Roles,
+                            HostEntryCaller.IsAuthenticated);
+                        break;
+                    case "roles":
+                        caller = new RequestPrincipal(
+                            HostEntryCaller.SubjectId,
+                            HostEntryCaller.DisplayName,
+                            new HashSet<string>(["spoofed-role"], StringComparer.Ordinal),
+                            HostEntryCaller.IsAuthenticated);
+                        break;
+                    case "authentication":
+                        caller = new RequestPrincipal(
+                            HostEntryCaller.SubjectId,
+                            HostEntryCaller.DisplayName,
+                            HostEntryCaller.Roles,
+                            IsAuthenticated: false);
+                        break;
+                    case "features":
+                        features = new ExtensionFeatureSet(
+                        [
+                            new ExtensionFeature(
+                                "application.test-feature",
+                                1,
+                                Id,
+                                128,
+                                JsonSerializer.SerializeToElement(true)),
+                        ]);
+                        break;
+                    case "trace":
+                        traceId = Guid.NewGuid();
+                        break;
+                    case "idempotency":
+                        idempotencyKey = Guid.NewGuid();
+                        break;
+                    case "expiry":
+                        deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+                        break;
+                }
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
                     new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                         HostAction,
                         new ApplicationSmokeAction("host-entry", "action"),
-                        new RequestPrincipal("module-agent"),
-                        ExtensionFeatureSet.Empty,
-                        Guid.NewGuid(),
-                        Guid.NewGuid(),
-                        DateTimeOffset.UtcNow.AddSeconds(30)),
+                        caller,
+                        features,
+                        traceId,
+                        idempotencyKey,
+                        deadline),
                     ct);
                 return new ModuleCliResult(
                     outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred,
