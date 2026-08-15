@@ -14,7 +14,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     public HostActionEntryRequestContext Issue<TAction, TResult>(
         HostActionEntryIngress ingress,
         string primaryIdentity,
-        string secondaryIdentity,
+        string? secondaryIdentity,
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
         RequestPrincipal caller,
@@ -26,7 +26,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(features);
         ArgumentException.ThrowIfNullOrWhiteSpace(primaryIdentity);
-        ArgumentException.ThrowIfNullOrWhiteSpace(secondaryIdentity);
+        if (ingress == HostActionEntryIngress.CrossModule)
+            ArgumentException.ThrowIfNullOrWhiteSpace(secondaryIdentity);
 
         var binding = Volatile.Read(ref _binding)
             ?? throw new InvalidOperationException(
@@ -45,7 +46,12 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             identity.InputTypeIdentity,
             identity.InputSchemaVersion);
         var contribution = new HostActionEntryContribution(
-            new HostActionEntryIngressBinding(ingress, primaryIdentity, secondaryIdentity),
+            new HostActionEntryIngressBinding(
+                ingress,
+                primaryIdentity,
+                ingress == HostActionEntryIngress.CrossModule
+                    ? secondaryIdentity
+                    : null),
             new HostActionEntryLineage(
                 identity.Key,
                 identity.Version,
