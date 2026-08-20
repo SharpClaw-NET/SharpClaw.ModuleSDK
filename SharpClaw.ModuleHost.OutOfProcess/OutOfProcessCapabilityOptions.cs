@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
@@ -31,6 +34,25 @@ public static class OutOfProcessActionDescriptorIdentity
         return identity with
         {
             DescriptorHash = HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor),
+        };
+    }
+
+    internal static SidecarActionDescriptorIdentity Create(
+        ModuleActionDefinition action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        var descriptor = action.Descriptor;
+        var identity = Create(
+            descriptor.Key,
+            descriptor.Version,
+            descriptor.Category,
+            action.ActionType,
+            descriptor.InputSchema,
+            action.ResultType,
+            descriptor.ResultSchema);
+        return identity with
+        {
+            DescriptorHash = ComputeDescriptorHash(action),
         };
     }
 
@@ -102,6 +124,57 @@ public static class OutOfProcessActionDescriptorIdentity
             resultSchema.ContentHash);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
+
+    private static string ComputeDescriptorHash(ModuleActionDefinition action)
+    {
+        var descriptor = action.Descriptor;
+        var value = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Key = descriptor.Key.Value,
+            Version = descriptor.Version,
+            Category = descriptor.Category,
+            Capabilities = (int)descriptor.Capabilities,
+            ContainsSensitiveData = descriptor.ContainsSensitiveData,
+            HasIrreversibleEffects = action.HasIrreversibleEffects,
+            Repeat = new
+            {
+                Kind = action.RepeatPolicy.Kind.ToString(),
+                MaximumAttempts = action.RepeatPolicy.MaximumAttempts,
+                MinimumBackoffTicks = action.RepeatPolicy.MinimumBackoff.Ticks,
+                IdempotencyScope = action.RepeatPolicy.IdempotencyScope,
+            },
+            Continuation = action.ContinuationPolicy is null
+                ? null
+                : new
+                {
+                    MaximumLifetimeTicks = action.ContinuationPolicy.MaximumLifetime.Ticks,
+                    Durable = action.ContinuationPolicy.Durable,
+                    SingleClaim = action.ContinuationPolicy.SingleClaim,
+                },
+            DefaultTimeoutTicks = action.DefaultTimeout.Ticks,
+            ProtocolMinimum = descriptor.ProtocolVersionRange.Minimum,
+            ProtocolMaximum = descriptor.ProtocolVersionRange.Maximum,
+            SafePoints = action.SafePoints.Select(point => point.ToString()).ToArray(),
+            InputSchema = new
+            {
+                descriptor.InputSchema.ContractName,
+                descriptor.InputSchema.Version,
+                descriptor.InputSchema.ContentHash,
+            },
+            ResultSchema = new
+            {
+                descriptor.ResultSchema.ContractName,
+                descriptor.ResultSchema.Version,
+                descriptor.ResultSchema.ContentHash,
+            },
+            InputTypeIdentity = TypeIdentity(action.ActionType),
+            ResultTypeIdentity = TypeIdentity(action.ResultType),
+        });
+        return Convert.ToHexString(SHA256.HashData(value));
+    }
+
+    private static string TypeIdentity(Type type) =>
+        type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 
     internal static bool Matches(
         SidecarActionDescriptorIdentity expected,

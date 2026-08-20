@@ -121,10 +121,9 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The nested action has no parent descriptor authority.");
         }
 
-        var identity = CreateNestedSelectorIdentity<TAction, TResult>(
+        var identity = _transport.ResolveModuleActionIdentity<TAction, TResult>(
             request.ActionKey,
-            request.ActionVersion,
-            _parentDescriptor);
+            request.ActionVersion);
         var action = OutOfProcessActionDispatcher.Payload(
             request.Action,
             identity.InputTypeIdentity,
@@ -190,61 +189,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 contribution),
             cancellationToken);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
-    }
-
-    private static SidecarActionDescriptorIdentity CreateNestedSelectorIdentity<TAction, TResult>(
-        SharpClawActionKey key,
-        int version,
-        SidecarActionDescriptorIdentity parent)
-    {
-        var inputTypeIdentity = typeof(TAction).AssemblyQualifiedName
-            ?? typeof(TAction).FullName
-            ?? typeof(TAction).Name;
-        var resultTypeIdentity = typeof(TResult).AssemblyQualifiedName
-            ?? typeof(TResult).FullName
-            ?? typeof(TResult).Name;
-        var inputSchemaHash = parent.InputSchemaHash
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The parent host descriptor has no input schema hash.");
-        var resultSchemaHash = parent.ResultSchemaHash
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The parent host descriptor has no result schema hash.");
-        var inputSchema = new JsonSchemaReference(
-            $"{parent.Category}.nested.input",
-            parent.InputSchemaVersion,
-            inputSchemaHash);
-        var resultSchema = new JsonSchemaReference(
-            $"{parent.Category}.nested.result",
-            parent.ResultSchemaVersion,
-            resultSchemaHash);
-        var nestedInputSchemaHash = inputSchema.ContentHash
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The nested selector has no input schema hash.");
-        var nestedResultSchemaHash = resultSchema.ContentHash
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The nested selector has no result schema hash.");
-        return new SidecarActionDescriptorIdentity(
-            key,
-            version,
-            parent.Category,
-            inputTypeIdentity,
-            nestedInputSchemaHash,
-            inputSchema.Version,
-            resultTypeIdentity,
-            nestedResultSchemaHash,
-            resultSchema.Version,
-            OutOfProcessActionDescriptorIdentity.ComputeDescriptorHash(
-                key,
-                version,
-                parent.Category,
-                inputTypeIdentity,
-                inputSchema,
-                resultTypeIdentity,
-                resultSchema));
     }
 
     private static async ValueTask<SidecarActionTerminalTransportResponse> ExecuteTerminalAsync<TAction, TResult>(

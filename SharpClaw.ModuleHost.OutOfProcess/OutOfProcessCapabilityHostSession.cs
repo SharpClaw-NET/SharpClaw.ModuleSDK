@@ -1002,30 +1002,16 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 $"The nested action '{request.Descriptor.Key.Value}:{request.Descriptor.Version}' "
                 + "is not registered in host descriptor authority.");
         }
+        if (!OutOfProcessActionDescriptorIdentity.Matches(
+                registration.Identity,
+                request.Descriptor))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action descriptor does not match host descriptor authority.");
+        }
 
-        var identity = registration.Identity;
-        var action = OutOfProcessActionDispatcher.Payload(
-            request.Action.Value,
-            identity.InputTypeIdentity,
-            identity.InputSchemaVersion);
-        var contribution = request.Contribution with
-        {
-            Lineage = new HostActionEntryLineage(
-                identity.Key,
-                identity.Version,
-                identity.DescriptorHash,
-                identity.InputTypeIdentity,
-                identity.InputSchemaVersion,
-                identity.InputSchemaHash,
-                action.ContentHash,
-                action.ByteLength),
-        };
-        return request with
-        {
-            Descriptor = identity,
-            Action = action,
-            Contribution = contribution,
-        };
+        return request;
     }
 
     private SidecarActionCapabilityRequest ResolveNestedActionRequest(
@@ -1047,6 +1033,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 carrier.ActionKey,
                 carrier.ActionVersion,
                 out var registration)
+            || !OutOfProcessActionDescriptorIdentity.Matches(
+                registration.Identity,
+                request.Descriptor)
             || !string.Equals(
                 registration.Identity.DescriptorHash,
                 carrier.DescriptorHash,
@@ -1057,12 +1046,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 "The nested carrier does not identify a registered host descriptor.");
         }
 
-        var identity = registration.Identity;
-        var action = OutOfProcessActionDispatcher.Payload(
-            request.Action.Value,
-            identity.InputTypeIdentity,
-            identity.InputSchemaVersion);
+        var action = request.Action;
         if (!string.Equals(
+                action.TypeIdentity,
+                request.Descriptor.InputTypeIdentity,
+                StringComparison.Ordinal)
+            || action.SchemaVersion != request.Descriptor.InputSchemaVersion
+            || !string.Equals(
                 action.ContentHash,
                 carrier.ActionContentHash,
                 StringComparison.Ordinal)
@@ -1079,16 +1069,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 "The nested action request has no terminal registration.");
         return request with
         {
-            Descriptor = identity,
+            Descriptor = request.Descriptor,
             Action = action,
-            Terminal = terminal with
-            {
-                ActionTypeIdentity = identity.InputTypeIdentity,
-                ActionSchemaVersion = identity.InputSchemaVersion,
-                ResultTypeIdentity = identity.ResultTypeIdentity,
-                ResultSchemaVersion = identity.ResultSchemaVersion,
-                DescriptorHash = identity.DescriptorHash,
-            },
+            Terminal = terminal,
         };
     }
 
