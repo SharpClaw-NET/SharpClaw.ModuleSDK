@@ -203,23 +203,39 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         var resultTypeIdentity = typeof(TResult).AssemblyQualifiedName
             ?? typeof(TResult).FullName
             ?? typeof(TResult).Name;
+        var inputSchemaHash = parent.InputSchemaHash
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The parent host descriptor has no input schema hash.");
+        var resultSchemaHash = parent.ResultSchemaHash
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The parent host descriptor has no result schema hash.");
         var inputSchema = new JsonSchemaReference(
             $"{parent.Category}.nested.input",
             parent.InputSchemaVersion,
-            parent.InputSchemaHash);
+            inputSchemaHash);
         var resultSchema = new JsonSchemaReference(
             $"{parent.Category}.nested.result",
             parent.ResultSchemaVersion,
-            parent.ResultSchemaHash);
+            resultSchemaHash);
+        var nestedInputSchemaHash = inputSchema.ContentHash
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The nested selector has no input schema hash.");
+        var nestedResultSchemaHash = resultSchema.ContentHash
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The nested selector has no result schema hash.");
         return new SidecarActionDescriptorIdentity(
             key,
             version,
             parent.Category,
             inputTypeIdentity,
-            inputSchema.ContentHash,
+            nestedInputSchemaHash,
             inputSchema.Version,
             resultTypeIdentity,
-            resultSchema.ContentHash,
+            nestedResultSchemaHash,
             resultSchema.Version,
             OutOfProcessActionDescriptorIdentity.ComputeDescriptorHash(
                 key,

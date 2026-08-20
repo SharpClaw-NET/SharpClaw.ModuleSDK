@@ -1083,8 +1083,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             Action = action,
             Terminal = terminal with
             {
-                InputTypeIdentity = identity.InputTypeIdentity,
-                InputSchemaVersion = identity.InputSchemaVersion,
+                ActionTypeIdentity = identity.InputTypeIdentity,
+                ActionSchemaVersion = identity.InputSchemaVersion,
                 ResultTypeIdentity = identity.ResultTypeIdentity,
                 ResultSchemaVersion = identity.ResultSchemaVersion,
                 DescriptorHash = identity.DescriptorHash,

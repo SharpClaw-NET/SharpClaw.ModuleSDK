@@ -664,8 +664,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Action = request.EffectiveAction,
                 Terminal = terminal with
                 {
-                    InputTypeIdentity = request.Descriptor.InputTypeIdentity,
-                    InputSchemaVersion = request.Descriptor.InputSchemaVersion,
+                    ActionTypeIdentity = request.Descriptor.InputTypeIdentity,
+                    ActionSchemaVersion = request.Descriptor.InputSchemaVersion,
                     ResultTypeIdentity = request.Descriptor.ResultTypeIdentity,
                     ResultSchemaVersion = request.Descriptor.ResultSchemaVersion,
                     DescriptorHash = request.Descriptor.DescriptorHash,
