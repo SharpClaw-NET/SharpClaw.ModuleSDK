@@ -624,7 +624,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             DateTimeOffset.UtcNow,
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
         if (!validation.Accepted)
+        {
             Console.Error.WriteLine($"beta11-terminal-validation: {validation.Code}: {validation.Message}");
+            var diagnosticPath = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+            if (!string.IsNullOrWhiteSpace(diagnosticPath))
+                File.AppendAllText(
+                    diagnosticPath,
+                    $"{validation.Code}: {validation.Message}{Environment.NewLine}");
+        }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
