@@ -129,12 +129,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             request.Action,
             metadata.InputTypeIdentity,
             metadata.Hook.InputSchema.Version);
+        var nestedDeadline = request.ParentContext.Deadline <= _parentTerminalRequest.Deadline
+            ? request.ParentContext.Deadline
+            : _parentTerminalRequest.Deadline;
         var nestedRequest = new SidecarNestedHostActionEntryRequest(
             request.ActionKey,
             request.ActionVersion,
             action,
-            request.ParentContext.Deadline,
-            request.ParentContext.Deadline);
+            nestedDeadline,
+            nestedDeadline);
         var relayResponse = await _transport.InvokeActionTerminalAsync(
             _parentTerminalRequest with { NestedCarrierRequest = nestedRequest },
             cancellationToken);
