@@ -623,57 +623,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             Binding,
             DateTimeOffset.UtcNow,
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
-        if (!validation.Accepted)
-        {
-            Console.Error.WriteLine($"beta11-terminal-validation: {validation.Code}: {validation.Message}");
-            var diagnosticPath = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-            if (!string.IsNullOrWhiteSpace(diagnosticPath))
-                File.AppendAllText(
-                    diagnosticPath,
-                    $"{validation.Code}: {validation.Message}{Environment.NewLine}"
-                    + JsonSerializer.Serialize(
-                        new { Initiating = pending.Request, Terminal = request },
-                        SidecarCapabilityTransportCodec.CreateJsonOptions())
-                    + Environment.NewLine
-                    + $"contextWellFormed={request.Context?.IsWellFormed}; "
-                    + $"deadlineMatchesCall={request.Deadline == request.Call.Deadline}; "
-                    + $"snapshotHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Snapshot))}; "
-                    + $"authoritySnapshotHash={request.Authority.SnapshotContentHash}; "
-                    + $"canonicalHash={SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(request.Authority)}; "
-                    + $"authorityCanonicalHash={request.Authority.CanonicalBindingHash}; "
-                    + $"proofValid={string.Equals(OutOfProcessCapabilitySecurity.CreateTerminalProof(request.Authority, _controlToken), request.Authority.Proof, StringComparison.Ordinal)}; "
-                    + $"authCallbackValid={ValidateTerminalAuthority(request.Authority, request.Authority.CanonicalBindingHash)}; "
-                    + $"expectedCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Caller))}; "
-                    + $"actualCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Caller))}; "
-                    + $"expectedFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Features))}; "
-                    + $"actualFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Features))}; "
-                    + $"callerMatches={OutOfProcessHostActionEntryContextRegistry.MatchesCaller(pending.Request.HostContext?.Caller, request.Context?.Caller)}; "
-                    + $"callEquals={request.Call == pending.Request.Call}; "
-                    + $"descriptorEquals={request.Descriptor == pending.Request.Descriptor}; "
-                    + $"cancellationEquals={request.Cancellation == pending.Request.Cancellation}; "
-                    + $"deadlineEquals={request.Deadline == pending.Request.Deadline}; "
-                    + $"terminalIdEquals={request.TerminalId == pending.Request.Terminal?.TerminalId}; "
-                    + $"contextCallEquals={request.Context?.Call == request.Call}; "
-                    + $"contextInvocationEquals={request.Context?.Invocation == request.Invocation}; "
-                    + $"contextDescriptorEquals={request.Context?.Descriptor == request.Descriptor}; "
-                    + $"contextPayloadEquals={request.Context?.EffectiveAction == request.EffectiveAction}; "
-                    + $"contextCancellationEquals={request.Context?.Cancellation == request.Cancellation}; "
-                    + $"contextReceiptEquals={request.Context?.Receipt == request.Receipt}; "
-                    + $"contextDeadlineEquals={request.Context?.Deadline == request.Deadline}; "
-                    + $"contextAttemptEquals={request.Context?.Attempt == request.Receipt?.Attempt}; "
-                    + $"receiptValid={request.Receipt is not null && request.Receipt.ReceiptId is not null && request.Receipt.CallId == request.Call.CallId && request.Receipt.ActionKey == request.Descriptor.Key && request.Receipt.ActionVersion == request.Descriptor.Version && request.Receipt.Attempt >= 1 && request.Receipt.IdempotencyScope is not null && request.Receipt.ContentHash is not null}; "
-                    + $"issuedAtBeforeNow={request.Authority.IssuedAt <= DateTimeOffset.UtcNow}; "
-                    + $"authorityExpiryAfterDeadline={request.Authority.ExpiresAt >= request.Deadline}; "
-                    + $"authorityExpiryBeforeBinding={request.Authority.ExpiresAt <= Binding.ExpiresAt}; "
-                    + $"requestDeadlineAfterNow={request.Deadline > DateTimeOffset.UtcNow}; "
-                    + $"cancellationExpiryAfterDeadline={request.Cancellation.ExpiresAt >= request.Deadline}; "
-                    + $"bindingMatches={request.Call.IsValid && request.Call.Capability == SidecarCapabilityKind.Action && request.Call.SessionId == Binding.SessionId && request.Call.RequestId == Binding.RequestId && request.Call.CancellationId == Binding.CancellationId && string.Equals(request.Call.ModuleId, Binding.ModuleId, StringComparison.Ordinal) && string.Equals(request.Call.GraphId, Binding.GraphId, StringComparison.Ordinal)}; "
-                    + $"terminalDescriptorMatches={pending.Request.Terminal is { IsWellFormed: true } terminal && string.Equals(terminal.ActionTypeIdentity, request.Descriptor.InputTypeIdentity, StringComparison.Ordinal) && terminal.ActionSchemaVersion == request.Descriptor.InputSchemaVersion && string.Equals(terminal.ResultTypeIdentity, request.Descriptor.ResultTypeIdentity, StringComparison.Ordinal) && terminal.ResultSchemaVersion == request.Descriptor.ResultSchemaVersion && string.Equals(terminal.DescriptorHash, request.Descriptor.DescriptorHash, StringComparison.Ordinal)}; "
-                    + $"lineageMatches={pending.Request.HostContext?.Contribution?.Lineage is { } lineage && lineage.ActionKey == request.Descriptor.Key && lineage.ActionVersion == request.Descriptor.Version && string.Equals(lineage.DescriptorHash, request.Descriptor.DescriptorHash, StringComparison.Ordinal) && string.Equals(lineage.InputTypeIdentity, request.EffectiveAction?.TypeIdentity, StringComparison.Ordinal) && lineage.InputSchemaVersion == request.EffectiveAction?.SchemaVersion && string.Equals(lineage.InputSchemaHash, request.Descriptor.InputSchemaHash, StringComparison.Ordinal)}; "
-                    + $"payloadFieldsMatch={request.Context?.EffectiveAction is { } contextAction && request.EffectiveAction is { } effectiveAction && string.Equals(contextAction.TypeIdentity, effectiveAction.TypeIdentity, StringComparison.Ordinal) && contextAction.SchemaVersion == effectiveAction.SchemaVersion && string.Equals(contextAction.ContentHash, effectiveAction.ContentHash, StringComparison.OrdinalIgnoreCase) && contextAction.ByteLength == effectiveAction.ByteLength}; "
-                    + $"payloadValidation={SidecarCapabilityTransportValidation.ValidateSerializedPayload(request.EffectiveAction, required: true, Binding.PayloadLimits.ActionInputBytes).Accepted}; "
-                    + $"payloadValidationCode={SidecarCapabilityTransportValidation.ValidateSerializedPayload(request.EffectiveAction, required: true, Binding.PayloadLimits.ActionInputBytes).Code}{Environment.NewLine}");
-        }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
