@@ -900,7 +900,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
@@ -910,7 +910,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
-                "The host action dispatcher failed.",
+                $"The host action dispatcher failed: {ex.GetType().Name}: {ex.Message}",
                 channelCt);
         }
         finally
