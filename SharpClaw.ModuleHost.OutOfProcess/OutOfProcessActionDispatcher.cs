@@ -114,7 +114,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 new SidecarTerminalExecutionResult(
                     EmptyPayloadForFailure(),
                     safeFailure,
-                    Completed: false),
+                    Completed: true),
                 request.Receipt,
                 safeFailure)
             {
