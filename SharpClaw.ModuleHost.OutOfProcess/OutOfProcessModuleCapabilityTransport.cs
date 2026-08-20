@@ -84,7 +84,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         return new ModuleNestedActionMetadata(
             match,
             TypeIdentity(typeof(TAction)),
-            TypeIdentity(typeof(TResult));
+            TypeIdentity(typeof(TResult)));
     }
 
     internal static bool MatchesNestedActionMetadata(
