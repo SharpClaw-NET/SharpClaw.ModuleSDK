@@ -896,8 +896,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            WriteDiagnostic(
+                $"Host action failure: call={request.Call.CallId}; "
+                + $"type={ex.GetType().FullName}; code={(ex as OutOfProcessCapabilityException)?.Code}; message={ex.Message}");
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
                 : 0;
