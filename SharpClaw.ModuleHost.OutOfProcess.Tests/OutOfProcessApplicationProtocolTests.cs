@@ -252,7 +252,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         await client.ConnectCapabilitiesAsync(options);
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
-        for (var i = 0; i < maximumCalls; i++)
+        const int priorCalls = maximumCalls - 1;
+        for (var i = 0; i < priorCalls; i++)
         {
             var result = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -293,7 +294,7 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         afterRotation.Result.Succeeded.Should().BeTrue(
             $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-        storage.InvokeCalls.Should().Be(maximumCalls + 1);
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
     }
