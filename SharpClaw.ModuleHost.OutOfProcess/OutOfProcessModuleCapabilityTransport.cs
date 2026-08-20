@@ -645,10 +645,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Authority.AuthorityId,
             request.Receipt));
         var response = await pending.Terminal(request, ct);
-        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
             request,
             response,
-            Binding));
+            Binding);
+        if (!responseValidation.Accepted)
+        {
+            WriteDiagnostic(
+                $"Terminal response rejected: {responseValidation.Code}: {responseValidation.Message}; "
+                + $"request={request.Invocation}:{request.Call.CallId}:{request.Descriptor.Key.Value}; "
+                + $"result={response.ResultIdentity?.ResultId}; "
+                + $"execution={response.Execution?.Completed}:{response.Execution?.Result is not null}:{response.Execution?.Failure?.Code}; "
+                + $"nested={response.NestedCarrierOutcome?.Kind}");
+        }
+        ThrowIfRejected(responseValidation);
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
@@ -942,6 +952,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             catch (ObjectDisposedException)
             {
             }
+        }
+    }
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
         }
     }
 
