@@ -286,8 +286,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException)
+        catch (OutOfProcessCapabilityException ex)
         {
+            WriteDiagnostic(ex);
         }
         finally
         {
@@ -357,6 +358,29 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         _rotationGate.Dispose();
         SendGate.Dispose();
         _disconnect.Dispose();
+    }
+
+    private static void WriteDiagnostic(Exception exception)
+    {
+        var diagnosticPath = Environment.GetEnvironmentVariable(
+            "SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(diagnosticPath)
+            || !diagnosticPath.StartsWith(
+                @"D:\temp\SharpClaw.ModuleSDK\",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            File.AppendAllText(
+                diagnosticPath,
+                $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{exception}{Environment.NewLine}");
+        }
+        catch
+        {
+        }
     }
 
     private async Task ScheduleActionRequestAsync(
