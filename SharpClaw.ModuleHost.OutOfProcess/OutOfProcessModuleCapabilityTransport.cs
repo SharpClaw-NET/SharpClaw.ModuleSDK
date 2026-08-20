@@ -16,18 +16,14 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private string? _graphId;
     private SidecarPayloadLimits? _payloadLimits;
     private SidecarHostAuthorization? _authorization;
-    private IReadOnlyList<ModuleActionDefinition>? _moduleActions;
-
     public void Initialize(
         string moduleId,
         string graphId,
-        SidecarPayloadLimits payloadLimits,
-        IReadOnlyList<ModuleActionDefinition> moduleActions)
+        SidecarPayloadLimits payloadLimits)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
         ArgumentException.ThrowIfNullOrWhiteSpace(graphId);
         ArgumentNullException.ThrowIfNull(payloadLimits);
-        ArgumentNullException.ThrowIfNull(moduleActions);
         lock (_sync)
         {
             if (_moduleId is not null)
@@ -35,43 +31,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _moduleId = moduleId;
             _graphId = graphId;
             _payloadLimits = payloadLimits;
-            _moduleActions = moduleActions;
         }
-    }
-
-    internal SidecarActionDescriptorIdentity ResolveModuleActionIdentity<TAction, TResult>(
-        SharpClawActionKey key,
-        int version)
-    {
-        var actions = Volatile.Read(ref _moduleActions)
-            ?? throw new InvalidOperationException(
-                "The module action graph is not initialized.");
-        ModuleActionDefinition? match = null;
-        foreach (var action in actions)
-        {
-            if (action.Descriptor.Key != key || action.Descriptor.Version != version)
-                continue;
-            if (action.ActionType != typeof(TAction)
-                || action.ResultType != typeof(TResult))
-            {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.SpoofedIdentity,
-                    "The nested action types do not match the module action graph.");
-            }
-            if (match is not null)
-            {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.UnknownAction,
-                    "The module action graph contains an ambiguous nested action.");
-            }
-            match = action;
-        }
-
-        return match is null
-            ? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.UnknownAction,
-                $"The nested action '{key.Value}:{version}' is not declared by the module.")
-            : OutOfProcessActionDescriptorIdentity.Create(match);
     }
 
     internal void SetAuthorization(SidecarHostAuthorization authorization)

@@ -189,6 +189,14 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             canonicalBytes.Length);
     }
 
+    internal static SidecarSerializedPayload Payload<T>(T value) =>
+        Payload(
+            value,
+            typeof(T).AssemblyQualifiedName
+                ?? typeof(T).FullName
+                ?? typeof(T).Name,
+            schemaVersion: 1);
+
     internal static SidecarSerializedPayload EmptyPayloadForFailure() =>
         new(
             "system.empty",

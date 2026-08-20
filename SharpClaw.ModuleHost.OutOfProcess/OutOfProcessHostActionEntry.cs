@@ -121,29 +121,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The nested action has no parent descriptor authority.");
         }
 
-        var identity = _transport.ResolveModuleActionIdentity<TAction, TResult>(
-            request.ActionKey,
-            request.ActionVersion);
-        var action = OutOfProcessActionDispatcher.Payload(
-            request.Action,
-            identity.InputTypeIdentity,
-            identity.InputSchemaVersion);
-        var contribution = _parentContribution with
-        {
-            Lineage = new HostActionEntryLineage(
-                identity.Key,
-                identity.Version,
-                identity.DescriptorHash,
-                identity.InputTypeIdentity,
-                identity.InputSchemaVersion,
-                identity.InputSchemaHash,
-                null,
-                null),
-        };
+        var action = OutOfProcessActionDispatcher.Payload(request.Action);
         var nestedRequest = new SidecarNestedHostActionEntryRequest(
-            identity,
+            request.ActionKey,
+            request.ActionVersion,
             action,
-            contribution,
             request.ParentContext.Deadline,
             request.ParentContext.Deadline);
         var relayResponse = await _transport.InvokeActionTerminalAsync(
@@ -160,6 +142,20 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 relayResponse.NestedCarrierOutcome?.Failure?.Message
                     ?? "The host did not issue a nested host action carrier.");
         }
+
+        var identity = relay.Carrier.Descriptor;
+        var contribution = _parentContribution with
+        {
+            Lineage = new HostActionEntryLineage(
+                identity.Key,
+                identity.Version,
+                identity.DescriptorHash,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.InputSchemaHash,
+                null,
+                null),
+        };
 
         var childRequest = SidecarActionCapabilityRequest.HostEntryNested(
             relay.Call,

@@ -958,10 +958,15 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
 
         var resolvedNestedRequest = ResolveNestedRelayRequest(
-            request.NestedCarrierRequest);
+            request.NestedCarrierRequest,
+            active.HostContext,
+            out var resolvedDescriptor,
+            out var resolvedContribution);
         var issue = Session.IssueNestedHostActionEntryRelay(
             request.Call,
             resolvedNestedRequest,
+            resolvedDescriptor,
+            resolvedContribution,
             DateTimeOffset.UtcNow,
             out var relay);
         var outcomeKind = issue.Accepted && relay is not null
@@ -989,26 +994,55 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     }
 
     private SidecarNestedHostActionEntryRequest ResolveNestedRelayRequest(
-        SidecarNestedHostActionEntryRequest request)
+        SidecarNestedHostActionEntryRequest request,
+        HostActionEntryRequestContext? parentContext,
+        out SidecarActionDescriptorIdentity resolvedDescriptor,
+        out HostActionEntryContribution resolvedContribution)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (!_options.ActionDescriptors.TryResolve(
-                request.Descriptor.Key,
-                request.Descriptor.Version,
+                request.ActionKey,
+                request.ActionVersion,
                 out var registration))
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.UnknownAction,
-                $"The nested action '{request.Descriptor.Key.Value}:{request.Descriptor.Version}' "
+                $"The nested action '{request.ActionKey.Value}:{request.ActionVersion}' "
                 + "is not registered in host descriptor authority.");
         }
-        if (!OutOfProcessActionDescriptorIdentity.Matches(
-                registration.Identity,
-                request.Descriptor))
+
+        parentContext ??= throw new OutOfProcessCapabilityException(
+            SidecarCapabilityErrors.Unauthorized,
+            "The nested action has no authenticated parent context.");
+        var parentContribution = parentContext.Contribution
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested action has no authenticated parent contribution.");
+        resolvedDescriptor = registration.Identity;
+        resolvedContribution = parentContribution with
+        {
+            Lineage = new HostActionEntryLineage(
+                resolvedDescriptor.Key,
+                resolvedDescriptor.Version,
+                resolvedDescriptor.DescriptorHash,
+                resolvedDescriptor.InputTypeIdentity,
+                resolvedDescriptor.InputSchemaVersion,
+                resolvedDescriptor.InputSchemaHash,
+                null,
+                null),
+        };
+        var validation = SidecarCapabilityTransportValidation
+            .ValidateResolvedNestedHostActionEntryRequest(
+                request,
+                resolvedDescriptor,
+                resolvedContribution,
+                Session.Binding,
+                DateTimeOffset.UtcNow);
+        if (!validation.Accepted)
         {
             throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
-                "The nested action descriptor does not match host descriptor authority.");
+                validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                validation.Message ?? "The nested action does not match host descriptor authority.");
         }
 
         return request;

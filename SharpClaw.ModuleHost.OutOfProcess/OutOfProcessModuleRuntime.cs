@@ -110,8 +110,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
             capabilityTransport.Initialize(
                 graph.Identity.Id,
                 graph.ContractHash,
-                graph.PayloadLimits,
-                graph.Actions);
+                graph.PayloadLimits);
             IServiceCollection services = new ServiceCollection();
             foreach (var descriptor in graph.Services)
             {
