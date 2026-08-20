@@ -129,9 +129,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             request.Action,
             metadata.InputTypeIdentity,
             metadata.Hook.InputSchema.Version);
-        var nestedDeadline = request.ParentContext.Deadline <= _parentTerminalRequest.Deadline
-            ? request.ParentContext.Deadline
-            : _parentTerminalRequest.Deadline;
+        var nestedDeadline = request.ParentContext.Deadline;
+        if (_parentTerminalRequest.Deadline < nestedDeadline)
+            nestedDeadline = _parentTerminalRequest.Deadline;
+        if (_parentTerminalRequest.Call.Deadline < nestedDeadline)
+            nestedDeadline = _parentTerminalRequest.Call.Deadline;
         var nestedRequest = new SidecarNestedHostActionEntryRequest(
             request.ActionKey,
             request.ActionVersion,
