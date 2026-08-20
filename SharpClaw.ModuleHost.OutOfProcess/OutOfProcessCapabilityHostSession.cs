@@ -494,8 +494,15 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 && Volatile.Read(ref active.CompletionAccepted) != 0;
         }
 
-        var accepted = CompleteSessionCall(callId, terminalCallCount);
-        if (!accepted && terminalCallCount != 0)
+        var effectiveTerminalCallCount = terminalCallCount;
+        if (effectiveTerminalCallCount == 0
+            && Session.TryGetTerminalReceipt(callId, out _))
+        {
+            effectiveTerminalCallCount = 1;
+        }
+
+        var accepted = CompleteSessionCall(callId, effectiveTerminalCallCount);
+        if (!accepted && effectiveTerminalCallCount != 0)
             accepted = CompleteSessionCall(callId, 0);
         if (accepted)
             Volatile.Write(ref active.CompletionAccepted, 1);

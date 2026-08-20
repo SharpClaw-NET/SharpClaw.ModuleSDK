@@ -312,6 +312,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.HostAction,
             static (context, _) => ValueTask.FromResult(
                 new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
+        descriptors.Add(
+            ApplicationSmokeModule.ChildAction,
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationChildResult($"host-child:{context.Action.Name}:{context.Action.Count}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         var options = new OutOfProcessCapabilityHostOptions(
             storage,
@@ -326,10 +330,14 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry());
         await client.ConnectCapabilitiesAsync(options);
 
-        var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
+        var pendingContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
         hostContext = pendingContext;
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
-        for (var i = 0; i < maximumCalls; i++)
+        const int priorCalls = maximumCalls - 1;
+        for (var i = 0; i < priorCalls; i++)
         {
             var result = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -354,8 +362,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         };
 
         var hostEntryTask = Task.Run(async () => await client.InvokeCliAsync(
-            ApplicationSmokeModule.HostEntryCliName,
-            [],
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["cross-descriptor"],
             pendingContext));
         await carrierEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         hostEntryTask.IsCompleted.Should().BeFalse();
@@ -366,7 +374,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             $"CLI error {hostEntry.Result.Error?.Code}: {hostEntry.Result.Error?.Message}; "
             + string.Join(" | ", hostEntry.Result.Output.Select(item => item.Text)));
         hostEntry.Result.Output.Single().Text.Should().Be(
-            "host-entry:Completed:entry-terminal:action");
+            "host-entry:Completed:cross-descriptor:cross-descriptor-child:7");
 
         var afterRotation = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
@@ -375,9 +383,9 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         afterRotation.Result.Succeeded.Should().BeTrue(
             $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-        storage.InvokeCalls.Should().Be(maximumCalls + 1);
-        dispatcher.RunCalls.Should().Be(1);
-        dispatcher.TerminalCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
     }
 
     [Test, CancelAfter(15000)]
