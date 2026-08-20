@@ -1011,9 +1011,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 + "is not registered in host descriptor authority.");
         }
 
-        parentContext ??= throw new OutOfProcessCapabilityException(
-            SidecarCapabilityErrors.Unauthorized,
-            "The nested action has no authenticated parent context.");
+        if (parentContext is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested action has no authenticated parent context.");
+        }
+
         var parentContribution = parentContext.Contribution
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
