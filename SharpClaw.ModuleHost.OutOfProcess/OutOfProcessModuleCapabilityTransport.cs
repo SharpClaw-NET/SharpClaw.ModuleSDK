@@ -641,7 +641,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     + $"authoritySnapshotHash={request.Authority.SnapshotContentHash}; "
                     + $"canonicalHash={SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(request.Authority)}; "
                     + $"authorityCanonicalHash={request.Authority.CanonicalBindingHash}; "
-                    + $"proofValid={ValidateTerminalAuthority(request.Authority, request.Authority.Proof)}; "
+                    + $"proofValid={string.Equals(OutOfProcessCapabilitySecurity.CreateTerminalProof(request.Authority, _controlToken), request.Authority.Proof, StringComparison.Ordinal)}; "
+                    + $"authCallbackValid={ValidateTerminalAuthority(request.Authority, request.Authority.CanonicalBindingHash)}; "
                     + $"expectedCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Caller))}; "
                     + $"actualCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Caller))}; "
                     + $"expectedFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Features))}; "
@@ -877,10 +878,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private bool ValidateTerminalAuthority(
         SidecarHostTerminalAuthority authority,
-        string proof) =>
+        string canonicalBindingHash) =>
         string.Equals(
+            authority.CanonicalBindingHash,
+            canonicalBindingHash,
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
-            proof,
+            authority.Proof,
             StringComparison.Ordinal);
 
     private void CompleteAction(SidecarActionCapabilityResponse response)
