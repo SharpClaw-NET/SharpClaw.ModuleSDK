@@ -622,7 +622,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request,
             Binding,
             DateTimeOffset.UtcNow,
-            authority => ValidateTerminalAuthority(authority));
+            (authority, proof) => ValidateTerminalAuthority(authority, proof));
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
@@ -825,10 +825,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         return false;
     }
 
-    private bool ValidateTerminalAuthority(SidecarHostTerminalAuthority authority) =>
+    private bool ValidateTerminalAuthority(
+        SidecarHostTerminalAuthority authority,
+        string proof) =>
         string.Equals(
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
-            authority.Proof,
+            proof,
             StringComparison.Ordinal);
 
     private void CompleteAction(SidecarActionCapabilityResponse response)

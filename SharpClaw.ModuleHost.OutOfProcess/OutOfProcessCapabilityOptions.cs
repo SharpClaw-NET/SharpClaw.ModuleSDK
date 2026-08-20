@@ -130,7 +130,7 @@ public sealed class OutOfProcessActionDescriptorCatalog
     /// <summary>Adds one typed descriptor and its host-owned terminal entry.</summary>
     public void Add<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
-        Func<TAction, CancellationToken, ValueTask<TResult>>? hostTerminal)
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>? hostTerminal)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);

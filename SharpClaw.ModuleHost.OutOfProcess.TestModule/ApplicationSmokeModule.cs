@@ -220,6 +220,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         HostAction,
                         new ApplicationSmokeAction("host-entry", "action"),
                         hostActionContext),
+                    new HostActionTerminal(),
                     ct);
                 return new ModuleCliResult(
                     outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred,
@@ -250,6 +251,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     HostAction,
                     new ApplicationSmokeAction("host-tool", value),
                     invocation.HostActionContext),
+                new HostActionTerminal(),
                 ct);
             var context = invocation.HostActionContext;
             var roles = context.Caller.Roles is null
@@ -303,8 +305,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 var actionResult = await dispatcher.RunRequiredAsync(
                     HostAction,
                     new ApplicationSmokeAction("capability", "action"),
-                    static (action, _) => ValueTask.FromResult(
-                        new ApplicationSmokeResult($"terminal:{action.Value}")),
+                    static (context, _) => ValueTask.FromResult(
+                        new ApplicationSmokeResult($"terminal:{context.Action.Value}")),
                     new ActionPipelineSnapshot(
                         graph.ContractHash,
                         [new ActionCapabilityGrant(
@@ -331,5 +333,16 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     new ExecutionError("capability_smoke_failed", ex.Message));
             }
         }
+    }
+
+    private sealed class HostActionTerminal : IHostActionEntryTerminal<ApplicationSmokeAction, ApplicationSmokeResult>
+    {
+        public Guid TerminalId { get; } = Guid.NewGuid();
+
+        public ValueTask<ApplicationSmokeResult> InvokeAsync(
+            ActionContext<ApplicationSmokeAction> context,
+            CancellationToken ct) =>
+            ValueTask.FromResult(new ApplicationSmokeResult(
+                $"entry-terminal:{context.Action.Value}"));
     }
 }

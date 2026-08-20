@@ -13,7 +13,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
     public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         ActionPipelineSnapshot snapshot,
         CancellationToken cancellationToken)
     {
@@ -58,7 +58,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
     public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         ActionPipelineSnapshot snapshot,
         CancellationToken cancellationToken)
     {
@@ -77,16 +77,17 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
     }
 
     private static async ValueTask<SidecarActionTerminalTransportResponse> ExecuteTerminalAsync<TAction, TResult>(
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         SidecarActionTerminalTransportRequest request,
         SidecarActionDescriptorIdentity identity,
         SidecarSafeFailureIdentity safeFailure,
         CancellationToken ct)
     {
         var action = Deserialize<TAction>(request.EffectiveAction);
+        var context = CreateActionContext<TAction>(request, action);
         try
         {
-            var result = await terminal(action, ct);
+            var result = await terminal(context, ct);
             var payload = Payload(
                 result,
                 identity.ResultTypeIdentity,
@@ -101,7 +102,10 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                     payload.ContentHash),
                 new SidecarTerminalExecutionResult(payload, null!, Completed: true),
                 request.Receipt,
-                safeFailure);
+                safeFailure)
+            {
+                TerminalId = request.TerminalId,
+            };
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -112,14 +116,53 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                     identity.Key,
                     identity.Version,
                     identity.ResultTypeIdentity,
-                    EmptyPayload().ContentHash),
+                    EmptyPayloadForFailure().ContentHash),
                 new SidecarTerminalExecutionResult(
-                    EmptyPayload(),
+                    EmptyPayloadForFailure(),
                     safeFailure,
                     Completed: false),
                 request.Receipt,
-                safeFailure);
+                safeFailure)
+            {
+                TerminalId = request.TerminalId,
+            };
         }
+    }
+
+    internal static ActionContext<TAction> CreateActionContext<TAction>(
+        SidecarActionTerminalTransportRequest request,
+        TAction action,
+        IHostActionEntry? hostActionEntry = null)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var context = request.Context
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The terminal request has no dispatcher action context.");
+        if (!context.IsWellFormed)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The terminal request dispatcher action context is invalid.");
+        }
+
+        return new ActionContext<TAction>(
+            context.InvocationId,
+            context.ParentInvocationId,
+            context.TraceId,
+            context.IdempotencyKey,
+            context.Depth,
+            context.Attempt,
+            context.Deadline,
+            request.Descriptor.Key,
+            request.Authority.ModuleId,
+            context.Caller,
+            action,
+            context.Features,
+            context.Snapshot)
+        {
+            HostActionEntry = hostActionEntry,
+        };
     }
 
     internal static IActionOutcome<TResult> CreateOutcome<TResult>(
@@ -152,7 +195,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             canonicalBytes.Length);
     }
 
-    private static SidecarSerializedPayload EmptyPayload() =>
+    internal static SidecarSerializedPayload EmptyPayloadForFailure() =>
         new(
             "system.empty",
             1,

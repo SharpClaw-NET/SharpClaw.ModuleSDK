@@ -215,11 +215,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(
             ApplicationSmokeModule.HostAction,
-            static (action, _) => ValueTask.FromResult(
-                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         var rotationEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -268,6 +270,7 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         rotationRelease.TrySetResult();
         var context = await contextTask.WaitAsync(TimeSpan.FromSeconds(5));
+        hostContext = context;
         var hostEntry = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [],
@@ -297,11 +300,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(
             ApplicationSmokeModule.HostAction,
-            static (action, _) => ValueTask.FromResult(
-                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         var options = new OutOfProcessCapabilityHostOptions(
             storage,
@@ -317,6 +322,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         await client.ConnectCapabilitiesAsync(options);
 
         var pendingContext = IssueHostEntryContext(client, grantExpiresAt);
+        hostContext = pendingContext;
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         for (var i = 0; i < maximumCalls; i++)
         {
@@ -378,11 +384,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         roles!.Should().BeEquivalentTo(["module-agent", "module-operator"]);
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(
             ApplicationSmokeModule.HostAction,
-            static (action, _) => ValueTask.FromResult(
-                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         var grant = client.CreateCapabilityGrant(grantExpiresAt);
         await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
@@ -397,10 +405,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry()));
 
+        hostContext = IssueHostEntryContext(client, grantExpiresAt);
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [],
-            IssueHostEntryContext(client, grantExpiresAt));
+            hostContext);
 
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -511,11 +520,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(
             ApplicationSmokeModule.HostAction,
-            static (action, _) => ValueTask.FromResult(
-                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
             storage,
@@ -547,6 +558,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             idempotencyKey,
             deadline,
             invocationId);
+        hostContext = context;
         var start = CreateHostEntryToolStart(
             client,
             definition,
@@ -658,8 +670,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(
             ApplicationSmokeModule.HostAction,
-            static (action, _) => ValueTask.FromResult(
-                new ApplicationSmokeResult($"entry-terminal:{action.Value}")));
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
         await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
             storage,
@@ -1223,10 +1235,12 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         public ActionInterceptionCapabilities? LastSnapshotCapabilities { get; private set; }
 
+        public Func<HostActionEntryRequestContext?>? HostContextFactory { get; set; }
+
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {
@@ -1239,7 +1253,23 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             LastSnapshotCapabilities = grant.Capabilities;
             RunCalls++;
-            var result = await terminal(action, ct);
+            var hostContext = HostContextFactory?.Invoke();
+            var result = await terminal(
+                new ActionContext<TAction>(
+                    hostContext?.InvocationId ?? Guid.NewGuid(),
+                    hostContext?.ParentInvocationId,
+                    hostContext?.TraceId ?? Guid.NewGuid(),
+                    hostContext?.IdempotencyKey ?? Guid.NewGuid(),
+                    hostContext?.Depth ?? 0,
+                    hostContext?.Attempt ?? 0,
+                    hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
+                    descriptor.Key,
+                    ApplicationSmokeModule.Id,
+                    hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
+                    action,
+                    hostContext?.Features ?? ExtensionFeatureSet.Empty,
+                    snapshot),
+                ct);
             TerminalCalls++;
             return new CountingActionOutcome<TResult>(result);
         }
@@ -1247,7 +1277,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {

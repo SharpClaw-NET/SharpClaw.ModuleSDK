@@ -461,18 +461,48 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct) =>
-            new EmptyActionOutcome<TResult>(await terminal(action, ct));
+            new EmptyActionOutcome<TResult>(await terminal(
+                new ActionContext<TAction>(
+                    Guid.NewGuid(),
+                    null,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    0,
+                    0,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    descriptor.Key,
+                    "test-module",
+                    new RequestPrincipal("test"),
+                    action,
+                    ExtensionFeatureSet.Empty,
+                    snapshot),
+                ct));
 
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct) =>
-            await terminal(action, ct);
+            await terminal(
+                new ActionContext<TAction>(
+                    Guid.NewGuid(),
+                    null,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    0,
+                    0,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    descriptor.Key,
+                    "test-module",
+                    new RequestPrincipal("test"),
+                    action,
+                    ExtensionFeatureSet.Empty,
+                    snapshot),
+                ct);
     }
 
     private sealed class EmptyActionOutcome<TResult>(TResult result) : IActionOutcome<TResult>

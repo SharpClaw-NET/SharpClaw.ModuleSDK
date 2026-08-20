@@ -327,24 +327,11 @@ internal static class OutOfProcessCapabilitySecurity
         SidecarHostTerminalAuthority authority,
         string controlToken)
     {
+        ArgumentNullException.ThrowIfNull(authority);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
         var value = string.Join(
-            "|",
-            authority.AuthorityId,
-            authority.SessionId,
-            authority.RequestId,
-            authority.CallId,
-            authority.CancellationId,
-            authority.GraphId,
-            authority.ModuleId,
-            authority.ActionKey.Value,
-            authority.ActionVersion,
-            authority.DescriptorHash,
-            authority.EffectiveActionContentHash,
-            authority.ReceiptId,
-            authority.ReceiptContentHash,
-            authority.IssuedAt.ToUniversalTime().Ticks,
-            authority.ExpiresAt.ToUniversalTime().Ticks,
-            authority.Deadline.ToUniversalTime().Ticks);
+            "host-terminal",
+            SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(authority));
         return Convert.ToHexString(HMACSHA256.HashData(
             Encoding.UTF8.GetBytes(controlToken),
             Encoding.UTF8.GetBytes(value)));
