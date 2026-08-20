@@ -323,6 +323,17 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             deadline);
     }
 
+    private void ObserveSequence(long sequence)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _sequence);
+            if (sequence <= current
+                || Interlocked.CompareExchange(ref _sequence, sequence, current) == current)
+                return;
+        }
+    }
+
     private void WaitForRebindIfReady(CancellationToken ct)
     {
         Task? rebind;
@@ -367,6 +378,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Action.ByteLength,
             DateTimeOffset.UtcNow);
         ThrowIfRejected(begin);
+        ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
         var pending = new PendingAction(request, terminal, completion);
         if (!_actions.TryAdd(request.Call.CallId, pending))
@@ -463,12 +475,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         using var deadline = CreateCallCancellation(request.Deadline, ct);
         var callCancellation = deadline.Token;
         var payload = request.RequestPayload ?? EmptyPayload();
-        ThrowIfRejected(_session.BeginCall(
+        var begin = _session.BeginCall(
             request.Call,
             SidecarCapabilityKind.Storage,
             payload,
             payload.ByteLength,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow);
+        ThrowIfRejected(begin);
+        ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarStorageCapabilityResponse>();
         if (!_storage.TryAdd(request.Call.CallId, completion))
         {
