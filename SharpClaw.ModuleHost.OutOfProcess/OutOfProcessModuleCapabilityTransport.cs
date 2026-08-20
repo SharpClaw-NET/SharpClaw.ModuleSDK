@@ -575,6 +575,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             failure = ex;
+            WriteDiagnostic(
+                $"Module capability failure: type={ex.GetType().FullName}; "
+                + $"code={(ex as OutOfProcessCapabilityException)?.Code}; message={ex.Message}");
         }
         finally
         {
@@ -957,6 +960,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
+    }
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
+        }
     }
 
     private static void ThrowIfRejected(SidecarCapabilityValidationResult validation)
