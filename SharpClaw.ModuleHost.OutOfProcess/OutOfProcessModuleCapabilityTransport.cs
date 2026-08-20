@@ -572,12 +572,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             failure = ex;
-            WriteDiagnostic(
-                $"Module capability failure: type={ex.GetType().FullName}; "
-                + $"code={(ex as OutOfProcessCapabilityException)?.Code}; message={ex.Message}");
         }
         finally
         {
@@ -858,13 +855,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private void CompleteAction(SidecarActionCapabilityResponse response)
     {
-        var resultIdentity = response.ResultIdentity
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Outcome.Receipt?.CallId
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
-                "The action response has no result identity.");
-        if (_actions.TryGetValue(resultIdentity.CallId, out var pending))
+                "The action response has no result identity or receipt.");
+        if (_actions.TryGetValue(callId, out var pending))
             pending.Completion.TrySetResult(response);
-        else if (!IsRetired(resultIdentity.CallId))
+        else if (!IsRetired(callId))
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
                 "The action response does not match an active action call.");
@@ -960,20 +958,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
-    }
-
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
     }
 
     private static void ThrowIfRejected(SidecarCapabilityValidationResult validation)

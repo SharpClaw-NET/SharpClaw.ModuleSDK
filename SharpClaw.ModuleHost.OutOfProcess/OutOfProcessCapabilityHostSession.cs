@@ -286,10 +286,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException ex)
+        catch (OutOfProcessCapabilityException)
         {
-            WriteDiagnostic(
-                $"Host session failure: type={ex.GetType().FullName}; code={ex.Code}; message={ex.Message}");
         }
         finally
         {
@@ -708,7 +706,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 _rotationTask = null;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             ready.TrySetException(ex);
             _disconnect.Cancel();
@@ -898,9 +896,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            WriteDiagnostic(
-                $"Host action failure: call={request.Call.CallId}; "
-                + $"type={ex.GetType().FullName}; code={(ex as OutOfProcessCapabilityException)?.Code}; message={ex.Message}");
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
                 : 0;
@@ -1256,11 +1251,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         HostActionEntryRequestContext? hostContext,
         CancellationToken ct)
     {
-        if (request.Invocation == SidecarActionInvocationKind.HostEntry)
-            ValidateHostEntryDispatcherContext(request, hostContext, context);
+        var effectiveContext = request.Invocation == SidecarActionInvocationKind.HostEntry
+            ? BindHostEntryDispatcherContext(request, hostContext, context)
+            : context;
 
         var actionPayload = CreatePayload(
-            context.Action,
+            effectiveContext.Action,
             identity.InputTypeIdentity,
             identity.InputSchemaVersion);
         var receipt = new SidecarTerminalReceipt(
@@ -1307,14 +1303,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             TerminalId = request.Terminal?.TerminalId ?? Guid.Empty,
             SnapshotContentHash = SidecarCapabilityTransportCodec.ComputeSha256(
                 SidecarCapabilityTransportCodec.Serialize(_options.ActionSnapshot)),
-            Caller = context.Caller,
-            Features = context.Features,
-            TraceId = context.TraceId,
-            IdempotencyKey = context.IdempotencyKey,
-            InvocationId = context.InvocationId,
-            ParentInvocationId = context.ParentInvocationId,
-            Depth = context.Depth,
-            Attempt = context.Attempt,
+            Caller = effectiveContext.Caller,
+            Features = effectiveContext.Features,
+            TraceId = effectiveContext.TraceId,
+            IdempotencyKey = effectiveContext.IdempotencyKey,
+            InvocationId = effectiveContext.InvocationId,
+            ParentInvocationId = effectiveContext.ParentInvocationId,
+            Depth = effectiveContext.Depth,
+            Attempt = effectiveContext.Attempt,
         };
         authority = authority with
         {
@@ -1338,18 +1334,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 request.Descriptor,
                 actionPayload,
                 _options.ActionSnapshot,
-                context.InvocationId,
-                context.ParentInvocationId,
-                context.Depth,
-                context.Attempt,
-                context.Caller,
-                context.Features,
-                context.TraceId,
-                context.IdempotencyKey,
+                effectiveContext.InvocationId,
+                effectiveContext.ParentInvocationId,
+                effectiveContext.Depth,
+                effectiveContext.Attempt,
+                effectiveContext.Caller,
+                effectiveContext.Features,
+                effectiveContext.TraceId,
+                effectiveContext.IdempotencyKey,
                 request.Cancellation,
                 receipt,
                 request.Invocation == SidecarActionInvocationKind.HostEntry
-                    ? context.Deadline
+                    ? effectiveContext.Deadline
                     : request.Deadline),
             TerminalId = request.Terminal?.TerminalId ?? Guid.Empty,
         };
@@ -1394,7 +1390,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 "The sidecar terminal callback returned no result.");
     }
 
-    private static void ValidateHostEntryDispatcherContext<TAction>(
+    private static ActionContext<TAction> BindHostEntryDispatcherContext<TAction>(
         SidecarActionCapabilityRequest request,
         HostActionEntryRequestContext? hostContext,
         ActionContext<TAction> context)
@@ -1403,33 +1399,27 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             ?? throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The host action entry request has no initiating host context.");
-        if (!OutOfProcessHostActionEntryContextRegistry.MatchesCaller(expected.Caller, context.Caller)
-            || !string.Equals(
-                SidecarCapabilityTransportCodec.ComputeSha256(
-                    SidecarCapabilityTransportCodec.Serialize(expected.Features)),
-                SidecarCapabilityTransportCodec.ComputeSha256(
-                    SidecarCapabilityTransportCodec.Serialize(context.Features)),
-                StringComparison.OrdinalIgnoreCase)
-            || expected.InvocationId != context.InvocationId
-            || expected.ParentInvocationId != context.ParentInvocationId
-            || expected.Depth != context.Depth
-            || expected.Attempt != context.Attempt
-            || expected.TraceId != context.TraceId
-             || expected.IdempotencyKey != context.IdempotencyKey
-             || expected.Deadline != context.Deadline)
+        if (context.ActionKey != request.Descriptor.Key)
         {
-            WriteDiagnostic(
-                $"Host context mismatch: expectedInvocation={expected.InvocationId}; actualInvocation={context.InvocationId}; "
-                + $"expectedParent={expected.ParentInvocationId}; actualParent={context.ParentInvocationId}; "
-                + $"expectedDepth={expected.Depth}; actualDepth={context.Depth}; expectedAttempt={expected.Attempt}; "
-                + $"actualAttempt={context.Attempt}; expectedTrace={expected.TraceId}; actualTrace={context.TraceId}; "
-                + $"expectedIdempotency={expected.IdempotencyKey}; actualIdempotency={context.IdempotencyKey}; "
-                + $"expectedDeadline={expected.Deadline:O}; actualDeadline={context.Deadline:O}; "
-                + $"expectedCaller={expected.Caller.SubjectId}; actualCaller={context.Caller.SubjectId}");
             throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
-                "The dispatcher action context does not match the host action entry authority.");
+                "The dispatcher action context does not match the host action descriptor.");
         }
+
+        return new ActionContext<TAction>(
+            expected.InvocationId,
+            expected.ParentInvocationId,
+            expected.TraceId,
+            expected.IdempotencyKey,
+            expected.Depth,
+            expected.Attempt,
+            expected.Deadline,
+            context.ActionKey,
+            context.OwnerModuleId,
+            expected.Caller,
+            context.Action,
+            expected.Features,
+            context.Snapshot);
     }
 
     private SidecarActionTerminalTransportResponse CreateNestedRelayResponse(
@@ -1749,13 +1739,15 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             _session.Binding.SafeFailure,
             outcome.TerminalCallCount);
         return new SidecarActionCapabilityResponse(
-            new SidecarActionResultIdentity(
-                Guid.NewGuid(),
-                request.Call.CallId,
-                registration.Identity.Key,
-                registration.Identity.Version,
-                registration.Identity.ResultTypeIdentity,
-                resultPayload?.ContentHash ?? string.Empty),
+            resultPayload is null
+                ? null
+                : new SidecarActionResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    registration.Identity.Key,
+                    registration.Identity.Version,
+                    registration.Identity.ResultTypeIdentity,
+                    resultPayload.ContentHash),
             envelope,
             continuation,
             _session.Binding.SafeFailure,
@@ -1825,20 +1817,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             SidecarCapabilityTransportCodec.ComputeSha256("null"u8),
             JsonDocument.Parse("null").RootElement.Clone(),
             4);
-
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
-    }
 
     private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
     {
