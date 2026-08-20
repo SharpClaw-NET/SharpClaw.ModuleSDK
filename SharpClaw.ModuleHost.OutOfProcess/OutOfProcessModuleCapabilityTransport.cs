@@ -572,7 +572,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             failure = ex;
         }
