@@ -213,7 +213,9 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             && string.Equals(
                 error.Code,
                 SidecarCapabilityErrors.HostFailure,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal)
+            && (response.Outcome.Kind is not (ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
+                || response.Outcome.Result is null))
         {
             throw new OutOfProcessCapabilityException(
                 error.Code,
