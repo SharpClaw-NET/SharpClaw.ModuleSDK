@@ -1754,13 +1754,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         string? code,
         string? message) =>
         new(
-            new SidecarActionResultIdentity(
-                Guid.NewGuid(),
-                request.Call.CallId,
-                request.Descriptor.Key,
-                request.Descriptor.Version,
-                request.Descriptor.ResultTypeIdentity,
-                string.Empty),
+            null,
             new SidecarActionOutcomeEnvelope(
                 ActionOutcomeKind.Failed,
                 null!,
