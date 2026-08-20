@@ -269,6 +269,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _retiredCalls = new();
     private readonly CancellationTokenSource _disconnect = new();
+    private readonly BoundedExecutionQueue _terminalQueue;
     private readonly object _rotationSync = new();
     private TaskCompletionSource? _rebindReady;
     private int _completedCallsForBinding;
@@ -290,6 +291,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
         _registerAuthenticationNonce = registerAuthenticationNonce
             ?? throw new ArgumentNullException(nameof(registerAuthenticationNonce));
+        _terminalQueue = new BoundedExecutionQueue(
+            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
+            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1));
         SendGate = new SemaphoreSlim(1, 1);
     }
 
@@ -534,9 +538,19 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         CompleteStorage(OutOfProcessCapabilityWire.Deserialize<SidecarStorageCapabilityResponse>(frame.Payload));
                         break;
                     case OutOfProcessCapabilityFrameKind.ActionTerminalRequest:
-                        await HandleTerminalRequestAsync(
-                            OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportRequest>(frame.Payload),
-                            linked.Token);
+                        var terminalRequest = OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportRequest>(
+                            frame.Payload);
+                        if (!_terminalQueue.TrySchedule(
+                                queueCt => HandleTerminalRequestAsync(terminalRequest, queueCt),
+                                linked.Token,
+                                out var terminalCompletion))
+                        {
+                            throw new OutOfProcessCapabilityException(
+                                SidecarCapabilityErrors.ModuleBusy,
+                                "The module terminal execution queue is full.");
+                        }
+
+                        _ = ObserveTerminalCompletionAsync(terminalCompletion);
                         break;
                     case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
                         CompleteTerminal(OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
@@ -589,6 +603,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         }
         FailPending(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
+        await _terminalQueue.DisposeAsync();
         try
         {
             if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -907,6 +922,27 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             pending.TrySetException(error);
         foreach (var pending in _terminals.Values)
             pending.TrySetException(error);
+    }
+
+    private async Task ObserveTerminalCompletionAsync(Task completion)
+    {
+        try
+        {
+            await completion;
+        }
+        catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            try
+            {
+                _disconnect.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
     }
 
     private static TaskCompletionSource<T> NewCompletion<T>() =>
