@@ -693,7 +693,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 _rotationTask = null;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             ready.TrySetException(ex);
             _disconnect.Cancel();
@@ -879,7 +879,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             if (active is not null)
                 CompleteCall(request.Call.CallId, 0);
