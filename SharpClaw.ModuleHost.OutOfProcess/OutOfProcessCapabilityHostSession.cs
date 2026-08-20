@@ -208,6 +208,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
             if (!validation.Accepted)
             {
+                WriteDiagnostic(
+                    $"Carrier completion rejected: {validation.Code}: {validation.Message}; "
+                    + $"capability={authority.CapabilityId}; "
+                    + $"active={Session.ActiveHostActionEntryCarrierCount}; "
+                    + $"issued={Session.IssuedHostActionEntryContextCount}; "
+                    + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}; "
+                    + $"current={Session.TryGetActiveHostActionEntryCarrier(authority.CapabilityId, out _)}");
                 throw new OutOfProcessCapabilityException(
                     validation.Code ?? SidecarCapabilityErrors.Unauthorized,
                     validation.Message
@@ -1833,6 +1840,20 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
+    }
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
+        }
     }
 
 }
