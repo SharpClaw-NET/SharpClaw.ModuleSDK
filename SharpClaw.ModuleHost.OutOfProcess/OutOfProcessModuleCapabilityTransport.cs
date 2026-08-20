@@ -645,10 +645,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Authority.AuthorityId,
             request.Receipt));
         var response = await pending.Terminal(request, ct);
-        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
             request,
             response,
-            Binding));
+            Binding);
+        if (!responseValidation.Accepted)
+        {
+            WriteDiagnostic(
+                $"Terminal response rejected: {responseValidation.Code}: {responseValidation.Message}; "
+                + $"request={request.Invocation}:{request.Call.CallId}:{request.Descriptor.Key.Value}; "
+                + $"responseResult={response.ResultIdentity?.ResultId}; "
+                + $"responseExecution={response.Execution?.Completed}:{response.Execution?.Result is not null}:{response.Execution?.Failure?.Code}; "
+                + $"responseNested={response.NestedCarrierOutcome?.Kind}");
+        }
+        ThrowIfRejected(responseValidation);
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
