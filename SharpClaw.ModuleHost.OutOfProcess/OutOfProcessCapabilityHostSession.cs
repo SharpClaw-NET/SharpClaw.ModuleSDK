@@ -286,21 +286,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException ex)
+        catch (OutOfProcessCapabilityException)
         {
-            var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                try
-                {
-                    File.AppendAllText(
-                        path,
-                        $"Host capability session stopped: {ex.Code}: {ex.Message}{Environment.NewLine}");
-                }
-                catch
-                {
-                }
-            }
         }
         finally
         {

@@ -645,20 +645,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Authority.AuthorityId,
             request.Receipt));
         var response = await pending.Terminal(request, ct);
-        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
             request,
             response,
-            Binding);
-        if (!responseValidation.Accepted)
-        {
-            WriteDiagnostic(
-                $"Terminal response rejected: {responseValidation.Code}: {responseValidation.Message}; "
-                + $"request={request.Invocation}:{request.Call.CallId}:{request.Descriptor.Key.Value}; "
-                + $"responseResult={response.ResultIdentity?.ResultId}; "
-                + $"responseExecution={response.Execution?.Completed}:{response.Execution?.Result is not null}:{response.Execution?.Failure?.Code}; "
-                + $"responseNested={response.NestedCarrierOutcome?.Kind}");
-        }
-        ThrowIfRejected(responseValidation);
+            Binding));
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
@@ -942,11 +932,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
-            WriteDiagnostic("ModuleSDK terminal worker cancelled after disconnect.");
         }
-        catch (Exception ex)
+        catch
         {
-            WriteDiagnostic($"ModuleSDK terminal worker stopped: {ex}");
             try
             {
                 _disconnect.Cancel();
@@ -954,20 +942,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             catch (ObjectDisposedException)
             {
             }
-        }
-    }
-
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
         }
     }
 

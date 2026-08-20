@@ -112,7 +112,7 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(
-                    EmptyPayloadForFailure(),
+                    null,
                     safeFailure,
                     Completed: true),
                 request.Receipt,

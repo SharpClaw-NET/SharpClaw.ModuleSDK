@@ -255,7 +255,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(
-                    OutOfProcessActionDispatcher.EmptyPayloadForFailure(),
+                    null,
                     safeFailure,
                     Completed: true),
                 request.Receipt,
