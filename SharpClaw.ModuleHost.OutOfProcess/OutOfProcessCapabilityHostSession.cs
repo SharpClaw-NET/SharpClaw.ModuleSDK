@@ -1778,7 +1778,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 null!,
                 _session.Binding.SafeFailure),
             _session.Binding.SafeFailure,
-            Completed: false);
+            Completed: true);
 
     private static T Deserialize<T>(SidecarSerializedPayload? payload)
     {
