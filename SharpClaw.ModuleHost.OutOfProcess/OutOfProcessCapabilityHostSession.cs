@@ -74,6 +74,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             out var context);
         if (!validation.Accepted || context is null)
         {
+            WriteDiagnostic(
+                $"Host context mismatch: expectedInvocation={expected.InvocationId}; actualInvocation={context.InvocationId}; "
+                + $"expectedParent={expected.ParentInvocationId}; actualParent={context.ParentInvocationId}; "
+                + $"expectedDepth={expected.Depth}; actualDepth={context.Depth}; expectedAttempt={expected.Attempt}; "
+                + $"actualAttempt={context.Attempt}; expectedTrace={expected.TraceId}; actualTrace={context.TraceId}; "
+                + $"expectedIdempotency={expected.IdempotencyKey}; actualIdempotency={context.IdempotencyKey}; "
+                + $"expectedDeadline={expected.Deadline:O}; actualDeadline={context.Deadline:O}; "
+                + $"expectedCaller={expected.Caller.SubjectId}; actualCaller={context.Caller.SubjectId}");
             throw new OutOfProcessCapabilityException(
                 validation.Code ?? SidecarCapabilityErrors.Unauthorized,
                 validation.Message
