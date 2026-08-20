@@ -646,7 +646,26 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     + $"actualCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Caller))}; "
                     + $"expectedFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Features))}; "
                     + $"actualFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Features))}; "
-                    + $"callerMatches={OutOfProcessHostActionEntryContextRegistry.MatchesCaller(pending.Request.HostContext?.Caller, request.Context?.Caller)}{Environment.NewLine}");
+                    + $"callerMatches={OutOfProcessHostActionEntryContextRegistry.MatchesCaller(pending.Request.HostContext?.Caller, request.Context?.Caller)}; "
+                    + $"callEquals={request.Call == pending.Request.Call}; "
+                    + $"descriptorEquals={request.Descriptor == pending.Request.Descriptor}; "
+                    + $"cancellationEquals={request.Cancellation == pending.Request.Cancellation}; "
+                    + $"deadlineEquals={request.Deadline == pending.Request.Deadline}; "
+                    + $"terminalIdEquals={request.TerminalId == pending.Request.Terminal?.TerminalId}; "
+                    + $"contextCallEquals={request.Context?.Call == request.Call}; "
+                    + $"contextInvocationEquals={request.Context?.Invocation == request.Invocation}; "
+                    + $"contextDescriptorEquals={request.Context?.Descriptor == request.Descriptor}; "
+                    + $"contextPayloadEquals={request.Context?.EffectiveAction == request.EffectiveAction}; "
+                    + $"contextCancellationEquals={request.Context?.Cancellation == request.Cancellation}; "
+                    + $"contextReceiptEquals={request.Context?.Receipt == request.Receipt}; "
+                    + $"contextDeadlineEquals={request.Context?.Deadline == request.Deadline}; "
+                    + $"contextAttemptEquals={request.Context?.Attempt == request.Receipt?.Attempt}; "
+                    + $"receiptValid={request.Receipt is not null && request.Receipt.ReceiptId is not null && request.Receipt.CallId == request.Call.CallId && request.Receipt.ActionKey == request.Descriptor.Key && request.Receipt.ActionVersion == request.Descriptor.Version && request.Receipt.Attempt >= 1 && request.Receipt.IdempotencyScope is not null && request.Receipt.ContentHash is not null}; "
+                    + $"issuedAtBeforeNow={request.Authority.IssuedAt <= DateTimeOffset.UtcNow}; "
+                    + $"authorityExpiryAfterDeadline={request.Authority.ExpiresAt >= request.Deadline}; "
+                    + $"authorityExpiryBeforeBinding={request.Authority.ExpiresAt <= Binding.ExpiresAt}; "
+                    + $"requestDeadlineAfterNow={request.Deadline > DateTimeOffset.UtcNow}; "
+                    + $"cancellationExpiryAfterDeadline={request.Cancellation.ExpiresAt >= request.Deadline}{Environment.NewLine}");
         }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
