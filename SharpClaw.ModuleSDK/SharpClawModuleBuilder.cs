@@ -217,7 +217,7 @@ internal sealed class ModuleActionHookBuilder(ModuleBuilderState state) : IActio
             SidecarHookTargetKind.Exact,
             descriptor.Key,
             null,
-            descriptor.ProtocolVersionRange ?? ContractVersionRange.Exact(descriptor.Version),
+            ContractVersionRange.Exact(descriptor.Version),
             ModuleSchemaIdentity.ActionInput(descriptor.Key, descriptor.Version, typeof(TAction)),
             ModuleSchemaIdentity.ActionResult(descriptor.Key, descriptor.Version, typeof(TResult)),
             descriptor.Category,
