@@ -267,10 +267,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
 
-        await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var contextTask = Task.Run(() => usePublicRegistry
             ? IssueHostEntryContextThroughRegistry(client, grantExpiresAt)
             : IssueHostEntryContext(client, grantExpiresAt));
+        await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         (await Task.WhenAny(contextTask, Task.Delay(250))).Should().NotBe(contextTask);
 
         rotationRelease.TrySetResult();
