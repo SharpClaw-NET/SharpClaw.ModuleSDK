@@ -634,7 +634,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     + JsonSerializer.Serialize(
                         new { Initiating = pending.Request, Terminal = request },
                         SidecarCapabilityTransportCodec.CreateJsonOptions())
-                    + Environment.NewLine);
+                    + Environment.NewLine
+                    + $"contextWellFormed={request.Context?.IsWellFormed}; "
+                    + $"deadlineMatchesCall={request.Deadline == request.Call.Deadline}; "
+                    + $"snapshotHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Snapshot))}; "
+                    + $"authoritySnapshotHash={request.Authority.SnapshotContentHash}; "
+                    + $"canonicalHash={SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(request.Authority)}; "
+                    + $"authorityCanonicalHash={request.Authority.CanonicalBindingHash}; "
+                    + $"proofValid={ValidateTerminalAuthority(request.Authority, request.Authority.Proof)}{Environment.NewLine}");
         }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
