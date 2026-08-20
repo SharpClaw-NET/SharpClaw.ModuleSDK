@@ -870,13 +870,26 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private void CompleteAction(SidecarActionCapabilityResponse response)
     {
         var callId = response.ResultIdentity?.CallId
-            ?? response.Outcome.Receipt?.CallId
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The action response has no result identity or receipt.");
-        if (_actions.TryGetValue(callId, out var pending))
+            ?? response.Outcome.Receipt?.CallId;
+        if (callId is null || callId == Guid.Empty)
+        {
+            var pendingCallIds = _actions.Values
+                .Select(pending => pending.Request.Call.CallId)
+                .Take(2)
+                .ToArray();
+            if (pendingCallIds.Length != 1)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The failed action response has no unique pending action call.");
+            }
+
+            callId = pendingCallIds[0];
+        }
+
+        if (_actions.TryGetValue(callId.Value, out var pending))
             pending.Completion.TrySetResult(response);
-        else if (!IsRetired(callId))
+        else if (!IsRetired(callId.Value))
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
                 "The action response does not match an active action call.");
