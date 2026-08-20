@@ -107,16 +107,10 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 TerminalId = request.TerminalId,
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (Exception) when (!ct.IsCancellationRequested)
         {
             return new SidecarActionTerminalTransportResponse(
-                new SidecarActionResultIdentity(
-                    Guid.NewGuid(),
-                    request.Call.CallId,
-                    identity.Key,
-                    identity.Version,
-                    identity.ResultTypeIdentity,
-                    EmptyPayloadForFailure().ContentHash),
+                null,
                 new SidecarTerminalExecutionResult(
                     EmptyPayloadForFailure(),
                     safeFailure,

@@ -77,6 +77,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 request.Descriptor,
                 terminal,
                 terminalRequest,
+                _transport.Binding.SafeFailure,
                 terminalCancellation),
             cancellationToken);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
@@ -98,6 +99,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         ActionDescriptor<TAction, TResult> descriptor,
         IHostActionEntryTerminal<TAction, TResult> terminal,
         SidecarActionTerminalTransportRequest request,
+        SidecarSafeFailureIdentity safeFailure,
         CancellationToken ct)
     {
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
@@ -127,35 +129,21 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                     payload.ContentHash),
                 new SidecarTerminalExecutionResult(payload, null!, Completed: true),
                 request.Receipt,
-                null!)
+                safeFailure)
             {
                 TerminalId = request.TerminalId,
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (Exception) when (!ct.IsCancellationRequested)
         {
             return new SidecarActionTerminalTransportResponse(
-                new SidecarActionResultIdentity(
-                    Guid.NewGuid(),
-                    request.Call.CallId,
-                    identity.Key,
-                    identity.Version,
-                    identity.ResultTypeIdentity,
-                    OutOfProcessActionDispatcher.EmptyPayloadForFailure().ContentHash),
+                null,
                 new SidecarTerminalExecutionResult(
                     OutOfProcessActionDispatcher.EmptyPayloadForFailure(),
-                new SidecarSafeFailureIdentity(
-                        Guid.NewGuid(),
-                        SidecarCapabilityErrors.HostFailure,
-                        ex.Message,
-                        Retryable: false),
+                    safeFailure,
                     Completed: false),
                 request.Receipt,
-                new SidecarSafeFailureIdentity(
-                    Guid.NewGuid(),
-                    SidecarCapabilityErrors.HostFailure,
-                    ex.Message,
-                    Retryable: false))
+                safeFailure)
             {
                 TerminalId = request.TerminalId,
             };
