@@ -441,7 +441,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         int terminalCallCount)
     {
         var session = Volatile.Read(ref _session);
-        var result = session.CompleteCall(callId, terminalCallCount);
+        var effectiveTerminalCallCount = terminalCallCount;
+        if (effectiveTerminalCallCount == 0
+            && session.TryGetTerminalReceipt(callId, out _))
+        {
+            effectiveTerminalCallCount = 1;
+        }
+
+        var result = session.CompleteCall(callId, effectiveTerminalCallCount);
         if (result.Accepted
             && Interlocked.Increment(ref _completedCallsForBinding)
                 >= session.Binding.ConcurrencyLimits.MaximumCallsPerRequest)
