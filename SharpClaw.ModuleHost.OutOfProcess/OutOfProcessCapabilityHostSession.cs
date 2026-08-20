@@ -410,8 +410,25 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
         }
-        catch
+        catch (Exception ex)
         {
+            var diagnosticPath = Environment.GetEnvironmentVariable(
+                "SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+            if (!string.IsNullOrWhiteSpace(diagnosticPath)
+                && diagnosticPath.StartsWith(
+                    @"D:\temp\SharpClaw.ModuleSDK\",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    File.AppendAllText(
+                        diagnosticPath,
+                        $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{ex}{Environment.NewLine}");
+                }
+                catch
+                {
+                }
+            }
             _disconnect.Cancel();
         }
     }
