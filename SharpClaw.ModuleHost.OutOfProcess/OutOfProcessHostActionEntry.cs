@@ -92,6 +92,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 _transport,
                 context.Contribution),
             cancellationToken);
+        ThrowIfHostEntryFailed(response);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
     }
 
@@ -121,15 +122,13 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The nested action has no parent descriptor authority.");
         }
 
-        var actionSchemaVersion = _transport.ResolveNestedActionSchemaVersion(
+        var metadata = _transport.ResolveNestedActionMetadata<TAction, TResult>(
             request.ActionKey,
             request.ActionVersion);
         var action = OutOfProcessActionDispatcher.Payload(
             request.Action,
-            typeof(TAction).AssemblyQualifiedName
-                ?? typeof(TAction).FullName
-                ?? typeof(TAction).Name,
-            actionSchemaVersion);
+            metadata.InputTypeIdentity,
+            metadata.Hook.InputSchema.Version);
         var nestedRequest = new SidecarNestedHostActionEntryRequest(
             request.ActionKey,
             request.ActionVersion,
@@ -152,6 +151,17 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         }
 
         var identity = relay.Carrier.Descriptor;
+        if (identity.Key != request.ActionKey
+            || identity.Version != request.ActionVersion
+            || !OutOfProcessModuleCapabilityTransport.MatchesNestedActionMetadata(
+                identity,
+                metadata))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested relay descriptor does not match the exact typed module hook.");
+        }
+
         var contribution = _parentContribution with
         {
             Lineage = new HostActionEntryLineage(
@@ -192,7 +202,23 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 _transport,
                 contribution),
             cancellationToken);
+        ThrowIfHostEntryFailed(response);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+    }
+
+    private static void ThrowIfHostEntryFailed(SidecarActionCapabilityResponse response)
+    {
+        var error = response.Outcome.Error;
+        if (error is not null
+            && string.Equals(
+                error.Code,
+                SidecarCapabilityErrors.HostFailure,
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                error.Code,
+                error.Message);
+        }
     }
 
     private static async ValueTask<SidecarActionTerminalTransportResponse> ExecuteTerminalAsync<TAction, TResult>(

@@ -532,6 +532,73 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(2);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task NestedHostActionEntryRotatesAfterSevenCallsAndContinuesTheSession()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        descriptors.Add(ApplicationSmokeModule.ChildAction);
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 1;
+        for (var i = 0; i < priorCalls; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"nested-rotation-{i}"));
+            prior.Result.Succeeded.Should().BeTrue(
+                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
+        hostContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var nested = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["rotation"],
+            hostContext);
+
+        nested.Result.Succeeded.Should().BeTrue(
+            $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
+            + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
+        nested.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:rotation-root:cross-descriptor-child:7");
+
+        var afterRotation = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "nested-rotation-after"));
+        afterRotation.Result.Succeeded.Should().BeTrue(
+            $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
+    }
+
     [Test, CancelAfter(15000)]
     public async Task ActiveHostActionCarrierSurvivesBindingRotation()
     {

@@ -946,17 +946,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 validation.Message ?? "The nested terminal request was rejected.");
         }
 
-        var record = Session.RecordTerminal(
-            request.Call.CallId,
-            request.Authority.AuthorityId,
-            request.Receipt);
-        if (!record.Accepted && !Session.TryGetTerminalReceipt(request.Call.CallId, out _))
-        {
-            throw new OutOfProcessCapabilityException(
-                record.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
-                record.Message ?? "The parent terminal authority was rejected.");
-        }
-
         var resolvedNestedRequest = ResolveNestedRelayRequest(
             request.NestedCarrierRequest,
             active.HostContext,
@@ -969,6 +958,22 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             resolvedContribution,
             DateTimeOffset.UtcNow,
             out var relay);
+        if (issue.Accepted && relay is not null)
+        {
+            var record = Session.RecordTerminal(
+                request.Call.CallId,
+                request.Authority.AuthorityId,
+                request.Receipt);
+            if (!record.Accepted && !Session.TryGetTerminalReceipt(request.Call.CallId, out _))
+            {
+                Session.RevokeNestedHostActionEntryRelay(
+                    relay.Carrier.CarrierId,
+                    DateTimeOffset.UtcNow);
+                throw new OutOfProcessCapabilityException(
+                    record.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                    record.Message ?? "The parent terminal authority was rejected.");
+            }
+        }
         var outcomeKind = issue.Accepted && relay is not null
             ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
             : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;

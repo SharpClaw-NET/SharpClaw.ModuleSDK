@@ -44,6 +44,12 @@ public sealed record ModuleActionHook(
     /// <summary>Gets the stable hook identifier.</summary>
     public string HookId => Ordering.Id;
 
+    /// <summary>Gets the compiled input type for a typed hook.</summary>
+    public Type? ActionType { get; init; }
+
+    /// <summary>Gets the compiled result type for a typed hook.</summary>
+    public Type? ResultType { get; init; }
+
     /// <summary>Gets the payload form used by this hook.</summary>
     public SidecarPayloadMode PayloadMode => IsUntyped
         ? SidecarPayloadMode.Untyped

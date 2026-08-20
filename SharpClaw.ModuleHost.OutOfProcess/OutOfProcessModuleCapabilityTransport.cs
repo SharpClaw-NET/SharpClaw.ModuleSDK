@@ -38,7 +38,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         }
     }
 
-    internal int ResolveNestedActionSchemaVersion(
+    internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
         SharpClawActionKey actionKey,
         int actionVersion)
     {
@@ -66,11 +66,56 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             match = hook;
         }
 
-        return match?.InputSchema.Version
-            ?? throw new OutOfProcessCapabilityException(
+        if (match is null)
+        {
+            throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.UnknownAction,
                 $"The module has no exact typed action hook for '{actionKey.Value}:{actionVersion}'.");
+        }
+
+        if (match.ActionType != typeof(TAction)
+            || match.ResultType != typeof(TResult))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                $"The nested action hook type does not match '{actionKey.Value}:{actionVersion}'.");
+        }
+
+        return new ModuleNestedActionMetadata(
+            match,
+            TypeIdentity(typeof(TAction)),
+            TypeIdentity(typeof(TResult));
     }
+
+    internal static bool MatchesNestedActionMetadata(
+        SidecarActionDescriptorIdentity descriptor,
+        ModuleNestedActionMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(metadata);
+        return string.Equals(descriptor.Category, metadata.Hook.Category, StringComparison.Ordinal)
+            && string.Equals(
+                descriptor.InputTypeIdentity,
+                metadata.InputTypeIdentity,
+                StringComparison.Ordinal)
+            && descriptor.InputSchemaVersion == metadata.Hook.InputSchema.Version
+            && string.Equals(
+                descriptor.InputSchemaHash,
+                metadata.Hook.InputSchema.ContentHash,
+                StringComparison.Ordinal)
+            && string.Equals(
+                descriptor.ResultTypeIdentity,
+                metadata.ResultTypeIdentity,
+                StringComparison.Ordinal)
+            && descriptor.ResultSchemaVersion == metadata.Hook.ResultSchema.Version
+            && string.Equals(
+                descriptor.ResultSchemaHash,
+                metadata.Hook.ResultSchema.ContentHash,
+                StringComparison.Ordinal);
+    }
+
+    private static string TypeIdentity(Type type) =>
+        type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 
     internal void SetAuthorization(SidecarHostAuthorization authorization)
     {
@@ -285,6 +330,11 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private static TaskCompletionSource<OutOfProcessModuleCapabilityConnection> CreateReadySource() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
+
+internal sealed record ModuleNestedActionMetadata(
+    ModuleActionHook Hook,
+    string InputTypeIdentity,
+    string ResultTypeIdentity);
 
 internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 {

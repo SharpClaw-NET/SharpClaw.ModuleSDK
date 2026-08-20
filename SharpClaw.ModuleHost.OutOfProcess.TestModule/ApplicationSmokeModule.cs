@@ -262,6 +262,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "nested" => "nested-root",
                     "sequential" => "sequential-root",
                     "cross-descriptor" => "cross-descriptor-root",
+                    "rotation" => "rotation-root",
                     _ => "host-entry",
                 };
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
@@ -399,6 +400,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"nested-child:{(await InvokeNestedAsync(context, "nested-grandchild", ct)).Value}"),
                 "cross-descriptor-root" => new ApplicationSmokeResult(
                     $"cross-descriptor:{(await InvokeChildAsync(context, ct)).Value}"),
+                "rotation-root" => new ApplicationSmokeResult(
+                    $"rotation-root:{(await InvokeChildAsync(context, ct)).Value}"),
                 "sequential-root" => new ApplicationSmokeResult(
                     $"sequential-root:{(await InvokeNestedAsync(context, "sequential-child-one", ct)).Value}|"
                     + $"{(await InvokeNestedAsync(context, "sequential-child-two", ct)).Value}"),

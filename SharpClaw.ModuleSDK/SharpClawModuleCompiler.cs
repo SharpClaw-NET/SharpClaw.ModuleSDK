@@ -465,6 +465,7 @@ public static class SharpClawModuleCompiler
             inputSchema ??= ModuleSchemaIdentity.UntypedAction("input", target);
             resultSchema ??= ModuleSchemaIdentity.UntypedAction("result", target);
             ValidateActionCapabilities(state.Identity.Id, target, requested, descriptor, options, errors);
+            var (actionType, resultType) = GetTypedActionTypes(pending);
             compiled.Add(new ModuleActionHook(
                 state.Identity.Id,
                 pending.TargetKind,
@@ -478,7 +479,11 @@ public static class SharpClawModuleCompiler
                 inputSchema,
                 resultSchema,
                 pending.SensitiveWildcardApprovalRequired || request?.Sensitive == true,
-                pending.AcceptUnknownNonSensitiveSchemas));
+                pending.AcceptUnknownNonSensitiveSchemas)
+            {
+                ActionType = actionType,
+                ResultType = resultType,
+            });
         }
 
         return Array.AsReadOnly(compiled.ToArray());
@@ -570,6 +575,24 @@ public static class SharpClawModuleCompiler
                 "handler",
                 $"Action hook '{pending.Ordering.Id}' does not implement the required typed or untyped interface."));
         }
+    }
+
+    private static (Type? ActionType, Type? ResultType) GetTypedActionTypes(
+        PendingActionHook pending)
+    {
+        if (pending.IsUntyped)
+            return (null, null);
+
+        var contract = pending.HandlerType.GetInterfaces().FirstOrDefault(type =>
+            type.IsGenericType
+            && type.GetGenericTypeDefinition() == typeof(IActionInterceptor<,>));
+        if (contract is null)
+            return (null, null);
+
+        var arguments = contract.GetGenericArguments();
+        return arguments.Length == 2
+            ? (arguments[0], arguments[1])
+            : (null, null);
     }
 
     private static void ValidateEventHandler(
