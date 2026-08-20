@@ -286,9 +286,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException ex)
+        catch (OutOfProcessCapabilityException)
         {
-            WriteDiagnostic(ex);
         }
         finally
         {
@@ -360,29 +359,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         _disconnect.Dispose();
     }
 
-    private static void WriteDiagnostic(Exception exception)
-    {
-        var diagnosticPath = Environment.GetEnvironmentVariable(
-            "SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(diagnosticPath)
-            || !diagnosticPath.StartsWith(
-                @"D:\temp\SharpClaw.ModuleSDK\",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        try
-        {
-            File.AppendAllText(
-                diagnosticPath,
-                $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{exception}{Environment.NewLine}");
-        }
-        catch
-        {
-        }
-    }
-
     private async Task ScheduleActionRequestAsync(
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
@@ -434,25 +410,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
         }
-        catch (Exception ex)
+        catch
         {
-            var diagnosticPath = Environment.GetEnvironmentVariable(
-                "SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-            if (!string.IsNullOrWhiteSpace(diagnosticPath)
-                && diagnosticPath.StartsWith(
-                    @"D:\temp\SharpClaw.ModuleSDK\",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    File.AppendAllText(
-                        diagnosticPath,
-                        $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{ex}{Environment.NewLine}");
-                }
-                catch
-                {
-                }
-            }
             _disconnect.Cancel();
         }
     }
@@ -1085,21 +1044,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
         if (!validation.Accepted)
         {
-            WriteDiagnostic(new InvalidOperationException(
-                $"resolved nested validation rejected; "
-                + $"request={request.ActionKey.Value}:{request.ActionVersion}; "
-                + $"action={request.Action.TypeIdentity}:{request.Action.SchemaVersion}:{request.Action.ContentHash}:{request.Action.ByteLength}; "
-                + $"resolved={resolvedDescriptor.Key.Value}:{resolvedDescriptor.Version}:{resolvedDescriptor.Category}:"
-                + $"{resolvedDescriptor.InputTypeIdentity}:{resolvedDescriptor.InputSchemaVersion}:{resolvedDescriptor.InputSchemaHash}:"
-                + $"{resolvedDescriptor.ResultTypeIdentity}:{resolvedDescriptor.ResultSchemaVersion}:{resolvedDescriptor.ResultSchemaHash}:"
-                + $"{resolvedDescriptor.DescriptorHash}; "
-                + $"contributionWellFormed={resolvedContribution.IsWellFormed}; "
-                + $"lineage={resolvedContribution.Lineage.ActionKey.Value}:{resolvedContribution.Lineage.ActionVersion}:"
-                + $"{resolvedContribution.Lineage.DescriptorHash}:{resolvedContribution.Lineage.InputTypeIdentity}:"
-                + $"{resolvedContribution.Lineage.InputSchemaVersion}:{resolvedContribution.Lineage.InputSchemaHash}:"
-                + $"{resolvedContribution.Lineage.PayloadContentHash}:{resolvedContribution.Lineage.PayloadByteLength}; "
-                + $"now={DateTimeOffset.UtcNow:O}; bindingExpires={Session.Binding.ExpiresAt:O}; "
-                + $"deadline={request.Deadline:O}; expires={request.ExpiresAt:O}"));
             throw new OutOfProcessCapabilityException(
                 validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
                 validation.Message ?? "The nested action does not match host descriptor authority.");
