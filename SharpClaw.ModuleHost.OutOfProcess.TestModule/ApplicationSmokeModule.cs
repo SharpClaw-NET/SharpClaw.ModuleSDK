@@ -8,10 +8,15 @@ public sealed record ApplicationSmokeAction(string Mode, string Value);
 
 public sealed record ApplicationSmokeResult(string Value);
 
+public sealed record ApplicationChildAction(string Name, int Count);
+
+public sealed record ApplicationChildResult(string Value);
+
 public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplicationModule
 {
     public const string Id = "application_smoke_module";
     public const string HostActionHookId = "application.host.authorization";
+    public const string ChildActionHookId = "application.child.authorization";
     public const string OwnedActionHookId = "application.owned.authorization";
     public const string CliName = "application.inspect";
     public const string CapabilityCliName = "application.capabilities";
@@ -68,6 +73,24 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             Key = new SharpClawActionKey("module.application.smoke"),
         };
 
+    public static ActionDescriptor<ApplicationChildAction, ApplicationChildResult> ChildAction { get; } =
+        new(
+            new SharpClawActionKey("host.application.child"),
+            2,
+            "application-child",
+            HostCapabilities,
+            ContainsSensitiveData: false,
+            HasIrreversibleEffects: false,
+            new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "host.application.child"),
+            ContinuationPolicy: null,
+            TimeSpan.FromSeconds(5))
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(1),
+            SafePoints = [ActionSafePoint.BeforeContinuation, ActionSafePoint.BeforeTerminal],
+            InputSchema = new JsonSchemaReference("application.child.action", 2, "application-child-action"),
+            ResultSchema = new JsonSchemaReference("application.child.result", 2, "application-child-result"),
+        };
+
     public ModuleIdentity Identity { get; } = new(Id, "Application Smoke", "appsmoke");
 
     public void Configure(ISharpClawModuleBuilder module)
@@ -81,6 +104,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         module.Hooks.For(HostAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(HostActionHookId));
+        module.Hooks.For(ChildAction).Use<ChildAuthorizationHook>(
+            HostCapabilities,
+            new HookOrdering(ChildActionHookId));
         module.Hooks.For(OwnedAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(OwnedActionHookId));
@@ -136,6 +162,15 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             string.Equals(context.Action.Mode, "deny", StringComparison.Ordinal)
                 ? control.Cancel("application_denied", "The application smoke request was denied.")
                 : await control.ProceedAsync(ct);
+    }
+
+    public sealed class ChildAuthorizationHook : IActionInterceptor<ApplicationChildAction, ApplicationChildResult>
+    {
+        public ValueTask<IActionOutcome<ApplicationChildResult>> InvokeAsync(
+            ActionContext<ApplicationChildAction> context,
+            IActionControl<ApplicationChildAction, ApplicationChildResult> control,
+            CancellationToken ct) =>
+            control.ProceedAsync(ct);
     }
 
     public sealed class ApplicationCliHandler(
@@ -226,6 +261,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 {
                     "nested" => "nested-root",
                     "sequential" => "sequential-root",
+                    "cross-descriptor" => "cross-descriptor-root",
                     _ => "host-entry",
                 };
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
@@ -361,6 +397,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"nested-root:{(await InvokeNestedAsync(context, "nested-child", ct)).Value}"),
                 "nested-child" => new ApplicationSmokeResult(
                     $"nested-child:{(await InvokeNestedAsync(context, "nested-grandchild", ct)).Value}"),
+                "cross-descriptor-root" => new ApplicationSmokeResult(
+                    $"cross-descriptor:{(await InvokeChildAsync(context, ct)).Value}"),
                 "sequential-root" => new ApplicationSmokeResult(
                     $"sequential-root:{(await InvokeNestedAsync(context, "sequential-child-one", ct)).Value}|"
                     + $"{(await InvokeNestedAsync(context, "sequential-child-two", ct)).Value}"),
@@ -397,5 +435,47 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
 
             return outcome.Result;
         }
+
+        private static async ValueTask<ApplicationChildResult> InvokeChildAsync(
+            ActionContext<ApplicationSmokeAction> context,
+            CancellationToken ct)
+        {
+            var hostActionEntry = context.HostActionEntry
+                ?? throw new InvalidOperationException(
+                    "The cross-descriptor test terminal has no host action entry.");
+            var outcome = await hostActionEntry.InvokeNestedAsync<
+                ApplicationSmokeAction,
+                ApplicationChildAction,
+                ApplicationChildResult>(
+                new HostActionEntryNestedRequest<
+                    ApplicationSmokeAction,
+                    ApplicationChildAction,
+                    ApplicationChildResult>(
+                    ChildAction.Key,
+                    ChildAction.Version,
+                    new ApplicationChildAction("cross-descriptor-child", 7),
+                    context),
+                new ChildTerminal(),
+                ct);
+            if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
+            {
+                throw new InvalidOperationException(
+                    $"The cross-descriptor action returned {outcome.Kind}.");
+            }
+
+            return outcome.Result;
+        }
+    }
+
+    private sealed class ChildTerminal : IHostActionEntryTerminal<ApplicationChildAction, ApplicationChildResult>
+    {
+        public Guid TerminalId { get; } = Guid.NewGuid();
+
+        public ValueTask<ApplicationChildResult> InvokeAsync(
+            ActionContext<ApplicationChildAction> context,
+            CancellationToken ct) =>
+            ValueTask.FromResult(
+                new ApplicationChildResult(
+                    $"{context.Action.Name}:{context.Action.Count}"));
     }
 }

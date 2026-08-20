@@ -51,6 +51,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                   "effects": ["inspect", "wrap", "cancel"]
                 },
                 {
+                  "target": "host.application.child",
+                  "effects": ["inspect", "wrap", "cancel"]
+                },
+                {
                   "target": "module.application.smoke",
                   "effects": ["inspect", "wrap", "cancel"]
                 }
@@ -66,7 +70,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             _controlToken);
         await _server.StartAsync();
         _catalog = new SidecarHostDescriptorCatalog(
-            [HostDescriptor()],
+            [HostDescriptor(), ChildHostDescriptor()],
             [],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
@@ -478,6 +482,54 @@ public sealed class OutOfProcessApplicationProtocolTests
             "host-entry:Completed:sequential-root:entry-terminal:sequential-child-one|entry-terminal:sequential-child-two");
         dispatcher.RunCalls.Should().Be(6);
         dispatcher.TerminalCalls.Should().Be(6);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task NestedHostActionEntryResolvesDifferentHostDescriptorFromCatalog()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
+        descriptors.Add(
+            ApplicationSmokeModule.ChildAction,
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationChildResult($"host-child:{context.Action.Name}:{context.Action.Count}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        hostContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["cross-descriptor"],
+            hostContext);
+
+        result.Result.Succeeded.Should().BeTrue(
+            $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+        result.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:cross-descriptor:cross-descriptor-child:7");
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
     }
 
     [Test, CancelAfter(15000)]
@@ -1132,6 +1184,23 @@ public sealed class OutOfProcessApplicationProtocolTests
 
     private static SidecarHostActionDescriptor HostDescriptor() =>
         ToDescriptor(ApplicationSmokeModule.HostAction);
+
+    private static SidecarHostActionDescriptor ChildHostDescriptor() =>
+        new(
+            ApplicationSmokeModule.ChildAction.Key,
+            ApplicationSmokeModule.ChildAction.Version,
+            ApplicationSmokeModule.ChildAction.Category,
+            ModuleSchemaIdentity.ActionInput(
+                ApplicationSmokeModule.ChildAction.Key,
+                ApplicationSmokeModule.ChildAction.Version,
+                typeof(ApplicationChildAction)),
+            ModuleSchemaIdentity.ActionResult(
+                ApplicationSmokeModule.ChildAction.Key,
+                ApplicationSmokeModule.ChildAction.Version,
+                typeof(ApplicationChildResult)),
+            ApplicationSmokeModule.ChildAction.Capabilities,
+            ApplicationSmokeModule.ChildAction.ContainsSensitiveData,
+            ApplicationSmokeModule.ChildAction.ProtocolVersionRange);
 
     private static SidecarHostActionDescriptor ToDescriptor(
         ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> descriptor)

@@ -167,6 +167,30 @@ public sealed class OutOfProcessActionDescriptorCatalog
         return false;
     }
 
+    internal bool TryResolve(
+        SharpClawActionKey key,
+        int version,
+        out Registration registration)
+    {
+        Registration? match = null;
+        foreach (var candidate in _registrations.Values)
+        {
+            if (candidate.Identity.Key != key || candidate.Identity.Version != version)
+                continue;
+
+            if (match is not null)
+            {
+                registration = null!;
+                return false;
+            }
+
+            match = candidate;
+        }
+
+        registration = match!;
+        return match is not null;
+    }
+
     private static string Key(SidecarActionDescriptorIdentity identity) =>
         $"{identity.Key.Value}|{identity.Version}|{identity.DescriptorHash}";
 

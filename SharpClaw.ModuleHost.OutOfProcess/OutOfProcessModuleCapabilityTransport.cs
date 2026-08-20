@@ -256,7 +256,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             SidecarActionTerminalTransportRequest,
             CancellationToken,
             ValueTask<SidecarActionTerminalTransportResponse>>? Terminal,
-        TaskCompletionSource<SidecarActionCapabilityResponse> Completion);
+        TaskCompletionSource<SidecarActionCapabilityResponse> Completion)
+    {
+        public SidecarActionCapabilityRequest? ResolvedRequest { get; set; }
+    }
 
     private readonly WebSocket _socket;
     private SidecarCapabilitySession _session;
@@ -399,7 +402,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 callCancellation);
             var response = await completion.Task.WaitAsync(callCancellation);
             var validation = SidecarCapabilityTransportValidation.ValidateActionResponse(
-                request,
+                pending.ResolvedRequest ?? request,
                 response,
                 Binding,
                 _session);
@@ -647,13 +650,37 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The terminal request has no initiating action call.");
         }
 
+        var validationRequest = pending.Request;
+        if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
+            && pending.Request.NestedCarrier is not null)
+        {
+            var terminal = pending.Request.Terminal
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The nested action has no terminal registration.");
+            validationRequest = pending.Request with
+            {
+                Descriptor = request.Descriptor,
+                Action = request.EffectiveAction,
+                Terminal = terminal with
+                {
+                    InputTypeIdentity = request.Descriptor.InputTypeIdentity,
+                    InputSchemaVersion = request.Descriptor.InputSchemaVersion,
+                    ResultTypeIdentity = request.Descriptor.ResultTypeIdentity,
+                    ResultSchemaVersion = request.Descriptor.ResultSchemaVersion,
+                    DescriptorHash = request.Descriptor.DescriptorHash,
+                },
+            };
+        }
+
         var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalRequest(
-            pending.Request,
+            validationRequest,
             request,
             Binding,
             DateTimeOffset.UtcNow,
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
         ThrowIfRejected(validation);
+        pending.ResolvedRequest = validationRequest;
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
             request.Authority.AuthorityId,

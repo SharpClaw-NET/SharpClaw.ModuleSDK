@@ -7,23 +7,17 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
 {
     private readonly OutOfProcessModuleCapabilityTransport _transport;
     private readonly SidecarActionDescriptorIdentity? _parentDescriptor;
-    private readonly Type? _parentActionType;
-    private readonly Type? _parentResultType;
     private readonly SidecarActionTerminalTransportRequest? _parentTerminalRequest;
     private readonly HostActionEntryContribution? _parentContribution;
 
     public OutOfProcessHostActionEntry(
         OutOfProcessModuleCapabilityTransport transport,
         SidecarActionDescriptorIdentity? parentDescriptor = null,
-        Type? parentActionType = null,
-        Type? parentResultType = null,
         SidecarActionTerminalTransportRequest? parentTerminalRequest = null,
         HostActionEntryContribution? parentContribution = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _parentDescriptor = parentDescriptor;
-        _parentActionType = parentActionType;
-        _parentResultType = parentResultType;
         _parentTerminalRequest = parentTerminalRequest;
         _parentContribution = parentContribution;
     }
@@ -91,7 +85,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         var response = await _transport.InvokeActionAsync(
             sidecarRequest,
             (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
-                identity,
                 terminal,
                 terminalRequest,
                 _transport.Binding.SafeFailure,
@@ -121,20 +114,17 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The nested host action entry request does not match its terminal exchange.");
         }
 
-        if (_parentDescriptor is null
-            || _parentActionType is null
-            || _parentResultType is null
-            || _parentDescriptor.Key != request.ActionKey
-            || _parentDescriptor.Version != request.ActionVersion
-            || _parentActionType != typeof(TAction)
-            || _parentResultType != typeof(TResult))
+        if (_parentDescriptor is null)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.UnknownAction,
-                $"The nested action '{request.ActionKey.Value}:{request.ActionVersion}' does not match the parent host descriptor.");
+                "The nested action has no parent descriptor authority.");
         }
 
-        var identity = _parentDescriptor;
+        var identity = CreateNestedSelectorIdentity<TAction, TResult>(
+            request.ActionKey,
+            request.ActionVersion,
+            _parentDescriptor);
         var action = OutOfProcessActionDispatcher.Payload(
             request.Action,
             identity.InputTypeIdentity,
@@ -192,7 +182,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         var response = await _transport.InvokeActionAsync(
             childRequest,
             (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
-                identity,
                 terminal,
                 terminalRequest,
                 _transport.Binding.SafeFailure,
@@ -203,8 +192,46 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
     }
 
+    private static SidecarActionDescriptorIdentity CreateNestedSelectorIdentity<TAction, TResult>(
+        SharpClawActionKey key,
+        int version,
+        SidecarActionDescriptorIdentity parent)
+    {
+        var inputTypeIdentity = typeof(TAction).AssemblyQualifiedName
+            ?? typeof(TAction).FullName
+            ?? typeof(TAction).Name;
+        var resultTypeIdentity = typeof(TResult).AssemblyQualifiedName
+            ?? typeof(TResult).FullName
+            ?? typeof(TResult).Name;
+        var inputSchema = new JsonSchemaReference(
+            $"{parent.Category}.nested.input",
+            parent.InputSchemaVersion,
+            parent.InputSchemaHash);
+        var resultSchema = new JsonSchemaReference(
+            $"{parent.Category}.nested.result",
+            parent.ResultSchemaVersion,
+            parent.ResultSchemaHash);
+        return new SidecarActionDescriptorIdentity(
+            key,
+            version,
+            parent.Category,
+            inputTypeIdentity,
+            inputSchema.ContentHash,
+            inputSchema.Version,
+            resultTypeIdentity,
+            resultSchema.ContentHash,
+            resultSchema.Version,
+            OutOfProcessActionDescriptorIdentity.ComputeDescriptorHash(
+                key,
+                version,
+                parent.Category,
+                inputTypeIdentity,
+                inputSchema,
+                resultTypeIdentity,
+                resultSchema));
+    }
+
     private static async ValueTask<SidecarActionTerminalTransportResponse> ExecuteTerminalAsync<TAction, TResult>(
-        SidecarActionDescriptorIdentity identity,
         IHostActionEntryTerminal<TAction, TResult> terminal,
         SidecarActionTerminalTransportRequest request,
         SidecarSafeFailureIdentity safeFailure,
@@ -218,14 +245,13 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The host action terminal received no action value.");
+        var identity = request.Descriptor;
         var context = OutOfProcessActionDispatcher.CreateActionContext(
             request,
             action,
             new OutOfProcessHostActionEntry(
                 transport,
                 identity,
-                typeof(TAction),
-                typeof(TResult),
                 request,
                 parentContribution));
         try

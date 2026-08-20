@@ -785,6 +785,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         ActiveCall? active = null;
         try
         {
+            if (request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.NestedCarrier is not null)
+            {
+                request = ResolveNestedActionRequest(request);
+            }
+
             var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
                 request,
                 _session.Binding,
@@ -951,9 +957,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 record.Message ?? "The parent terminal authority was rejected.");
         }
 
+        var resolvedNestedRequest = ResolveNestedRelayRequest(
+            request.NestedCarrierRequest);
         var issue = Session.IssueNestedHostActionEntryRelay(
             request.Call,
-            request.NestedCarrierRequest,
+            resolvedNestedRequest,
             DateTimeOffset.UtcNow,
             out var relay);
         var outcomeKind = issue.Accepted && relay is not null
@@ -978,6 +986,110 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             _limits.ProtocolMessageBytes,
             SendGate,
             ct);
+    }
+
+    private SidecarNestedHostActionEntryRequest ResolveNestedRelayRequest(
+        SidecarNestedHostActionEntryRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!_options.ActionDescriptors.TryResolve(
+                request.Descriptor.Key,
+                request.Descriptor.Version,
+                out var registration))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                $"The nested action '{request.Descriptor.Key.Value}:{request.Descriptor.Version}' "
+                + "is not registered in host descriptor authority.");
+        }
+
+        var identity = registration.Identity;
+        var action = OutOfProcessActionDispatcher.Payload(
+            request.Action.Value,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        var contribution = request.Contribution with
+        {
+            Lineage = new HostActionEntryLineage(
+                identity.Key,
+                identity.Version,
+                identity.DescriptorHash,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.InputSchemaHash,
+                action.ContentHash,
+                action.ByteLength),
+        };
+        return request with
+        {
+            Descriptor = identity,
+            Action = action,
+            Contribution = contribution,
+        };
+    }
+
+    private SidecarActionCapabilityRequest ResolveNestedActionRequest(
+        SidecarActionCapabilityRequest request)
+    {
+        var carrier = request.NestedCarrier
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action request has no host-issued carrier.");
+        if (request.Descriptor.Key != carrier.ActionKey
+            || request.Descriptor.Version != carrier.ActionVersion)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action request does not select its host-issued carrier action.");
+        }
+
+        if (!_options.ActionDescriptors.TryResolve(
+                carrier.ActionKey,
+                carrier.ActionVersion,
+                out var registration)
+            || !string.Equals(
+                registration.Identity.DescriptorHash,
+                carrier.DescriptorHash,
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The nested carrier does not identify a registered host descriptor.");
+        }
+
+        var identity = registration.Identity;
+        var action = OutOfProcessActionDispatcher.Payload(
+            request.Action.Value,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        if (!string.Equals(
+                action.ContentHash,
+                carrier.ActionContentHash,
+                StringComparison.Ordinal)
+            || action.ByteLength != carrier.ActionByteLength)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action payload does not match its host-issued carrier.");
+        }
+
+        var terminal = request.Terminal
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The nested action request has no terminal registration.");
+        return request with
+        {
+            Descriptor = identity,
+            Action = action,
+            Terminal = terminal with
+            {
+                InputTypeIdentity = identity.InputTypeIdentity,
+                InputSchemaVersion = identity.InputSchemaVersion,
+                ResultTypeIdentity = identity.ResultTypeIdentity,
+                ResultSchemaVersion = identity.ResultSchemaVersion,
+                DescriptorHash = identity.DescriptorHash,
+            },
+        };
     }
 
     private async Task HandleStorageRequestAsync(
