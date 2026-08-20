@@ -208,13 +208,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
             if (!validation.Accepted)
             {
-                WriteDiagnostic(
-                    $"Carrier completion rejected: {validation.Code}: {validation.Message}; "
-                    + $"capability={authority.CapabilityId}; "
-                    + $"active={Session.ActiveHostActionEntryCarrierCount}; "
-                    + $"issued={Session.IssuedHostActionEntryContextCount}; "
-                    + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}; "
-                    + $"current={Session.TryGetActiveHostActionEntryCarrier(authority.CapabilityId, out _)}");
                 throw new OutOfProcessCapabilityException(
                     validation.Code ?? SidecarCapabilityErrors.Unauthorized,
                     validation.Message
@@ -506,20 +499,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         if (active is null || !_calls.TryRemove(callId, out var removed))
             return;
-        var finishAccepted = (bool?)null;
         if (Interlocked.Exchange(ref removed.Completed, 1) == 0
             || Volatile.Read(ref removed.CompletionAccepted) == 0)
         {
-            finishAccepted = CompleteSessionCall(callId, 0);
-            if (finishAccepted.Value)
+            if (CompleteSessionCall(callId, 0))
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
-        WriteDiagnostic(
-            $"Finish action: call={callId}; accepted={finishAccepted}; "
-            + $"completionAccepted={Volatile.Read(ref removed.CompletionAccepted)}; "
-            + $"active={Session.ActiveHostActionEntryCarrierCount}; "
-            + $"issued={Session.IssuedHostActionEntryContextCount}; "
-            + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}");
         removed.Cancellation.Dispose();
         try
         {
@@ -870,14 +855,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             var completion = CompleteCall(
                 request.Call.CallId,
                 response.Outcome.TerminalCallCount);
-            WriteDiagnostic(
-                $"Action completion: call={request.Call.CallId}; "
-                + $"hostCapability={active.HostContext?.CapabilityId}; "
-                + $"terminalCount={response.Outcome.TerminalCallCount}; "
-                + $"accepted={completion}; "
-                + $"active={Session.ActiveHostActionEntryCarrierCount}; "
-                + $"issued={Session.IssuedHostActionEntryContextCount}; "
-                + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}");
             if (!completion)
             {
                 await SendActionFailureAsync(
@@ -901,10 +878,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             && active.Cancellation.IsCancellationRequested
             && !channelCt.IsCancellationRequested)
         {
-            var accepted = active is not null && CompleteCall(request.Call.CallId, 0);
-            WriteDiagnostic(
-                $"Action cancelled: call={request.Call.CallId}; "
-                + $"hostCapability={active?.HostContext?.CapabilityId}; accepted={accepted}");
+            var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                ? 1
+                : 0;
+            if (active is not null)
+                CompleteCall(request.Call.CallId, terminalCallCount);
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.Cancelled,
@@ -918,10 +896,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (Exception)
         {
-            var accepted = active is not null && CompleteCall(request.Call.CallId, 0);
-            WriteDiagnostic(
-                $"Action failure: call={request.Call.CallId}; "
-                + $"hostCapability={active?.HostContext?.CapabilityId}; accepted={accepted}");
+            var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                ? 1
+                : 0;
+            if (active is not null)
+                CompleteCall(request.Call.CallId, terminalCallCount);
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
@@ -1860,20 +1839,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
-    }
-
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
     }
 
 }
