@@ -250,8 +250,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 TerminalId = request.TerminalId,
             };
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
+            WriteDiagnostic(
+                $"Module terminal failure: call={request.Call.CallId}; "
+                + $"type={ex.GetType().FullName}; message={ex.Message}");
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(
@@ -263,6 +266,20 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
             {
                 TerminalId = request.TerminalId,
             };
+        }
+    }
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
         }
     }
 
