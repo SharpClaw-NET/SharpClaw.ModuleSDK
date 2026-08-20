@@ -346,7 +346,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
 
-        var pendingContext = IssueHostEntryContextThroughRegistry(client, grantExpiresAt);
+        var pendingContext = IssueHostEntryContextThroughRegistry(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
         hostContext = pendingContext;
 
         var carrierEntered = new TaskCompletionSource(
@@ -1148,9 +1151,18 @@ public sealed class OutOfProcessApplicationProtocolTests
     private static HostActionEntryRequestContext IssueHostEntryContextThroughRegistry(
         OutOfProcessModuleClient client,
         DateTimeOffset deadline) =>
+        IssueHostEntryContextThroughRegistry(
+            client,
+            ApplicationSmokeModule.HostEntryCliName,
+            deadline);
+
+    private static HostActionEntryRequestContext IssueHostEntryContextThroughRegistry(
+        OutOfProcessModuleClient client,
+        string command,
+        DateTimeOffset deadline) =>
         client.HostActionEntryContexts.Issue(
             HostActionEntryIngress.Cli,
-            ApplicationSmokeModule.HostEntryCliName,
+            command,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("host-entry", "action"),
