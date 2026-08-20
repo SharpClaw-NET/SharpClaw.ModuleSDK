@@ -286,8 +286,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException)
+        catch (OutOfProcessCapabilityException ex)
         {
+            WriteDiagnostic(
+                $"Host session failure: type={ex.GetType().FullName}; code={ex.Code}; message={ex.Message}");
         }
         finally
         {
@@ -1812,6 +1814,20 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             SidecarCapabilityTransportCodec.ComputeSha256("null"u8),
             JsonDocument.Parse("null").RootElement.Clone(),
             4);
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
 
     private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
     {
