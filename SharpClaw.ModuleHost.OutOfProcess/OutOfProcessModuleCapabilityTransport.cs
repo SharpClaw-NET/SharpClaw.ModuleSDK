@@ -623,6 +623,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             Binding,
             DateTimeOffset.UtcNow,
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
+        if (!validation.Accepted)
+            Console.Error.WriteLine($"beta11-terminal-validation: {validation.Code}: {validation.Message}");
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
