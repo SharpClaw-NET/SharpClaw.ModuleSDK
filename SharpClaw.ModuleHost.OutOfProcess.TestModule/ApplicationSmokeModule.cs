@@ -63,14 +63,28 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             ProtocolVersionRange = ContractVersionRange.Exact(1),
             SafePoints = [ActionSafePoint.BeforeContinuation, ActionSafePoint.BeforeTerminal],
-            InputSchema = new JsonSchemaReference("application.smoke.action", 1, "application-smoke-action"),
-            ResultSchema = new JsonSchemaReference("application.smoke.result", 1, "application-smoke-result"),
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("host.application.smoke"),
+                1,
+                typeof(ApplicationSmokeAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("host.application.smoke"),
+                1,
+                typeof(ApplicationSmokeResult)),
         };
 
     public static ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> OwnedAction { get; } =
         HostAction with
         {
             Key = new SharpClawActionKey("module.application.smoke"),
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("module.application.smoke"),
+                1,
+                typeof(ApplicationSmokeAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("module.application.smoke"),
+                1,
+                typeof(ApplicationSmokeResult)),
         };
 
     public static ActionDescriptor<ApplicationChildAction, ApplicationChildResult> ChildAction { get; } =
@@ -87,8 +101,14 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         {
             ProtocolVersionRange = ContractVersionRange.Exact(1),
             SafePoints = [ActionSafePoint.BeforeContinuation, ActionSafePoint.BeforeTerminal],
-            InputSchema = new JsonSchemaReference("application.child.action", 2, "application-child-action"),
-            ResultSchema = new JsonSchemaReference("application.child.result", 2, "application-child-result"),
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("host.application.child"),
+                2,
+                typeof(ApplicationChildAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("host.application.child"),
+                2,
+                typeof(ApplicationChildResult)),
         };
 
     public ModuleIdentity Identity { get; } = new(Id, "Application Smoke", "appsmoke");
