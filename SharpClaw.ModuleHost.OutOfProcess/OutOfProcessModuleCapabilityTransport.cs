@@ -385,7 +385,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         rebind?.WaitAsync(ct).GetAwaiter().GetResult();
     }
 
-    private bool CompleteCall(Guid callId, int terminalCallCount)
+    private bool CompleteCall(Guid callId, int terminalCallCount) =>
+        CompleteCallResult(callId, terminalCallCount).Accepted;
+
+    private SidecarCapabilityValidationResult CompleteCallResult(
+        Guid callId,
+        int terminalCallCount)
     {
         var session = Volatile.Read(ref _session);
         var result = session.CompleteCall(callId, terminalCallCount);
@@ -400,7 +405,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             }
         }
 
-        return result.Accepted;
+        return result;
     }
 
     public async ValueTask<SidecarActionCapabilityResponse> InvokeActionAsync(
@@ -447,11 +452,15 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             ThrowIfRejected(validation);
-            if (!CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount))
+            var completionResult = CompleteCallResult(
+                request.Call.CallId,
+                response.Outcome.TerminalCallCount);
+            if (!completionResult.Accepted)
             {
                 throw new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.HostFailure,
-                    "The sidecar action call could not be completed.");
+                    $"The sidecar action call could not be completed: "
+                    + $"{completionResult.Code}: {completionResult.Message}");
             }
             return response;
         }
