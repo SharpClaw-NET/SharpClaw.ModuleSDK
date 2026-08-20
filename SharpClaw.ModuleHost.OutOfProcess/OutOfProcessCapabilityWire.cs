@@ -187,6 +187,7 @@ internal static class SidecarCapabilityErrors
     public const string MalformedMessage = "sidecar_malformed_message";
     public const string PayloadTooLarge = "sidecar_payload_too_large";
     public const string Unauthorized = "sidecar_unauthorized";
+    public const string SpoofedIdentity = "sidecar_spoofed_identity";
     public const string Unauthenticated = "sidecar_unauthenticated";
     public const string UnsupportedCapability = "sidecar_unsupported_capability";
     public const string UnknownAction = "sidecar_unknown_action";

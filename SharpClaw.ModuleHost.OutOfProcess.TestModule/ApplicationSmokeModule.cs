@@ -16,6 +16,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string CliName = "application.inspect";
     public const string CapabilityCliName = "application.capabilities";
     public const string HostEntryCliName = "application.host-entry";
+    public const string NestedHostEntryCliName = "application.host-entry-nested";
     public const string HostEntryToolName = "application.host-entry-tool";
 
     public static RequestPrincipal HostEntryCaller { get; } =
@@ -118,6 +119,12 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             "Exercises the host-owned action entry.",
             new JsonSchemaReference("application.host-entry.input", 1, "application-input"),
             new JsonSchemaReference("application.host-entry.result", 1, "application-result")));
+        application.Cli.Add<HostEntryCliHandler>(new ModuleCliCommandDescriptor(
+            NestedHostEntryCliName,
+            ["app-host-entry-nested"],
+            "Exercises nested host-owned action entries.",
+            new JsonSchemaReference("application.host-entry.nested.input", 1, "application-input"),
+            new JsonSchemaReference("application.host-entry.nested.result", 1, "application-result")));
     }
 
     public sealed class AuthorizationHook : IActionInterceptor<ApplicationSmokeAction, ApplicationSmokeResult>
@@ -215,10 +222,16 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         };
                         break;
                 }
+                var actionMode = invocation.Arguments.FirstOrDefault() switch
+                {
+                    "nested" => "nested-root",
+                    "sequential" => "sequential-root",
+                    _ => "host-entry",
+                };
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
                     new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                         HostAction,
-                        new ApplicationSmokeAction("host-entry", "action"),
+                        new ApplicationSmokeAction(actionMode, "action"),
                         hostActionContext),
                     new HostActionTerminal(),
                     ct);
@@ -339,10 +352,50 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     {
         public Guid TerminalId { get; } = Guid.NewGuid();
 
-        public ValueTask<ApplicationSmokeResult> InvokeAsync(
+        public async ValueTask<ApplicationSmokeResult> InvokeAsync(
             ActionContext<ApplicationSmokeAction> context,
             CancellationToken ct) =>
-            ValueTask.FromResult(new ApplicationSmokeResult(
-                $"entry-terminal:{context.Action.Value}"));
+            context.Action.Mode switch
+            {
+                "nested-root" => new ApplicationSmokeResult(
+                    $"nested-root:{(await InvokeNestedAsync(context, "nested-child", ct)).Value}"),
+                "nested-child" => new ApplicationSmokeResult(
+                    $"nested-child:{(await InvokeNestedAsync(context, "nested-grandchild", ct)).Value}"),
+                "sequential-root" => new ApplicationSmokeResult(
+                    $"sequential-root:{(await InvokeNestedAsync(context, "sequential-child-one", ct)).Value}|"
+                    + $"{(await InvokeNestedAsync(context, "sequential-child-two", ct)).Value}"),
+                _ => new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}"),
+            };
+
+        private static async ValueTask<ApplicationSmokeResult> InvokeNestedAsync(
+            ActionContext<ApplicationSmokeAction> context,
+            string mode,
+            CancellationToken ct)
+        {
+            var hostActionEntry = context.HostActionEntry
+                ?? throw new InvalidOperationException(
+                    "The nested test terminal has no host action entry.");
+            var outcome = await hostActionEntry.InvokeNestedAsync<
+                ApplicationSmokeAction,
+                ApplicationSmokeAction,
+                ApplicationSmokeResult>(
+                new HostActionEntryNestedRequest<
+                    ApplicationSmokeAction,
+                    ApplicationSmokeAction,
+                    ApplicationSmokeResult>(
+                    HostAction.Key,
+                    HostAction.Version,
+                    new ApplicationSmokeAction(mode, mode),
+                    context),
+                new HostActionTerminal(),
+                ct);
+            if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
+            {
+                throw new InvalidOperationException(
+                    $"The nested action returned {outcome.Kind}.");
+            }
+
+            return outcome.Result;
+        }
     }
 }

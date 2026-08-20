@@ -440,7 +440,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
                 request,
                 response,
-                Binding);
+                Binding,
+                (authority, proof) => ValidateTerminalAuthority(authority, proof));
             ThrowIfRejected(validation);
             return response;
         }

@@ -421,6 +421,65 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task NestedHostActionEntryUsesOneAuthenticatedDispatcherRoute()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        hostContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var nested = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["nested"],
+            hostContext);
+
+        nested.Result.Succeeded.Should().BeTrue(
+            $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
+            + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
+        nested.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
+
+        hostContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var sequential = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["sequential"],
+            hostContext);
+
+        sequential.Result.Succeeded.Should().BeTrue(
+            $"CLI error {sequential.Result.Error?.Code}: {sequential.Result.Error?.Message}; "
+            + string.Join(" | ", sequential.Result.Output.Select(item => item.Text)));
+        sequential.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:sequential-root:entry-terminal:sequential-child-one|entry-terminal:sequential-child-two");
+        dispatcher.RunCalls.Should().Be(6);
+        dispatcher.TerminalCalls.Should().Be(6);
+    }
+
     [Test, CancelAfter(15000)]
     public async Task ActiveHostActionCarrierSurvivesBindingRotation()
     {
@@ -939,9 +998,18 @@ public sealed class OutOfProcessApplicationProtocolTests
     private static HostActionEntryRequestContext IssueHostEntryContext(
         OutOfProcessModuleClient client,
         DateTimeOffset deadline) =>
+        IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.HostEntryCliName,
+            deadline);
+
+    private static HostActionEntryRequestContext IssueHostEntryContext(
+        OutOfProcessModuleClient client,
+        string command,
+        DateTimeOffset deadline) =>
         client.IssueHostActionContext(
             HostActionEntryIngress.Cli,
-            ApplicationSmokeModule.HostEntryCliName,
+            command,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("host-entry", "action"),

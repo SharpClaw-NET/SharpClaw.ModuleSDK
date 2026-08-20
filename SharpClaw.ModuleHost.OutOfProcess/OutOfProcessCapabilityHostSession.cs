@@ -31,6 +31,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         public CancellationTokenSource Cancellation { get; } = cancellation;
 
+        public SidecarActionCapabilityRequest? ActionRequest { get; set; }
+
+        public HostActionEntryRequestContext? HostContext { get; set; }
+
         public int Completed;
 
         public int CompletionAccepted;
@@ -261,6 +265,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                         CompleteRebind(
                             OutOfProcessCapabilityWire.Deserialize<SidecarCapabilityValidationResult>(frame.Payload));
                         break;
+                    case OutOfProcessCapabilityFrameKind.ActionTerminalRequest:
+                        await HandleNestedTerminalRequestAsync(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportRequest>(frame.Payload),
+                            ct);
+                        break;
                     case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
                         CompleteTerminal(
                             OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
@@ -434,7 +443,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private ActiveCall RegisterCall(
         SidecarCapabilityCallIdentity call,
-        CancellationToken channelCancellation)
+        CancellationToken channelCancellation,
+        SidecarActionCapabilityRequest? actionRequest = null)
     {
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(channelCancellation);
         var remaining = call.Deadline - DateTimeOffset.UtcNow;
@@ -442,7 +452,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             cancellation.Cancel();
         else
             cancellation.CancelAfter(remaining);
-        var active = new ActiveCall(cancellation);
+        var active = new ActiveCall(cancellation)
+        {
+            ActionRequest = actionRequest,
+        };
         if (!_calls.TryAdd(call.CallId, active))
         {
             cancellation.Dispose();
@@ -739,7 +752,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
             return request.Snapshot is null
-                && request.HostContext is not null
+                && (request.HostContext is not null || request.NestedCarrier is not null)
                 && request.Terminal is { IsWellFormed: true }
                 && request.Terminal.DescriptorHash == request.Descriptor.DescriptorHash;
 
@@ -792,14 +805,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 return;
             }
 
-            active = RegisterCall(request.Call, channelCt);
-            var begin = Session.BeginCall(
-                request.Call,
-                SidecarCapabilityKind.Action,
-                request.Action,
+            active = RegisterCall(request.Call, channelCt, request);
+            var begin = Session.BeginActionCall(
+                request,
                 request.Action.ByteLength,
                 DateTimeOffset.UtcNow,
-                hostContext: request.HostContext);
+                out var hostContext);
+            active.HostContext = hostContext;
             if (!begin.Accepted)
             {
                 AbandonCall(request.Call.CallId, active);
@@ -893,6 +905,73 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
+    }
+
+    private async Task HandleNestedTerminalRequestAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken ct)
+    {
+        if (request.NestedCarrierRequest is null
+            || !_calls.TryGetValue(request.Call.CallId, out var active)
+            || active.ActionRequest is not { } initiatingRequest
+            || !_terminals.ContainsKey(request.Call.CallId))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested terminal request has no active parent terminal exchange.");
+        }
+
+        var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalRequest(
+            initiatingRequest,
+            request,
+            Session.Binding,
+            DateTimeOffset.UtcNow,
+            ValidateTerminalAuthority);
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                validation.Message ?? "The nested terminal request was rejected.");
+        }
+
+        var record = Session.RecordTerminal(
+            request.Call.CallId,
+            request.Authority.AuthorityId,
+            request.Receipt);
+        if (!record.Accepted && !Session.TryGetTerminalReceipt(request.Call.CallId, out _))
+        {
+            throw new OutOfProcessCapabilityException(
+                record.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                record.Message ?? "The parent terminal authority was rejected.");
+        }
+
+        var issue = Session.IssueNestedHostActionEntryRelay(
+            request.Call,
+            request.NestedCarrierRequest,
+            DateTimeOffset.UtcNow,
+            out var relay);
+        var outcomeKind = issue.Accepted && relay is not null
+            ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
+            : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;
+        var failure = issue.Accepted && relay is not null
+            ? null
+            : new SidecarSafeFailureIdentity(
+                Guid.NewGuid(),
+                issue.Code ?? SidecarCapabilityErrors.HostFailure,
+                issue.Message ?? "The host could not issue the nested action carrier.",
+                Retryable: false);
+        var response = CreateNestedRelayResponse(
+            request,
+            relay,
+            outcomeKind,
+            failure);
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+            response,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
     }
 
     private async Task HandleStorageRequestAsync(
@@ -1029,6 +1108,39 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         var action = Deserialize<TAction>(request.Action);
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
         {
+            if (request.NestedCarrier is not null)
+            {
+                if (!_calls.TryGetValue(request.Call.CallId, out var active)
+                    || active.HostContext is null)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The nested host action call has no authenticated host context.");
+                }
+
+                var nestedContext = active.HostContext;
+                var nestedOutcome = await _options.ActionDispatcher.RunAsync(
+                    descriptor,
+                    action,
+                    (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                        request,
+                        identity,
+                        context,
+                        nestedContext,
+                        terminalCancellation),
+                    _options.ActionSnapshot,
+                    ct);
+                return new OutOfProcessActionDispatchResult(
+                    nestedOutcome.Kind,
+                    nestedOutcome.Result,
+                    nestedOutcome.Error,
+                    nestedOutcome.Uncertainty,
+                    nestedOutcome.Continuation,
+                    _session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                        ? 1
+                        : 0);
+            }
+
             var context = request.HostContext
                 ?? throw new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.Unauthorized,
@@ -1083,11 +1195,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             var hostOutcome = await _options.ActionDispatcher.RunAsync(
                 descriptor,
                 action,
-                (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
-                    request,
-                    identity,
-                    context,
-                    terminalCancellation),
+                    (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                        request,
+                        identity,
+                        context,
+                        request.HostContext,
+                        terminalCancellation),
                 _options.ActionSnapshot,
                 ct);
             return new OutOfProcessActionDispatchResult(
@@ -1108,6 +1221,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 request,
                 identity,
                 context,
+                null,
                 terminalCancellation),
             _options.ActionSnapshot,
             ct);
@@ -1128,10 +1242,11 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         SidecarActionCapabilityRequest request,
         SidecarActionDescriptorIdentity identity,
         ActionContext<TAction> context,
+        HostActionEntryRequestContext? hostContext,
         CancellationToken ct)
     {
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
-            ValidateHostEntryDispatcherContext(request, context);
+            ValidateHostEntryDispatcherContext(request, hostContext, context);
 
         var actionPayload = CreatePayload(
             context.Action,
@@ -1239,15 +1354,18 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 responseValidation.Message ?? "The terminal response was rejected.");
         }
 
-        var record = _session.RecordTerminal(
-            request.Call.CallId,
-            authority.AuthorityId,
-            receipt);
-        if (!record.Accepted)
+        if (!Session.TryGetTerminalReceipt(request.Call.CallId, out _))
         {
-            throw new OutOfProcessCapabilityException(
-                record.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                record.Message ?? "The terminal receipt was rejected.");
+            var record = _session.RecordTerminal(
+                request.Call.CallId,
+                authority.AuthorityId,
+                receipt);
+            if (!record.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    record.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                    record.Message ?? "The terminal receipt was rejected.");
+            }
         }
 
         if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)
@@ -1267,9 +1385,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private static void ValidateHostEntryDispatcherContext<TAction>(
         SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext? hostContext,
         ActionContext<TAction> context)
     {
-        var expected = request.HostContext
+        var expected = hostContext
             ?? throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The host action entry request has no initiating host context.");
@@ -1293,6 +1412,86 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 "The dispatcher action context does not match the host action entry authority.");
         }
     }
+
+    private SidecarActionTerminalTransportResponse CreateNestedRelayResponse(
+        SidecarActionTerminalTransportRequest request,
+        SidecarNestedHostActionEntryRelay? relay,
+        SidecarNestedHostActionEntryRelayOutcomeKind outcomeKind,
+        SidecarSafeFailureIdentity? failure)
+    {
+        var authority = request.Authority with
+        {
+            NestedCarrierRelay = relay,
+            NestedCarrierOutcomeKind = outcomeKind,
+            NestedCarrierRequestFingerprint =
+                SidecarCapabilityTransportValidation.ComputeNestedCarrierRequestFingerprint(
+                    request.NestedCarrierRequest!),
+            Proof = "pending",
+        };
+        authority = authority with
+        {
+            CanonicalBindingHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority),
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                authority,
+                _controlToken),
+        };
+
+        var issued = outcomeKind == SidecarNestedHostActionEntryRelayOutcomeKind.Issued;
+        var result = issued
+            ? CreateNullPayload(
+                request.Descriptor.ResultTypeIdentity,
+                request.Descriptor.ResultSchemaVersion)
+            : null;
+        return new SidecarActionTerminalTransportResponse(
+            issued
+                ? new SidecarActionResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    request.Descriptor.Key,
+                    request.Descriptor.Version,
+                    request.Descriptor.ResultTypeIdentity,
+                    result!.ContentHash)
+                : null,
+            new SidecarTerminalExecutionResult(
+                result,
+                issued ? null : failure ?? _session.Binding.SafeFailure,
+                Completed: true),
+            request.Receipt,
+            _session.Binding.SafeFailure)
+        {
+            TerminalId = request.TerminalId,
+            NestedCarrierRelay = relay,
+            NestedCarrierAuthority = authority,
+            NestedCarrierOutcome = new(outcomeKind, issued ? null : failure),
+        };
+    }
+
+    private static SidecarSerializedPayload CreateNullPayload(
+        string typeIdentity,
+        int schemaVersion)
+    {
+        using var document = JsonDocument.Parse("null");
+        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        return new SidecarSerializedPayload(
+            typeIdentity,
+            schemaVersion,
+            SidecarCapabilityTransportCodec.ComputeSha256(canonical),
+            document.RootElement.Clone(),
+            canonical.Length);
+    }
+
+    private bool ValidateTerminalAuthority(
+        SidecarHostTerminalAuthority authority,
+        string canonicalBindingHash) =>
+        string.Equals(
+            authority.CanonicalBindingHash,
+            canonicalBindingHash,
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
+            OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
+            authority.Proof,
+            StringComparison.Ordinal);
 
     private async Task<SidecarActionTerminalTransportResponse> SendTerminalAsync(
         SidecarActionTerminalTransportRequest request,
