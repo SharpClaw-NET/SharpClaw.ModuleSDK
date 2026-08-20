@@ -1866,11 +1866,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 null!,
                 _session.Binding.SafeFailure,
                 0),
-            new SidecarTerminalContinuationResponse(
-                request.Continuation?.ContinuationRequestId ?? Guid.Empty,
-                false,
-                null!,
-                _session.Binding.SafeFailure),
+            request.Continuation is null
+                ? null
+                : new SidecarTerminalContinuationResponse(
+                    request.Continuation.ContinuationRequestId,
+                    false,
+                    null!,
+                    _session.Binding.SafeFailure),
             _session.Binding.SafeFailure,
             Completed: true);
 
