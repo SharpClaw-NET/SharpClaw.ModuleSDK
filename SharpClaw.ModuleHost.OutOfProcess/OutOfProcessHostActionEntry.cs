@@ -236,26 +236,8 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 TerminalId = request.TerminalId,
             };
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
+        catch (Exception) when (!ct.IsCancellationRequested)
         {
-            var diagnosticPath = Environment.GetEnvironmentVariable(
-                "SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-            if (!string.IsNullOrWhiteSpace(diagnosticPath))
-            {
-                try
-                {
-                    File.AppendAllText(
-                        diagnosticPath,
-                        $"{DateTimeOffset.UtcNow:O} {ex}{Environment.NewLine}");
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
-
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(

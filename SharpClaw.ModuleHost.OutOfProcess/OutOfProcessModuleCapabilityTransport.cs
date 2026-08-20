@@ -461,9 +461,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     SidecarCapabilityErrors.HostFailure,
                     $"The sidecar action call could not be completed: "
                     + $"{completionResult.Code}: {completionResult.Message}; "
-                    + $"terminalCallCount={response.Outcome.TerminalCallCount}; "
-                    + $"outcome={response.Outcome.Kind}; "
-                    + $"error={response.Outcome.Error?.Code}:{response.Outcome.Error?.Message}");
+                    + $"terminalCallCount={response.Outcome.TerminalCallCount}");
             }
             return response;
         }

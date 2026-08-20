@@ -910,7 +910,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
-                $"The host action dispatcher failed: {ex.GetType().Name}: {ex.Message}",
+                "The host action dispatcher failed.",
                 channelCt);
         }
         finally
