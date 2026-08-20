@@ -1261,7 +1261,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     hostContext?.TraceId ?? Guid.NewGuid(),
                     hostContext?.IdempotencyKey ?? Guid.NewGuid(),
                     hostContext?.Depth ?? 0,
-                    hostContext?.Attempt ?? 0,
+                    hostContext?.Attempt ?? 1,
                     hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
                     descriptor.Key,
                     ApplicationSmokeModule.Id,
