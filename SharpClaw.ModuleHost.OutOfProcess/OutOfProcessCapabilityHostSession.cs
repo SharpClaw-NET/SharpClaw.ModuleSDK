@@ -286,8 +286,9 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException)
+        catch (OutOfProcessCapabilityException ex)
         {
+            Console.Error.WriteLine($"ModuleSDK capability session stopped: {ex.Code}: {ex.Message}");
         }
         finally
         {
