@@ -1085,6 +1085,21 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 DateTimeOffset.UtcNow);
         if (!validation.Accepted)
         {
+            WriteDiagnostic(new InvalidOperationException(
+                $"resolved nested validation rejected; "
+                + $"request={request.ActionKey.Value}:{request.ActionVersion}; "
+                + $"action={request.Action.TypeIdentity}:{request.Action.SchemaVersion}:{request.Action.ContentHash}:{request.Action.ByteLength}; "
+                + $"resolved={resolvedDescriptor.Key.Value}:{resolvedDescriptor.Version}:{resolvedDescriptor.Category}:"
+                + $"{resolvedDescriptor.InputTypeIdentity}:{resolvedDescriptor.InputSchemaVersion}:{resolvedDescriptor.InputSchemaHash}:"
+                + $"{resolvedDescriptor.ResultTypeIdentity}:{resolvedDescriptor.ResultSchemaVersion}:{resolvedDescriptor.ResultSchemaHash}:"
+                + $"{resolvedDescriptor.DescriptorHash}; "
+                + $"contributionWellFormed={resolvedContribution.IsWellFormed}; "
+                + $"lineage={resolvedContribution.Lineage.ActionKey.Value}:{resolvedContribution.Lineage.ActionVersion}:"
+                + $"{resolvedContribution.Lineage.DescriptorHash}:{resolvedContribution.Lineage.InputTypeIdentity}:"
+                + $"{resolvedContribution.Lineage.InputSchemaVersion}:{resolvedContribution.Lineage.InputSchemaHash}:"
+                + $"{resolvedContribution.Lineage.PayloadContentHash}:{resolvedContribution.Lineage.PayloadByteLength}; "
+                + $"now={DateTimeOffset.UtcNow:O}; bindingExpires={Session.Binding.ExpiresAt:O}; "
+                + $"deadline={request.Deadline:O}; expires={request.ExpiresAt:O}"));
             throw new OutOfProcessCapabilityException(
                 validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
                 validation.Message ?? "The nested action does not match host descriptor authority.");
