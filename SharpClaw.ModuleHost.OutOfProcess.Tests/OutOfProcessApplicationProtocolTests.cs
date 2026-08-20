@@ -330,11 +330,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry());
         await client.ConnectCapabilitiesAsync(options);
 
-        var pendingContext = IssueHostEntryContext(
-            client,
-            ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
-        hostContext = pendingContext;
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 1;
         for (var i = 0; i < priorCalls; i++)
@@ -350,6 +345,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
+
+        var pendingContext = IssueHostEntryContextThroughRegistry(client, grantExpiresAt);
+        hostContext = pendingContext;
 
         var carrierEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
