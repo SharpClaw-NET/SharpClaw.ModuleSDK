@@ -932,10 +932,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
+            WriteDiagnostic("ModuleSDK terminal worker cancelled after disconnect.");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ModuleSDK terminal worker stopped: {ex.GetType().FullName}: {ex.Message}");
+            WriteDiagnostic($"ModuleSDK terminal worker stopped: {ex}");
             try
             {
                 _disconnect.Cancel();
@@ -943,6 +944,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             catch (ObjectDisposedException)
             {
             }
+        }
+    }
+
+    private static void WriteDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            File.AppendAllText(path, message + Environment.NewLine);
+        }
+        catch
+        {
         }
     }
 
