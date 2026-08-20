@@ -121,7 +121,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 "The nested action has no parent descriptor authority.");
         }
 
-        var action = OutOfProcessActionDispatcher.Payload(request.Action);
+        var actionSchemaVersion = _transport.ResolveNestedActionSchemaVersion(
+            request.ActionKey,
+            request.ActionVersion);
+        var action = OutOfProcessActionDispatcher.Payload(
+            request.Action,
+            typeof(TAction).AssemblyQualifiedName
+                ?? typeof(TAction).FullName
+                ?? typeof(TAction).Name,
+            actionSchemaVersion);
         var nestedRequest = new SidecarNestedHostActionEntryRequest(
             request.ActionKey,
             request.ActionVersion,

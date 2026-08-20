@@ -15,15 +15,18 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private string? _moduleId;
     private string? _graphId;
     private SidecarPayloadLimits? _payloadLimits;
+    private IReadOnlyList<ModuleActionHook>? _actionHooks;
     private SidecarHostAuthorization? _authorization;
     public void Initialize(
         string moduleId,
         string graphId,
-        SidecarPayloadLimits payloadLimits)
+        SidecarPayloadLimits payloadLimits,
+        IReadOnlyList<ModuleActionHook> actionHooks)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
         ArgumentException.ThrowIfNullOrWhiteSpace(graphId);
         ArgumentNullException.ThrowIfNull(payloadLimits);
+        ArgumentNullException.ThrowIfNull(actionHooks);
         lock (_sync)
         {
             if (_moduleId is not null)
@@ -31,7 +34,42 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _moduleId = moduleId;
             _graphId = graphId;
             _payloadLimits = payloadLimits;
+            _actionHooks = actionHooks;
         }
+    }
+
+    internal int ResolveNestedActionSchemaVersion(
+        SharpClawActionKey actionKey,
+        int actionVersion)
+    {
+        var actionHooks = Volatile.Read(ref _actionHooks)
+            ?? throw new InvalidOperationException(
+                "The module action hook graph is not initialized.");
+        ModuleActionHook? match = null;
+        foreach (var hook in actionHooks)
+        {
+            if (hook.TargetKind != SidecarHookTargetKind.Exact
+                || hook.ActionKey != actionKey
+                || hook.IsUntyped
+                || !hook.VersionRange.Contains(actionVersion))
+            {
+                continue;
+            }
+
+            if (match is not null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.UnknownAction,
+                    $"The module action hook graph contains an ambiguous nested action '{actionKey.Value}:{actionVersion}'.");
+            }
+
+            match = hook;
+        }
+
+        return match?.InputSchema.Version
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                $"The module has no exact typed action hook for '{actionKey.Value}:{actionVersion}'.");
     }
 
     internal void SetAuthorization(SidecarHostAuthorization authorization)
