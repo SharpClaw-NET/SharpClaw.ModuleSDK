@@ -645,20 +645,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Authority.AuthorityId,
             request.Receipt));
         var response = await pending.Terminal(request, ct);
-        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
             request,
             response,
-            Binding);
-        if (!responseValidation.Accepted)
-        {
-            WriteDiagnostic(
-                $"Terminal response rejected: {responseValidation.Code}: {responseValidation.Message}; "
-                + $"request={request.Invocation}:{request.Call.CallId}:{request.Descriptor.Key.Value}; "
-                + $"result={response.ResultIdentity?.ResultId}; "
-                + $"execution={response.Execution?.Completed}:{response.Execution?.Result is not null}:{response.Execution?.Failure?.Code}; "
-                + $"nested={response.NestedCarrierOutcome?.Kind}");
-        }
-        ThrowIfRejected(responseValidation);
+            Binding));
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
@@ -893,11 +883,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
     {
-        var resultIdentity = response.ResultIdentity
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Receipt?.CallId
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
-                "The terminal response has no result identity.");
-        if (_terminals.TryGetValue(resultIdentity.CallId, out var completion))
+                "The terminal response has no result identity or receipt.");
+        if (_terminals.TryGetValue(callId, out var completion))
             completion.TrySetResult(response);
         else
             throw new OutOfProcessCapabilityException(
@@ -952,20 +943,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             catch (ObjectDisposedException)
             {
             }
-        }
-    }
-
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
         }
     }
 

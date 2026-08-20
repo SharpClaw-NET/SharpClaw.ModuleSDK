@@ -286,9 +286,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-        catch (OutOfProcessCapabilityException ex)
+        catch (OutOfProcessCapabilityException)
         {
-            WriteDiagnostic($"Host capability session stopped: {ex.Code}: {ex.Message}");
         }
         finally
         {
@@ -1816,11 +1815,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
     {
-        var resultIdentity = response.ResultIdentity
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Receipt?.CallId
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
-                "The terminal response has no result identity.");
-        if (!_terminals.TryGetValue(resultIdentity.CallId, out var completion))
+                "The terminal response has no result identity or receipt.");
+        if (!_terminals.TryGetValue(callId, out var completion))
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
@@ -1835,19 +1835,6 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         return new OutOfProcessCapabilityException(error.Code, error.Message);
     }
 
-    private static void WriteDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SHARPCLAW_MODULESDK_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        try
-        {
-            File.AppendAllText(path, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
-    }
 }
 
 internal sealed record OutOfProcessStorageInvokePayload(
