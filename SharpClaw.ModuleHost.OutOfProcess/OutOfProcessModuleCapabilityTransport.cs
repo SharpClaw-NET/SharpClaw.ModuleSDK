@@ -641,7 +641,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     + $"authoritySnapshotHash={request.Authority.SnapshotContentHash}; "
                     + $"canonicalHash={SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(request.Authority)}; "
                     + $"authorityCanonicalHash={request.Authority.CanonicalBindingHash}; "
-                    + $"proofValid={ValidateTerminalAuthority(request.Authority, request.Authority.Proof)}{Environment.NewLine}");
+                    + $"proofValid={ValidateTerminalAuthority(request.Authority, request.Authority.Proof)}; "
+                    + $"expectedCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Caller))}; "
+                    + $"actualCallerHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Caller))}; "
+                    + $"expectedFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(pending.Request.HostContext?.Features))}; "
+                    + $"actualFeaturesHash={SidecarCapabilityTransportCodec.ComputeSha256(SidecarCapabilityTransportCodec.Serialize(request.Context?.Features))}; "
+                    + $"callerMatches={OutOfProcessHostActionEntryContextRegistry.MatchesCaller(pending.Request.HostContext?.Caller, request.Context?.Caller)}{Environment.NewLine}");
         }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
