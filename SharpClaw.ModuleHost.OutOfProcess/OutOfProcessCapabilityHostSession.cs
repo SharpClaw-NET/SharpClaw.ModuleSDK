@@ -693,7 +693,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 _rotationTask = null;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             ready.TrySetException(ex);
             _disconnect.Cancel();
@@ -1265,13 +1265,13 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 "The sidecar terminal callback returned no result.");
     }
 
-    private static void ValidateHostEntryDispatcherContext<TAction, TResult>(
+    private static void ValidateHostEntryDispatcherContext<TAction>(
         SidecarActionCapabilityRequest request,
         ActionContext<TAction> context)
     {
         var expected = request.HostContext
             ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
+                SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The host action entry request has no initiating host context.");
         if (!OutOfProcessHostActionEntryContextRegistry.MatchesCaller(expected.Caller, context.Caller)
             || !string.Equals(
@@ -1289,7 +1289,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             || expected.Deadline != context.Deadline)
         {
             throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
+                SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The dispatcher action context does not match the host action entry authority.");
         }
     }
