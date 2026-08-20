@@ -506,12 +506,20 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
     {
         if (active is null || !_calls.TryRemove(callId, out var removed))
             return;
+        var finishAccepted = (bool?)null;
         if (Interlocked.Exchange(ref removed.Completed, 1) == 0
             || Volatile.Read(ref removed.CompletionAccepted) == 0)
         {
-            if (CompleteSessionCall(callId, 0))
+            finishAccepted = CompleteSessionCall(callId, 0);
+            if (finishAccepted.Value)
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
+        WriteDiagnostic(
+            $"Finish action: call={callId}; accepted={finishAccepted}; "
+            + $"completionAccepted={Volatile.Read(ref removed.CompletionAccepted)}; "
+            + $"active={Session.ActiveHostActionEntryCarrierCount}; "
+            + $"issued={Session.IssuedHostActionEntryContextCount}; "
+            + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}");
         removed.Cancellation.Dispose();
         try
         {
@@ -893,8 +901,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             && active.Cancellation.IsCancellationRequested
             && !channelCt.IsCancellationRequested)
         {
-            if (active is not null)
-                CompleteCall(request.Call.CallId, 0);
+            var accepted = active is not null && CompleteCall(request.Call.CallId, 0);
+            WriteDiagnostic(
+                $"Action cancelled: call={request.Call.CallId}; "
+                + $"hostCapability={active?.HostContext?.CapabilityId}; accepted={accepted}");
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.Cancelled,
@@ -908,8 +918,10 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         }
         catch (Exception)
         {
-            if (active is not null)
-                CompleteCall(request.Call.CallId, 0);
+            var accepted = active is not null && CompleteCall(request.Call.CallId, 0);
+            WriteDiagnostic(
+                $"Action failure: call={request.Call.CallId}; "
+                + $"hostCapability={active?.HostContext?.CapabilityId}; accepted={accepted}");
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
