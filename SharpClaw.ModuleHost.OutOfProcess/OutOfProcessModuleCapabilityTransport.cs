@@ -292,8 +292,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         _registerAuthenticationNonce = registerAuthenticationNonce
             ?? throw new ArgumentNullException(nameof(registerAuthenticationNonce));
         _terminalQueue = new BoundedExecutionQueue(
-            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
-            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1));
+            Math.Max(session.Binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
+            Math.Max(session.Binding.ConcurrencyLimits.MaximumInFlightCalls, 1));
         SendGate = new SemaphoreSlim(1, 1);
     }
 
