@@ -933,8 +933,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"ModuleSDK terminal worker stopped: {ex.GetType().FullName}: {ex.Message}");
             try
             {
                 _disconnect.Cancel();
