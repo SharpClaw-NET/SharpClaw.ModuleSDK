@@ -630,7 +630,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(diagnosticPath))
                 File.AppendAllText(
                     diagnosticPath,
-                    $"{validation.Code}: {validation.Message}{Environment.NewLine}");
+                    $"{validation.Code}: {validation.Message}{Environment.NewLine}"
+                    + JsonSerializer.Serialize(
+                        new { Initiating = pending.Request, Terminal = request },
+                        SidecarCapabilityTransportCodec.CreateJsonOptions())
+                    + Environment.NewLine);
         }
         ThrowIfRejected(validation);
         ThrowIfRejected(_session.RecordTerminal(
