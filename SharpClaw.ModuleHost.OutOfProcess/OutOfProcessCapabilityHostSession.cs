@@ -862,6 +862,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             var completion = CompleteCall(
                 request.Call.CallId,
                 response.Outcome.TerminalCallCount);
+            WriteDiagnostic(
+                $"Action completion: call={request.Call.CallId}; "
+                + $"hostCapability={active.HostContext?.CapabilityId}; "
+                + $"terminalCount={response.Outcome.TerminalCallCount}; "
+                + $"accepted={completion}; "
+                + $"active={Session.ActiveHostActionEntryCarrierCount}; "
+                + $"issued={Session.IssuedHostActionEntryContextCount}; "
+                + $"tombstones={Session.CompletedHostActionEntryTombstoneCount}");
             if (!completion)
             {
                 await SendActionFailureAsync(
