@@ -940,43 +940,69 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The cross-sidecar terminal request has no execution context.");
-        var authorityValid = ValidateTerminalAuthority(
+        var authorityProofValid = ValidateTerminalAuthority(
                 request.Authority,
                 SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(
-                    request.Authority))
-            && request.Authority.ModuleId == Binding.ModuleId
-            && request.Authority.GraphId == Binding.GraphId
-            && request.Authority.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
-            && request.Authority.CallId == request.Call.CallId
-            && request.Authority.TerminalId == request.TerminalId
-            && request.Authority.InvocationId == context.InvocationId
-            && request.Authority.ParentInvocationId == context.ParentInvocationId
-            && request.Authority.TraceId == context.TraceId
-            && request.Authority.IdempotencyKey == context.IdempotencyKey
-            && request.Authority.Depth == context.Depth
-            && request.Authority.Attempt == context.Attempt
-            && request.Authority.Caller.Equals(context.Caller)
-            && string.Equals(
-                SidecarCapabilityTransportCodec.ComputeSha256(
-                    SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
-                SidecarCapabilityTransportCodec.ComputeSha256(
-                    SidecarCapabilityTransportCodec.Serialize(context.Features)),
-                StringComparison.Ordinal)
-            && request.Descriptor.Key == context.Descriptor.Key
-            && request.Descriptor.Version == context.Descriptor.Version
-            && OutOfProcessCapabilityTransportPayloadMatches(
-                request.EffectiveAction,
-                context.EffectiveAction)
-            && string.Equals(
-                request.Authority.SnapshotContentHash,
-                SidecarCapabilityTransportCodec.ComputeSha256(
-                    SidecarCapabilityTransportCodec.Serialize(context.Snapshot)),
-                StringComparison.Ordinal);
+                    request.Authority));
+        var authorityModuleValid = request.Authority.ModuleId == Binding.ModuleId;
+        var authorityGraphValid = request.Authority.GraphId == Binding.GraphId;
+        var authorityInvocationValid =
+            request.Authority.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar;
+        var authorityCallValid = request.Authority.CallId == request.Call.CallId;
+        var authorityTerminalValid = request.Authority.TerminalId == request.TerminalId;
+        var authorityInvocationIdValid = request.Authority.InvocationId == context.InvocationId;
+        var authorityParentInvocationValid = request.Authority.ParentInvocationId == context.ParentInvocationId;
+        var authorityTraceValid = request.Authority.TraceId == context.TraceId;
+        var authorityIdempotencyValid = request.Authority.IdempotencyKey == context.IdempotencyKey;
+        var authorityDepthValid = request.Authority.Depth == context.Depth;
+        var authorityAttemptValid = request.Authority.Attempt == context.Attempt;
+        var authorityCallerValid = request.Authority.Caller.Equals(context.Caller);
+        var authorityFeaturesValid = string.Equals(
+            SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
+            SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(context.Features)),
+            StringComparison.Ordinal);
+        var authorityDescriptorValid = request.Descriptor.Key == context.Descriptor.Key
+            && request.Descriptor.Version == context.Descriptor.Version;
+        var authorityPayloadValid = OutOfProcessCapabilityTransportPayloadMatches(
+            request.EffectiveAction,
+            context.EffectiveAction);
+        var authoritySnapshotValid = string.Equals(
+            request.Authority.SnapshotContentHash,
+            SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(context.Snapshot)),
+            StringComparison.Ordinal);
+        var authorityValid = authorityProofValid
+            && authorityModuleValid
+            && authorityGraphValid
+            && authorityInvocationValid
+            && authorityCallValid
+            && authorityTerminalValid
+            && authorityInvocationIdValid
+            && authorityParentInvocationValid
+            && authorityTraceValid
+            && authorityIdempotencyValid
+            && authorityDepthValid
+            && authorityAttemptValid
+            && authorityCallerValid
+            && authorityFeaturesValid
+            && authorityDescriptorValid
+            && authorityPayloadValid
+            && authoritySnapshotValid;
         if (!authorityValid)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
-                "The cross-sidecar terminal authority does not match its execution context.");
+                "The cross-sidecar terminal authority does not match its execution context. "
+                + $"proof={authorityProofValid}; module={authorityModuleValid}; graph={authorityGraphValid}; "
+                + $"invocation={authorityInvocationValid}; call={authorityCallValid}; terminal={authorityTerminalValid}; "
+                + $"invocationId={authorityInvocationIdValid}; parentInvocation={authorityParentInvocationValid}; "
+                + $"trace={authorityTraceValid}; idempotency={authorityIdempotencyValid}; depth={authorityDepthValid}; "
+                + $"attempt={authorityAttemptValid}; caller={authorityCallerValid}; features={authorityFeaturesValid}; "
+                + $"descriptor={authorityDescriptorValid}; payload={authorityPayloadValid}; snapshot={authoritySnapshotValid}; "
+                + $"authorityCallId={request.Authority.CallId}; requestCallId={request.Call.CallId}; "
+                + $"authorityTerminalId={request.Authority.TerminalId}; requestTerminalId={request.TerminalId}");
         }
 
         var registration = _actionEntries.SingleOrDefault(entry =>
