@@ -836,10 +836,22 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Authority.AuthorityId,
             request.Receipt));
         var response = await pending.Terminal(request, ct);
-        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
             request,
             response,
-            Binding));
+            Binding);
+        if (!responseValidation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                $"{responseValidation.Message}; requestCall={request.Call.CallId}; "
+                + $"responseCall={response.ResultIdentity?.CallId}; "
+                + $"requestDescriptor={request.Descriptor.Key.Value}:{request.Descriptor.Version}; "
+                + $"responseDescriptor={response.ResultIdentity?.ActionKey.Value}:{response.ResultIdentity?.ActionVersion}; "
+                + $"requestTerminal={request.TerminalId}; responseTerminal={response.TerminalId}; "
+                + $"requestReceipt={request.Receipt.CallId}; responseReceipt={response.Receipt?.CallId}; "
+                + $"completed={response.Execution.Completed}; result={response.Execution.Result?.TypeIdentity}");
+        }
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
