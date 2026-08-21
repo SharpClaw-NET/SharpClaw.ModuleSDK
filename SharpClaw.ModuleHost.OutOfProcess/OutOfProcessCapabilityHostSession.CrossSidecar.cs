@@ -211,6 +211,30 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 _ => true,
                 now,
                 RegisterAuthenticationNonce: false);
+            var diagnosticManualCarrierReject =
+                !carrier.IsWellFormed
+                || diagnosticTargetCall.SessionId != diagnosticBinding.SessionId
+                || diagnosticTargetCall.RequestId != diagnosticBinding.RequestId
+                || diagnosticTargetCall.CancellationId != diagnosticBinding.CancellationId
+                || !string.Equals(diagnosticTargetCall.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)
+                || !string.Equals(diagnosticTargetCall.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)
+                || diagnosticTargetCall.Deadline != diagnosticAuthority.Deadline
+                || diagnosticAuthority.SourceParentCall.Deadline != diagnosticAuthority.Deadline
+                || !string.Equals(diagnosticAuthority.TargetEntry.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)
+                || !string.Equals(diagnosticAuthority.TargetEntry.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)
+                || diagnosticAuthority.TargetBindingGeneration <= 0
+                || diagnosticAuthority.ExpiresAt <= now
+                || diagnosticAuthority.Deadline <= now
+                || diagnosticAuthority.ExpiresAt > diagnosticBinding.ExpiresAt
+                || !string.Equals(diagnosticAuthority.CanonicalBindingHash, SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(diagnosticAuthority), StringComparison.OrdinalIgnoreCase)
+                || !ValidateCrossSidecarProof(diagnosticAuthority, diagnosticAuthority.Proof);
+            var diagnosticTerminalMismatch =
+                !terminal.IsWellFormed
+                || terminal.ActionTypeIdentity != diagnosticAuthority.TargetEntry.Descriptor.InputTypeIdentity
+                || terminal.ActionSchemaVersion != diagnosticAuthority.TargetEntry.Descriptor.InputSchemaVersion
+                || terminal.ResultTypeIdentity != diagnosticAuthority.TargetEntry.Descriptor.ResultTypeIdentity
+                || terminal.ResultSchemaVersion != diagnosticAuthority.TargetEntry.Descriptor.ResultSchemaVersion
+                || !string.Equals(terminal.DescriptorHash, diagnosticAuthority.TargetEntry.Descriptor.DescriptorHash, StringComparison.Ordinal);
             var carrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
                 carrier,
                 diagnosticBinding,
@@ -223,6 +247,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"requestValidation={diagnosticRequestValidation.Code}:{diagnosticRequestValidation.Message}; "
                 + $"bindingValidation={diagnosticBindingValidation.Code}:{diagnosticBindingValidation.Message}; "
                 + $"beginCode={begin.Code}; "
+                + $"manualCarrierReject={diagnosticManualCarrierReject}; terminalMismatch={diagnosticTerminalMismatch}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
                 + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
                 + $"targetRequest={diagnosticTargetCall.RequestId == diagnosticBinding.RequestId}; "
