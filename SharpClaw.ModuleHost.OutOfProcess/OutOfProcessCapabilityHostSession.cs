@@ -357,7 +357,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 context.InvocationId,
                 context.Contribution.IngressBinding);
             var validation = Session.BeginHostActionEntryCarrier(
-                context,
+                OutOfProcessHostActionEntryContextRegistry.WithoutPayloadBinding(context),
                 carrier,
                 DateTimeOffset.UtcNow,
                 out authority);
@@ -1082,8 +1082,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             }
 
             active = RegisterCall(request.Call, channelCt, request);
+            var contractRequest = request.HostContext is null
+                ? request
+                : request with
+                {
+                    HostContext = OutOfProcessHostActionEntryContextRegistry
+                        .WithoutPayloadBinding(request.HostContext),
+                };
             var begin = Session.BeginActionCall(
-                request,
+                contractRequest,
                 request.Action.ByteLength,
                 DateTimeOffset.UtcNow,
                 out var hostContext);
@@ -1583,7 +1590,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     "The host action context is invalid, expired, or already used.");
             }
             var issued = _session.IssueHostActionEntry(
-                entryRequest,
+                entryRequest with
+                {
+                    Context = OutOfProcessHostActionEntryContextRegistry
+                        .WithoutPayloadBinding(entryRequest.Context),
+                },
                 request.Call.CallId,
                 DateTimeOffset.UtcNow,
                 authority => OutOfProcessCapabilitySecurity.CreateHostActionEntryProof(

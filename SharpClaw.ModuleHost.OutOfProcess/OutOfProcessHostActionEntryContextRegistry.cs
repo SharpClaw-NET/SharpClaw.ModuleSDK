@@ -294,6 +294,26 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             && expected.Roles.All(actual.Roles.Contains);
     }
 
+    internal static HostActionEntryRequestContext WithoutPayloadBinding(
+        HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Contribution is null || !context.Contribution.Lineage.IsPayloadBound)
+            return context;
+
+        return context with
+        {
+            Contribution = context.Contribution with
+            {
+                Lineage = context.Contribution.Lineage with
+                {
+                    PayloadContentHash = null,
+                    PayloadByteLength = null,
+                },
+            },
+        };
+    }
+
     internal bool TryConsume<TAction, TResult>(
         HostActionEntryRequest<TAction, TResult> request,
         DateTimeOffset now)
