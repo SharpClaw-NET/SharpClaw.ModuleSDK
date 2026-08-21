@@ -207,7 +207,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 .ValidateActionRequest(diagnosticRequest, diagnosticBinding, now);
             var diagnosticBindingValidation = SidecarCapabilitySessionValidator.Validate(
                 diagnosticBinding,
-                authority => OutOfProcessCapabilityWire.Authenticate(authority, _controlToken),
+                authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken),
                 _ => true,
                 now,
                 RegisterAuthenticationNonce: false);
