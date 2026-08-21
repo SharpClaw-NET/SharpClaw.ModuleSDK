@@ -282,6 +282,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "nested" => "nested-root",
                     "sequential" => "sequential-root",
                     "cross-descriptor" => "cross-descriptor-root",
+                    "cross-sidecar" => "cross-sidecar-root",
                     "rotation" => "rotation-root",
                     _ => "host-entry",
                 };
@@ -420,6 +421,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"nested-child:{(await InvokeNestedAsync(context, "nested-grandchild", ct)).Value}"),
                 "cross-descriptor-root" => new ApplicationSmokeResult(
                     $"cross-descriptor:{(await InvokeChildAsync(context, ct)).Value}"),
+                "cross-sidecar-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "rotation-root" => new ApplicationSmokeResult(
                     $"rotation-root:{(await InvokeChildAsync(context, ct)).Value}"),
                 "sequential-root" => new ApplicationSmokeResult(
@@ -454,6 +457,30 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             {
                 throw new InvalidOperationException(
                     $"The nested action returned {outcome.Kind}.");
+            }
+
+            return outcome.Result;
+        }
+
+        private static async ValueTask<CrossSidecarResult> InvokeCrossSidecarAsync(
+            ActionContext<ApplicationSmokeAction> context,
+            CancellationToken ct)
+        {
+            var hostActionEntry = context.HostActionEntry
+                ?? throw new InvalidOperationException(
+                    "The cross-sidecar test terminal has no host action entry.");
+            var outcome = await hostActionEntry.InvokeCrossSidecarAsync(
+                new ModuleCrossSidecarActionEntryRequest<
+                    CrossSidecarAction,
+                    CrossSidecarResult>(
+                    CrossSidecarModule.Id,
+                    CrossSidecarModule.OwnedAction,
+                    new CrossSidecarAction("target", context.Action.Value)),
+                ct);
+            if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
+            {
+                throw new InvalidOperationException(
+                    $"The cross-sidecar action returned {outcome.Kind}.");
             }
 
             return outcome.Result;
@@ -500,5 +527,67 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ValueTask.FromResult(
                 new ApplicationChildResult(
                     $"{context.Action.Name}:{context.Action.Count}"));
+    }
+}
+
+public sealed record CrossSidecarAction(string Operation, string Value);
+
+public sealed record CrossSidecarResult(string Value);
+
+public sealed class CrossSidecarModule : ISharpClawModule
+{
+    public const string Id = "cross_sidecar_target_module";
+
+    public static Guid TerminalId { get; } =
+        new("33333333-3333-4333-8333-333333333333");
+
+    public static ActionDescriptor<CrossSidecarAction, CrossSidecarResult> OwnedAction { get; } =
+        new(
+            new SharpClawActionKey("target.application.dispatch"),
+            1,
+            "target-application",
+            ActionInterceptionCapabilities.Inspect,
+            ContainsSensitiveData: false,
+            HasIrreversibleEffects: false,
+            new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "target.application.dispatch"),
+            ContinuationPolicy: null,
+            TimeSpan.FromSeconds(5))
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(1),
+            SafePoints = [ActionSafePoint.BeforeTerminal],
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("target.application.dispatch"),
+                1,
+                typeof(CrossSidecarAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("target.application.dispatch"),
+                1,
+                typeof(CrossSidecarResult)),
+        };
+
+    public ModuleIdentity Identity { get; } =
+        new(Id, "Cross Sidecar Target", "cross-target");
+
+    public void Configure(ISharpClawModuleBuilder module)
+    {
+        module.Actions.Add(OwnedAction);
+        module.AddActionEntry<CrossSidecarAction, CrossSidecarResult, TargetTerminal>(
+            OwnedAction,
+            TerminalId);
+    }
+
+    public sealed class TargetTerminal : IHostActionEntryTerminal<CrossSidecarAction, CrossSidecarResult>
+    {
+        public Guid TerminalId => CrossSidecarModule.TerminalId;
+
+        public ValueTask<CrossSidecarResult> InvokeAsync(
+            ActionContext<CrossSidecarAction> context,
+            CancellationToken ct) =>
+            ValueTask.FromResult(
+                new CrossSidecarResult(
+                    $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
+                    + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
+                    + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
+                    + $"idempotency={context.IdempotencyKey}"));
     }
 }
