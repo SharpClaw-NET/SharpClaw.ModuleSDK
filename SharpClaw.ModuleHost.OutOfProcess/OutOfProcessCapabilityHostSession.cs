@@ -157,6 +157,8 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 SidecarCapabilityErrors.MalformedMessage,
                 "The host action context has no ingress contribution.");
         }
+        HostActionEntryCarrierAuthority authority;
+        Task? rotation = null;
         _rotationGate.Wait(_disconnect.Token);
         try
         {
@@ -181,7 +183,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 context,
                 carrier,
                 DateTimeOffset.UtcNow,
-                out var authority);
+                out authority);
             if (!validation.Accepted || authority is null)
             {
                 throw new OutOfProcessCapabilityException(
@@ -190,8 +192,21 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                         ?? "The host action entry carrier was rejected.");
             }
 
+            lock (_rotationSync)
+            {
+                var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                if (_rotationReady is null
+                    && (_rotationTask is null || _rotationTask.IsCompleted)
+                    && Volatile.Read(ref _completedCallsForBinding)
+                        >= Math.Max(maximumCalls - 1, 1))
+                {
+                    _rotationReady = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+
+                rotation = _rotationTask ?? _rotationReady?.Task;
+            }
             RequestRotationRetry();
-            return authority;
         }
         catch
         {
@@ -203,6 +218,14 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         {
             _rotationGate.Release();
         }
+
+        if (rotation is not null)
+        {
+            RequestRotationRetry();
+            rotation.GetAwaiter().GetResult();
+        }
+
+        return authority;
     }
 
     internal void CompleteHostActionEntryCarrier(

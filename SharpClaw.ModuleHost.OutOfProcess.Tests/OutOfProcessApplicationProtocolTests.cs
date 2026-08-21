@@ -330,6 +330,12 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry());
         await client.ConnectCapabilitiesAsync(options);
 
+        var pendingContext = IssueHostEntryContextThroughRegistry(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        hostContext = pendingContext;
+
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 1;
         for (var i = 0; i < priorCalls; i++)
@@ -345,12 +351,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
-
-        var pendingContext = IssueHostEntryContextThroughRegistry(
-            client,
-            ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
-        hostContext = pendingContext;
 
         var carrierEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -465,6 +465,20 @@ public sealed class OutOfProcessApplicationProtocolTests
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt);
+        const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 1;
+        for (var i = 0; i < priorCalls; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"nested-boundary-{i}"));
+            prior.Result.Succeeded.Should().BeTrue(
+                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
         var nested = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["nested"],
@@ -475,6 +489,16 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
         nested.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
+
+        var afterRotation = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "nested-boundary-after"));
+        afterRotation.Result.Succeeded.Should().BeTrue(
+            $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
 
         hostContext = IssueHostEntryContext(
             client,
@@ -490,6 +514,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", sequential.Result.Output.Select(item => item.Text)));
         sequential.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:sequential-root:entry-terminal:sequential-child-one|entry-terminal:sequential-child-two");
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
         dispatcher.RunCalls.Should().Be(6);
         dispatcher.TerminalCalls.Should().Be(6);
     }
