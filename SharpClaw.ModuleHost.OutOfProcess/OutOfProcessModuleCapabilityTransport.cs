@@ -633,24 +633,42 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 if (response.CrossSidecarOutcome is { } crossOutcome)
                 {
                     var authority = crossOutcome.Authority;
-                    if (!crossOutcome.IsWellFormed
-                        || authority.TargetChildCall != relay.Carrier.Authority.TargetChildCall
-                        || authority.TargetEntry != relay.TargetEntry
-                        || response.ResultIdentity != authority.ResultIdentity
-                        || response.Execution != authority.Execution
-                        || response.SafeFailure != authority.ResponseSafeFailure
-                        || crossOutcome.Outcome != authority.OutcomeEnvelope
-                        || !string.Equals(
-                            authority.CanonicalBindingHash,
-                            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
-                            StringComparison.OrdinalIgnoreCase)
-                        || !CrossSidecarOutcomeMatchesDescriptor(
-                            crossOutcome,
-                            relay.TargetEntry.Descriptor))
+                    var outcomeWellFormed = crossOutcome.IsWellFormed;
+                    var targetCallMatches = authority.TargetChildCall == relay.Carrier.Authority.TargetChildCall;
+                    var targetEntryMatches = authority.TargetEntry == relay.TargetEntry;
+                    var resultIdentityMatches = response.ResultIdentity == authority.ResultIdentity;
+                    var executionMatches = response.Execution == authority.Execution;
+                    var safeFailureMatches = response.SafeFailure == authority.ResponseSafeFailure;
+                    var outcomeEnvelopeMatches = crossOutcome.Outcome == authority.OutcomeEnvelope;
+                    var canonicalHashMatches = string.Equals(
+                        authority.CanonicalBindingHash,
+                        SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
+                        StringComparison.OrdinalIgnoreCase);
+                    var descriptorMatches = CrossSidecarOutcomeMatchesDescriptor(
+                        crossOutcome,
+                        relay.TargetEntry.Descriptor);
+                    if (!outcomeWellFormed
+                        || !targetCallMatches
+                        || !targetEntryMatches
+                        || !resultIdentityMatches
+                        || !executionMatches
+                        || !safeFailureMatches
+                        || !outcomeEnvelopeMatches
+                        || !canonicalHashMatches
+                        || !descriptorMatches)
                     {
                         throw new OutOfProcessCapabilityException(
                             SidecarCapabilityErrors.SpoofedIdentity,
-                            "The cross-sidecar outcome does not bind to the target authority.");
+                            "The cross-sidecar outcome does not bind to the target authority. "
+                            + $"wellFormed={outcomeWellFormed}; targetCall={targetCallMatches}; "
+                            + $"targetEntry={targetEntryMatches}; resultIdentity={resultIdentityMatches}; "
+                            + $"execution={executionMatches}; safeFailure={safeFailureMatches}; "
+                            + $"outcome={outcomeEnvelopeMatches}; canonical={canonicalHashMatches}; "
+                            + $"descriptor={descriptorMatches}; "
+                            + $"responseResultCall={response.ResultIdentity?.CallId}; "
+                            + $"authorityResultCall={authority.ResultIdentity?.CallId}; "
+                            + $"responseReceiptCall={response.Receipt?.CallId}; "
+                            + $"authorityReceiptCall={authority.Receipt?.CallId}");
                     }
 
                     return response;
