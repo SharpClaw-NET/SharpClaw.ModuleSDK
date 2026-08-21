@@ -551,6 +551,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     completion.Message ?? "The cross-sidecar result authority was rejected.");
             }
 
+            var outcomeValidation = SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
+                completed,
+                binding,
+                DateTimeOffset.UtcNow,
+                (targetAuthority, canonicalHash) =>
+                    ValidateCrossSidecarOutcomeProof(targetAuthority, canonicalHash));
+            if (!outcomeValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    outcomeValidation.Code ?? SidecarCapabilityErrors.HostFailure,
+                    outcomeValidation.Message ?? "The signed cross-sidecar outcome was rejected.");
+            }
+
             return response with { CrossSidecarOutcome = completed };
         }
         catch
@@ -593,6 +606,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         && string.Equals(
             CreateCrossSidecarProof(authority with { Proof = string.Empty }, _controlToken),
             proof,
+            StringComparison.Ordinal);
+
+    private bool ValidateCrossSidecarOutcomeProof(
+        SidecarCrossSidecarActionEntryAuthority authority,
+        string canonicalHash) =>
+        string.Equals(
+            authority.CanonicalBindingHash,
+            canonicalHash,
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
+            CreateCrossSidecarProof(authority with { Proof = string.Empty }, _controlToken),
+            authority.Proof,
             StringComparison.Ordinal);
 
     private static string CreateCrossSidecarProof(
