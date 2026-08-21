@@ -639,6 +639,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         "The cross-sidecar response has no signed target outcome.");
                 }
 
+                crossOutcome = NormalizeCrossSidecarOutcomeForValidation(crossOutcome);
                 ThrowIfRejected(
                     SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
                         crossOutcome,
@@ -673,7 +674,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         "The cross-sidecar outcome does not bind to the target authority.");
                 }
 
-                return response;
+                return response with { CrossSidecarOutcome = crossOutcome };
             }
             var validationRequest = request;
             var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
@@ -1467,6 +1468,39 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             SidecarCapabilityTransportCodec.ComputeSha256(
                 SidecarCapabilityTransportCodec.Serialize(expected)),
             StringComparison.Ordinal);
+
+    private static SidecarCrossSidecarActionEntryOutcome
+        NormalizeCrossSidecarOutcomeForValidation(
+            SidecarCrossSidecarActionEntryOutcome outcome)
+    {
+        var envelope = outcome.Outcome;
+        var authority = outcome.Authority;
+        var authorityEnvelope = authority.OutcomeEnvelope;
+        var execution = authority.Execution;
+        if (envelope is null ||
+            authorityEnvelope is null ||
+            execution is null ||
+            !CanonicalCrossSidecarValueMatches(envelope, authorityEnvelope) ||
+            (execution.Result is null) != (envelope.Result is null) ||
+            execution.Result is not null &&
+            !CanonicalCrossSidecarValueMatches(execution.Result, envelope.Result))
+        {
+            return outcome;
+        }
+
+        var normalizedAuthority = authority with
+        {
+            OutcomeEnvelope = envelope,
+            Execution = execution with { Result = envelope.Result },
+        };
+        var originalHash = SidecarCrossSidecarActionEntryValidation
+            .ComputeAuthorityHash(authority);
+        var normalizedHash = SidecarCrossSidecarActionEntryValidation
+            .ComputeAuthorityHash(normalizedAuthority);
+        return string.Equals(originalHash, normalizedHash, StringComparison.Ordinal)
+            ? outcome with { Authority = normalizedAuthority }
+            : outcome;
+    }
 
     private void ValidateStorageRequest(SidecarStorageCapabilityRequest request)
     {
