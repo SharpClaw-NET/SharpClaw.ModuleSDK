@@ -1379,17 +1379,30 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
     {
-        var callId = response.ResultIdentity?.CallId
-            ?? response.Receipt?.CallId
-            ?? throw new OutOfProcessCapabilityException(
+        if (response.ResultIdentity is { } resultIdentity
+            && _terminals.TryGetValue(resultIdentity.CallId, out var resultCompletion))
+        {
+            resultCompletion.TrySetResult(response);
+            return;
+        }
+
+        if (response.Receipt is { } receipt
+            && _terminals.TryGetValue(receipt.CallId, out var receiptCompletion))
+        {
+            receiptCompletion.TrySetResult(response);
+            return;
+        }
+
+        if (response.ResultIdentity is null && response.Receipt is null)
+        {
+            throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The terminal response has no result identity or receipt.");
-        if (_terminals.TryGetValue(callId, out var completion))
-            completion.TrySetResult(response);
-        else
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.Unauthorized,
-                "The terminal response does not match an active terminal call.");
+        }
+
+        throw new OutOfProcessCapabilityException(
+            SidecarCapabilityErrors.Unauthorized,
+            "The terminal response does not match an active terminal call.");
     }
 
     private void ValidateActionRequest(SidecarActionCapabilityRequest request)
