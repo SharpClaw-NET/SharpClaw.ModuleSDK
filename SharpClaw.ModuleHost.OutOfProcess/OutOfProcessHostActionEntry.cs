@@ -290,9 +290,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             deadline,
             relay.Carrier,
             new SidecarActionTerminalRegistration(
-                relay.TargetEntry.Descriptor.DescriptorHash == identity.DescriptorHash
-                    ? relay.Carrier.Authority.TerminalId
-                    : Guid.Empty,
+                Guid.NewGuid(),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
