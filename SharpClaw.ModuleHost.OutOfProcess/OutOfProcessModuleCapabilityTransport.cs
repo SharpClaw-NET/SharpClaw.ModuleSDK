@@ -611,17 +611,22 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         Binding,
                         DateTimeOffset.UtcNow));
                 var relay = response.CrossSidecarRelay;
+                var relayParentCall = relay?.Carrier.Authority.SourceParentCall;
+                var parentCallMatches = relayParentCall is not null
+                    && MatchesCapabilityCall(
+                        relayParentCall,
+                        request.Call);
                 if (relay is null
                     || !relay.IsWellFormed
                     || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
                     || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
-                    || !MatchesCapabilityCall(
-                        relay.Carrier.Authority.SourceParentCall,
-                        request.Call))
+                    || !parentCallMatches)
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.SpoofedIdentity,
-                        "The cross-sidecar relay does not bind to the parent terminal request.");
+                        $"The cross-sidecar relay does not bind to the parent terminal request. "
+                        + $"request={DescribeCapabilityCall(request.Call)}; "
+                        + $"parent={DescribeCapabilityCall(relayParentCall)};");
                 }
             }
             var validationRequest = request.CrossSidecarActionRequest is null
@@ -1062,6 +1067,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         && left.Capability == right.Capability
         && left.Sequence == right.Sequence
         && left.Deadline == right.Deadline;
+
+    private static string DescribeCapabilityCall(SidecarCapabilityCallIdentity? call) =>
+        call is null
+            ? "null"
+            : $"session={call.SessionId};request={call.RequestId};cancel={call.CancellationId};"
+                + $"call={call.CallId};nonce={call.ReplayNonce};module={call.ModuleId};"
+                + $"graph={call.GraphId};capability={call.Capability};sequence={call.Sequence};"
+                + $"deadline={call.Deadline.Ticks}/{call.Deadline.Offset.Ticks}";
 
     private async Task HandleRebindAsync(
         SidecarCapabilitySessionBinding binding,
