@@ -145,7 +145,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}"
             + $"; sourceServerFailure={_sourceServer.CapabilityFailure}"
             + $"; targetServerFailure={_targetServer.CapabilityFailure}"
-            + $"; targetOutcome={DescribeOutcome(_targetClient.CapabilitySession.LastCrossSidecarOutcome)}");
+            + $"; targetOutcome={DescribeOutcome(_targetClient.CapabilitySession.LastCrossSidecarOutcome)}"
+            + $"; targetOutcomeRoundTrip={DescribeOutcomeRoundTrip(_targetClient)}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
@@ -604,6 +605,28 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
               + $"executionFailure={outcome.Authority.Execution?.Failure?.Code ?? "none"};"
               + $"continuation={(outcome.Outcome?.Continuation is null ? "none" : "present")};"
               + $"uncertainty={(outcome.Outcome?.Uncertainty is null ? "none" : "present")}";
+
+    private static string DescribeOutcomeRoundTrip(OutOfProcessModuleClient targetClient)
+    {
+        var outcome = targetClient.CapabilitySession.LastCrossSidecarOutcome;
+        if (outcome is null)
+            return "none";
+
+        try
+        {
+            var roundTrip = SidecarCapabilityTransportCodec.Deserialize<
+                SidecarCrossSidecarActionEntryOutcome>(
+                SidecarCapabilityTransportCodec.Serialize(outcome));
+            var validation = targetClient.CapabilitySession.ValidateCrossSidecarOutcome(
+                roundTrip,
+                DateTimeOffset.UtcNow);
+            return $"accepted={validation.Accepted};code={validation.Code ?? "none"};message={validation.Message ?? "none"}";
+        }
+        catch (Exception ex)
+        {
+            return $"exception={ex.GetType().Name}:{ex.Message}";
+        }
+    }
 
     private sealed class CountingActionOutcome<TResult>(
         ActionOutcomeKind kind,
