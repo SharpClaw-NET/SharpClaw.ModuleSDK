@@ -124,6 +124,30 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         var directory = Path.Combine(_root, name + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var assemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
+        var displayName = moduleType == typeof(ApplicationSmokeModule)
+            ? "Application Smoke"
+            : "Cross Sidecar Target";
+        var toolPrefix = moduleType == typeof(ApplicationSmokeModule)
+            ? "appsmoke"
+            : "cross-target";
+        var requestedHooks = moduleType == typeof(ApplicationSmokeModule)
+            ? """
+              [
+                {
+                  "target": "host.application.smoke",
+                  "effects": ["inspect", "wrap", "cancel"]
+                },
+                {
+                  "target": "host.application.child",
+                  "effects": ["inspect", "wrap", "cancel"]
+                },
+                {
+                  "target": "module.application.smoke",
+                  "effects": ["inspect", "wrap", "cancel"]
+                }
+              ]
+              """
+            : "[]";
         File.Copy(
             typeof(ApplicationSmokeModule).Assembly.Location,
             Path.Combine(directory, assemblyName),
@@ -133,14 +157,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             $$"""
             {
               "id": "{{moduleId}}",
-              "displayName": "{{name}}",
+              "displayName": "{{displayName}}",
               "version": "0.5.0-beta.15",
-              "toolPrefix": "{{name}}",
+              "toolPrefix": "{{toolPrefix}}",
               "entryAssembly": "{{assemblyName}}",
               "runtime": "dotnet",
               "hostMode": "sidecar",
               "moduleType": "{{moduleType.FullName}}",
-              "requestedHooks": []
+              "requestedHooks": {{requestedHooks}}
             }
             """,
             Encoding.UTF8);
