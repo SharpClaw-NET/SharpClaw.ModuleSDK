@@ -292,8 +292,8 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             new SidecarActionCapabilityResponse(
                 relayResponse.ResultIdentity,
                 outcome,
-                continuation: null,
-                relayResponse.SafeFailure,
+                Continuation: null,
+                SafeFailure: relayResponse.SafeFailure,
                 Completed: true));
     }
 
