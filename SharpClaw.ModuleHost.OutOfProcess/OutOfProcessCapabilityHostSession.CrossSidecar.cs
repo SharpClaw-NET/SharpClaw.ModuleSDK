@@ -192,6 +192,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             var diagnosticBinding = Session.Binding;
             var diagnosticAuthority = carrier.Authority;
             var diagnosticTargetCall = diagnosticAuthority.TargetChildCall;
+            var diagnosticRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
+                diagnosticTargetCall,
+                diagnosticAuthority.TargetEntry.Descriptor,
+                carrier.Action,
+                new SidecarCancellationIdentity(
+                    diagnosticBinding.CancellationId,
+                    diagnosticAuthority.CanonicalBindingHash,
+                    carrier.ExpiresAt),
+                diagnosticAuthority.Deadline,
+                carrier,
+                terminal);
+            var diagnosticRequestValidation = SidecarCapabilityTransportValidation
+                .ValidateActionRequest(diagnosticRequest, diagnosticBinding, now);
             var carrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
                 carrier,
                 diagnosticBinding,
@@ -201,6 +214,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 begin.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
                 $"{begin.Message ?? "The cross-sidecar carrier was rejected."}; "
                 + $"carrierValidation={carrierValidation.Code}:{carrierValidation.Message}; "
+                + $"requestValidation={diagnosticRequestValidation.Code}:{diagnosticRequestValidation.Message}; "
                 + $"beginCode={begin.Code}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
                 + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
