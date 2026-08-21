@@ -336,7 +336,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             grantExpiresAt);
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
-        const int priorCalls = maximumCalls - 1;
+        const int priorCalls = maximumCalls - 2;
         for (var i = 0; i < priorCalls; i++)
         {
             var result = await client.InvokeCliAsync(
@@ -588,6 +588,108 @@ public sealed class OutOfProcessApplicationProtocolTests
         storage.InvokeCalls.Should().Be(priorCalls + 1);
         dispatcher.RunCalls.Should().Be(3);
         dispatcher.TerminalCalls.Should().Be(3);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task NestedHostActionEntryRotatesWithTwoPendingContextsAtSixCallBoundary()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        HostActionEntryRequestContext? hostContext = null;
+        dispatcher.HostContextFactory = () => hostContext;
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(
+            ApplicationSmokeModule.HostAction,
+            static (context, _) => ValueTask.FromResult(
+                new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        var rotationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry())
+        {
+            BeforeRotationStartAsync = async () =>
+            {
+                rotationStarted.TrySetResult();
+                await rotationRelease.Task;
+            },
+        };
+        await client.ConnectCapabilitiesAsync(options);
+
+        var nestedContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var sequentialContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
+        for (var i = 0; i < priorCalls; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"two-pending-boundary-{i}"));
+            prior.Result.Succeeded.Should().BeTrue(
+                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
+        hostContext = nestedContext;
+        var nestedTask = Task.Run(async () => await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["nested"],
+            nestedContext));
+        var sequentialTask = Task.Run(async () => await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["sequential"],
+            sequentialContext));
+
+        await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        nestedTask.IsCompleted.Should().BeFalse();
+        sequentialTask.IsCompleted.Should().BeFalse();
+        rotationRelease.TrySetResult();
+
+        var nested = await nestedTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var sequential = await sequentialTask.WaitAsync(TimeSpan.FromSeconds(5));
+        nested.Result.Succeeded.Should().BeTrue(
+            $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
+            + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
+        sequential.Result.Succeeded.Should().BeTrue(
+            $"CLI error {sequential.Result.Error?.Code}: {sequential.Result.Error?.Message}; "
+            + string.Join(" | ", sequential.Result.Output.Select(item => item.Text)));
+        nested.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
+        sequential.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:sequential-root:entry-terminal:sequential-child-one|entry-terminal:sequential-child-two");
+
+        var afterRotation = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "two-pending-boundary-after"));
+        afterRotation.Result.Succeeded.Should().BeTrue(
+            $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
+        dispatcher.RunCalls.Should().Be(6);
+        dispatcher.TerminalCalls.Should().Be(6);
     }
 
     [Test, CancelAfter(30000)]
