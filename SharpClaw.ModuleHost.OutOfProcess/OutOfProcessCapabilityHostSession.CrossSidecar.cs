@@ -8,6 +8,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession
 {
     private SidecarCrossSidecarActionEntryOutcome? _lastCrossSidecarOutcome;
 
+    internal Func<
+        SidecarActionTerminalTransportResponse,
+        SidecarActionTerminalTransportResponse>? TestCrossSidecarResponseMutator { get; set; }
+
     private async Task HandleCrossSidecarTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
@@ -139,7 +143,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             relay,
             targetResponse,
             null,
-            ct);
+            ct,
+            target.Client.CapabilitySession);
     }
 
     private async Task SendCrossSidecarRelayResponseAsync(
@@ -147,7 +152,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         SidecarCrossSidecarActionEntryRelay? relay,
         SidecarActionTerminalTransportResponse? targetResponse,
         SidecarSafeFailureIdentity? failure,
-        CancellationToken ct)
+        CancellationToken ct,
+        OutOfProcessCapabilityHostSession? targetSession = null)
     {
         var execution = targetResponse?.Execution
             ?? new SidecarTerminalExecutionResult(
@@ -164,6 +170,45 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             CrossSidecarRelay = relay,
             CrossSidecarOutcome = targetResponse?.CrossSidecarOutcome,
         };
+
+        if (relay is not null && response.CrossSidecarOutcome is { } targetOutcome)
+        {
+            if (targetSession is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The cross-sidecar target session is missing for outcome validation.");
+            }
+
+            var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+                request,
+                response,
+                Session.Binding,
+                targetSession.Session.Binding,
+                DateTimeOffset.UtcNow,
+                targetSession.ValidateCrossSidecarProof);
+            if (!validation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    validation.Code ?? SidecarCapabilityErrors.HostFailure,
+                    validation.Message ?? "The target cross-sidecar outcome was rejected.");
+            }
+
+            response = response with
+            {
+                CrossSidecarOutcome = targetOutcome with
+                {
+                    Authority = targetOutcome.Authority with
+                    {
+                        Proof = IssueCrossSidecarProof(
+                            targetOutcome.Authority,
+                            targetOutcome.Authority.CanonicalBindingHash),
+                    },
+                },
+            };
+        }
+
+        response = TestCrossSidecarResponseMutator?.Invoke(response) ?? response;
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
@@ -238,7 +283,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                         outcome.Result,
                         identity.ResultTypeIdentity,
                         identity.ResultSchemaVersion),
-                outcome.Error,
+                outcome.Kind == ActionOutcomeKind.Cancelled
+                    ? null
+                    : outcome.Error,
                 outcome.Uncertainty,
                 outcome.Continuation,
                 terminalResponse);

@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
@@ -636,6 +638,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         SidecarCapabilityErrors.SpoofedIdentity,
                         "The cross-sidecar response has no signed target outcome.");
                 }
+
+                ThrowIfRejected(
+                    SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
+                        crossOutcome,
+                        Binding,
+                        DateTimeOffset.UtcNow,
+                        ValidateCrossSidecarOutcomeProof));
 
                 var authority = crossOutcome.Authority;
                 var executionMatches = CanonicalCrossSidecarValueMatches(
@@ -1301,6 +1310,35 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
             authority.Proof,
             StringComparison.Ordinal);
+
+    private bool ValidateCrossSidecarOutcomeProof(
+        SidecarCrossSidecarActionEntryAuthority authority,
+        string canonicalHash) =>
+        string.Equals(
+            authority.CanonicalBindingHash,
+            canonicalHash,
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
+            CreateCrossSidecarProof(
+                authority with
+                {
+                    CanonicalBindingHash = canonicalHash,
+                    Proof = string.Empty,
+                },
+                _controlToken),
+            authority.Proof,
+            StringComparison.Ordinal);
+
+    private static string CreateCrossSidecarProof(
+        SidecarCrossSidecarActionEntryAuthority authority,
+        string controlToken)
+    {
+        var value = "cross-sidecar|"
+            + SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
 
     private void CompleteAction(SidecarActionCapabilityResponse response)
     {
