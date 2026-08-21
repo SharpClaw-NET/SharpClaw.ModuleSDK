@@ -210,10 +210,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
                 identity.ResultSchemaVersion,
-                identity.DescriptorHash)) with
-        {
-            Snapshot = _options.ActionSnapshot,
-        };
+                identity.DescriptorHash));
         var begin = Session.BeginCall(
             call,
             SidecarCapabilityKind.Action,

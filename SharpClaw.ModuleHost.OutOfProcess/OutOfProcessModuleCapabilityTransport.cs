@@ -991,23 +991,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 DateTimeOffset.UtcNow);
             if (!validation.Accepted)
             {
-                var diagnostic =
-                    $" invocation={request.Invocation};"
-                    + $" hostContext={request.HostContext is not null};"
-                    + $" terminal={request.Terminal is not null};"
-                    + $" snapshot={request.Snapshot is not null};"
-                    + $" nestedCarrier={request.NestedCarrier is not null};"
-                    + $" crossCarrier={request.CrossSidecarCarrier is not null};"
-                    + $" action={request.Action is not null};"
-                    + $" descriptor={request.Descriptor is not null}";
                 await SendIncomingActionResponseAsync(
                     CreateIncomingActionFailure(
                         request,
                         ActionOutcomeKind.Failed,
                         new ExecutionError(
                             validation.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                            (validation.Message ?? "The module action entry request is invalid.")
-                                + diagnostic)),
+                            validation.Message ?? "The module action entry request is invalid.")),
                     channelCt);
                 return;
             }
