@@ -92,6 +92,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 request.Context,
                 crossRequest,
                 targetEntry,
+                target.Entry.TerminalId,
                 DateTimeOffset.UtcNow);
             await SendCrossSidecarRelayResponseAsync(request, relay, null, ct);
         }
@@ -325,6 +326,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         SidecarActionTerminalExecutionContext parentContext,
         SidecarCrossSidecarActionEntryRequest request,
         SidecarModuleActionEntryDefinition targetEntry,
+        Guid targetTerminalId,
         DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(sourceParentCall);
@@ -336,7 +338,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             || targetEntry.ModuleId != Session.Binding.ModuleId
             || targetEntry.GraphId != Session.Binding.GraphId
             || targetEntry.Descriptor.Key != request.ActionKey
-            || targetEntry.Descriptor.Version != request.ActionVersion)
+            || targetEntry.Descriptor.Version != request.ActionVersion
+            || targetTerminalId == Guid.Empty)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
@@ -355,7 +358,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         if (expiresAt <= now)
         {
             throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.Expired,
+                SidecarCapabilityErrors.Unauthorized,
                 "The cross-sidecar action-entry request has expired.");
         }
 
@@ -404,7 +407,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             "pending")
         {
             CanonicalBindingHash = SidecarCapabilitySessionValidator.ComputeBindingHash(binding),
-            TerminalId = targetEntry.TerminalId,
+            TerminalId = targetTerminalId,
         };
         authority = authority with
         {
@@ -487,7 +490,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             authority.ExpiresAt,
             "pending")
         {
-            TerminalId = target.TerminalId,
+            TerminalId = authority.TerminalId,
             SnapshotContentHash = authority.SnapshotContentHash,
             Caller = authority.Caller,
             Features = authority.Features,
@@ -536,7 +539,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 authority.Cancellation,
                 receipt,
                 authority.Deadline),
-            TerminalId = target.TerminalId,
+            TerminalId = authority.TerminalId,
         };
         var response = await SendTerminalAsync(request, cancellationToken);
         var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
