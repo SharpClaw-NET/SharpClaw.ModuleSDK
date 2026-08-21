@@ -956,7 +956,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var authorityIdempotencyValid = request.Authority.IdempotencyKey == context.IdempotencyKey;
         var authorityDepthValid = request.Authority.Depth == context.Depth;
         var authorityAttemptValid = request.Authority.Attempt == context.Attempt;
-        var authorityCallerValid = request.Authority.Caller.Equals(context.Caller);
+        var authorityCallerValid = OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
+            request.Authority.Caller,
+            context.Caller);
         var authorityFeaturesValid = string.Equals(
             SidecarCapabilityTransportCodec.ComputeSha256(
                 SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
