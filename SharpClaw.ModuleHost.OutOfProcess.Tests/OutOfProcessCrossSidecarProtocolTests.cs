@@ -144,7 +144,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + $"; sourceHandledFailure={client.CapabilitySession.LastHandledFailure}"
             + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}"
             + $"; sourceServerFailure={_sourceServer.CapabilityFailure}"
-            + $"; targetServerFailure={_targetServer.CapabilityFailure}");
+            + $"; targetServerFailure={_targetServer.CapabilityFailure}"
+            + $"; targetOutcome={DescribeOutcome(_targetClient.CapabilitySession.LastCrossSidecarOutcome)}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
@@ -587,6 +588,15 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             CancellationToken ct) =>
             (await RunAsync(descriptor, action, terminal, snapshot, ct)).Result;
     }
+
+    private static string DescribeOutcome(SidecarCrossSidecarActionEntryOutcome? outcome) =>
+        outcome is null
+            ? "none"
+            : $"kind={outcome.Kind};outcomeKind={outcome.Outcome?.Kind};"
+              + $"terminalCalls={outcome.Outcome?.TerminalCallCount};"
+              + $"error={outcome.Outcome?.Error?.Code ?? "none"};"
+              + $"failure={outcome.Failure?.Code ?? "none"};"
+              + $"result={(outcome.Outcome?.Result is null ? "none" : outcome.Outcome.Result.TypeIdentity)}";
 
     private sealed class CountingActionOutcome<TResult>(
         ActionOutcomeKind kind,
