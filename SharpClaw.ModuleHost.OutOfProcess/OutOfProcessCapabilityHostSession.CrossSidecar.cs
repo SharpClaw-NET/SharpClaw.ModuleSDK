@@ -551,18 +551,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     completion.Message ?? "The cross-sidecar result authority was rejected.");
             }
 
-            var outcomeValidation = SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
-                completed,
-                binding,
-                DateTimeOffset.UtcNow,
-                (targetAuthority, proof) => ValidateCrossSidecarProof(targetAuthority, proof));
-            if (!outcomeValidation.Accepted)
-            {
-                throw new OutOfProcessCapabilityException(
-                    outcomeValidation.Code ?? SidecarCapabilityErrors.HostFailure,
-                    outcomeValidation.Message ?? "The signed cross-sidecar outcome was rejected.");
-            }
-
             return response with { CrossSidecarOutcome = completed };
         }
         catch
