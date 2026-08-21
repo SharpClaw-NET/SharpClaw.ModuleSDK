@@ -524,9 +524,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             var outcome = new SidecarActionOutcomeEnvelope(
                 kind,
                 response.Execution.Result,
-                dispatch.Uncertainty,
-                dispatch.Error,
                 dispatch.Continuation,
+                dispatch.Error,
+                dispatch.Uncertainty,
                 response.Receipt,
                 binding.SafeFailure,
                 Session.TryGetTerminalReceipt(authority.TargetChildCall.CallId, out _)
