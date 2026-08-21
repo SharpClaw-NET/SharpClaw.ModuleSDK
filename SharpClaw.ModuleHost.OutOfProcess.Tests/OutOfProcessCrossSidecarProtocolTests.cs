@@ -114,7 +114,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
             + string.Join(" | ", result.Result.Output.Select(item => item.Text))
-            + $"; dispatcher={dispatcher.LastException}");
+            + $"; dispatcher={dispatcher.LastException}"
+            + $"; sourceFailure={client.CapabilitySession.RunFailure}"
+            + $"; targetFailure={_targetClient.CapabilitySession.RunFailure}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
