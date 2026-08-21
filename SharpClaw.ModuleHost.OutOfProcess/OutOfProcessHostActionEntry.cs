@@ -368,20 +368,13 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 TerminalId = request.TerminalId,
             };
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
+        catch (Exception) when (!ct.IsCancellationRequested)
         {
-            var failure = ex is OutOfProcessCapabilityException capability
-                ? new SidecarSafeFailureIdentity(
-                    Guid.NewGuid(),
-                    capability.Code,
-                    capability.Message,
-                    Retryable: false)
-                : safeFailure;
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(
                     null,
-                    failure,
+                    safeFailure,
                     Completed: true),
                 request.Receipt,
                 safeFailure)
