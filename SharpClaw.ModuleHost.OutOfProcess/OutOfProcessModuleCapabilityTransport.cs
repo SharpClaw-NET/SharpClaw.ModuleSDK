@@ -1004,7 +1004,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
             if (request.Invocation != SidecarActionInvocationKind.HostEntry
                 || request.HostContext is null
-                || request.Snapshot is null
                 || request.Terminal is not { IsWellFormed: true })
             {
                 await SendIncomingActionResponseAsync(
