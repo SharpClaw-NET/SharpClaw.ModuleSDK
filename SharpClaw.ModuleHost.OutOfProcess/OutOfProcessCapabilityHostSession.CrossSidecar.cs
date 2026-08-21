@@ -203,7 +203,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             carrier.Action.ByteLength,
             now,
             out var hostContext,
-            (authority, proof) => ValidateCrossSidecarProof(authority, proof));
+            (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
         if (!begin.Accepted || hostContext is null)
         {
             var diagnosticBinding = Session.Binding;
