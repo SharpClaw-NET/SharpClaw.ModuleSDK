@@ -651,30 +651,52 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
 
         hostContext = nestedContext;
+        using var peerCancellation = new CancellationTokenSource();
         var nestedTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["nested"],
             nestedContext));
-        var sequentialTask = Task.Run(async () => await client.InvokeCliAsync(
+        var peerActivationTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
-            sequentialContext));
+            sequentialContext,
+            peerCancellation.Token));
 
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         nestedTask.IsCompleted.Should().BeFalse();
-        sequentialTask.IsCompleted.Should().BeFalse();
+        peerActivationTask.IsCompleted.Should().BeFalse();
+        peerCancellation.Cancel();
         rotationRelease.TrySetResult();
 
         var nested = await nestedTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var sequential = await sequentialTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var peerCancelled = false;
+        try
+        {
+            await peerActivationTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException)
+        {
+            peerCancelled = true;
+        }
+
         nested.Result.Succeeded.Should().BeTrue(
             $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
             + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
+        peerCancelled.Should().BeTrue();
+        nested.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
+
+        hostContext = IssueHostEntryContext(
+            client,
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            grantExpiresAt);
+        var sequential = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["sequential"],
+            hostContext);
         sequential.Result.Succeeded.Should().BeTrue(
             $"CLI error {sequential.Result.Error?.Code}: {sequential.Result.Error?.Message}; "
             + string.Join(" | ", sequential.Result.Output.Select(item => item.Text)));
-        nested.Result.Output.Single().Text.Should().Be(
-            "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
         sequential.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:sequential-root:entry-terminal:sequential-child-one|entry-terminal:sequential-child-two");
 
