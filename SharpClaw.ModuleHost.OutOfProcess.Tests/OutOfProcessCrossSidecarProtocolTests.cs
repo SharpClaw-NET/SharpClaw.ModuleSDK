@@ -72,7 +72,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             _sourceAddress,
             _sourceToken,
             new SidecarHostDescriptorCatalog(
-                [ToDescriptor(ApplicationSmokeModule.HostAction)],
+                [
+                    ToDescriptor(ApplicationSmokeModule.HostAction),
+                    ToChildDescriptor(),
+                ],
                 [],
                 OutOfProcessModuleHostProtocol.Version,
                 new SidecarPayloadLimits()));
@@ -220,6 +223,23 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             descriptor.Capabilities,
             descriptor.ContainsSensitiveData,
             descriptor.ProtocolVersionRange);
+
+    private static SidecarHostActionDescriptor ToChildDescriptor() =>
+        new(
+            ApplicationSmokeModule.ChildAction.Key,
+            ApplicationSmokeModule.ChildAction.Version,
+            ApplicationSmokeModule.ChildAction.Category,
+            ModuleSchemaIdentity.ActionInput(
+                ApplicationSmokeModule.ChildAction.Key,
+                ApplicationSmokeModule.ChildAction.Version,
+                typeof(ApplicationChildAction)),
+            ModuleSchemaIdentity.ActionResult(
+                ApplicationSmokeModule.ChildAction.Key,
+                ApplicationSmokeModule.ChildAction.Version,
+                typeof(ApplicationChildResult)),
+            ApplicationSmokeModule.ChildAction.Capabilities,
+            ApplicationSmokeModule.ChildAction.ContainsSensitiveData,
+            ApplicationSmokeModule.ChildAction.ProtocolVersionRange);
 
     private static async Task<Uri> FindFreeAddressAsync()
     {
