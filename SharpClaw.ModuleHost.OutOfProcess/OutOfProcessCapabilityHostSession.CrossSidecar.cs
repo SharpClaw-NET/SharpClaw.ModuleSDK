@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using SharpClaw.Contracts.Modules;
@@ -8,8 +6,6 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 
 internal sealed partial class OutOfProcessCapabilityHostSession
 {
-    private static readonly ConcurrentDictionary<Guid, int> DiagnosticCarrierSessionHashes = new();
-
     private async Task HandleCrossSidecarTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
@@ -107,9 +103,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             return;
         }
 
-        DiagnosticCarrierSessionHashes[relay.Carrier.CarrierId] =
-            RuntimeHelpers.GetHashCode(target.Client.CapabilitySession.Session);
-
         var targetTerminal = new SidecarActionTerminalRegistration(
             target.Entry.TerminalId,
             target.Entry.Descriptor.InputTypeIdentity,
@@ -187,16 +180,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         ArgumentNullException.ThrowIfNull(carrier);
         ArgumentNullException.ThrowIfNull(terminal);
         var now = DateTimeOffset.UtcNow;
-        var preBeginCarrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
-            carrier,
-            Session.Binding,
-            now,
-            (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
-        var preBeginTrustedCarrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
-            carrier,
-            Session.Binding,
-            now,
-            (_, _) => true);
         var begin = Session.BeginCrossSidecarActionEntryCall(
             carrier,
             terminal,
@@ -206,103 +189,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
         if (!begin.Accepted || hostContext is null)
         {
-            var diagnosticBinding = Session.Binding;
-            var diagnosticAuthority = carrier.Authority;
-            var diagnosticTargetCall = diagnosticAuthority.TargetChildCall;
-            var diagnosticRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
-                diagnosticTargetCall,
-                diagnosticAuthority.TargetEntry.Descriptor,
-                carrier.Action,
-                new SidecarCancellationIdentity(
-                    diagnosticBinding.CancellationId,
-                    diagnosticAuthority.CanonicalBindingHash,
-                    carrier.ExpiresAt),
-                diagnosticAuthority.Deadline,
-                carrier,
-                terminal);
-            var diagnosticRequestValidation = SidecarCapabilityTransportValidation
-                .ValidateActionRequest(diagnosticRequest, diagnosticBinding, now);
-            var diagnosticBindingValidation = SidecarCapabilitySessionValidator.Validate(
-                diagnosticBinding,
-                authority => OutOfProcessCapabilitySecurity.Authenticate(authority, _controlToken),
-                _ => true,
-                now,
-                RegisterAuthenticationNonce: false);
-            var diagnosticManualCarrierReject =
-                !carrier.IsWellFormed
-                || diagnosticTargetCall.SessionId != diagnosticBinding.SessionId
-                || diagnosticTargetCall.RequestId != diagnosticBinding.RequestId
-                || diagnosticTargetCall.CancellationId != diagnosticBinding.CancellationId
-                || !string.Equals(diagnosticTargetCall.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)
-                || !string.Equals(diagnosticTargetCall.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)
-                || diagnosticTargetCall.Deadline != diagnosticAuthority.Deadline
-                || diagnosticAuthority.SourceParentCall.Deadline != diagnosticAuthority.Deadline
-                || !string.Equals(diagnosticAuthority.TargetEntry.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)
-                || !string.Equals(diagnosticAuthority.TargetEntry.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)
-                || diagnosticAuthority.TargetBindingGeneration <= 0
-                || diagnosticAuthority.ExpiresAt <= now
-                || diagnosticAuthority.Deadline <= now
-                || diagnosticAuthority.ExpiresAt > diagnosticBinding.ExpiresAt
-                || !string.Equals(diagnosticAuthority.CanonicalBindingHash, SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(diagnosticAuthority), StringComparison.OrdinalIgnoreCase)
-                || !ValidateCrossSidecarProof(diagnosticAuthority, diagnosticAuthority.Proof);
-            var diagnosticTerminalMismatch =
-                !terminal.IsWellFormed
-                || terminal.ActionTypeIdentity != diagnosticAuthority.TargetEntry.Descriptor.InputTypeIdentity
-                || terminal.ActionSchemaVersion != diagnosticAuthority.TargetEntry.Descriptor.InputSchemaVersion
-                || terminal.ResultTypeIdentity != diagnosticAuthority.TargetEntry.Descriptor.ResultTypeIdentity
-                || terminal.ResultSchemaVersion != diagnosticAuthority.TargetEntry.Descriptor.ResultSchemaVersion
-                || !string.Equals(terminal.DescriptorHash, diagnosticAuthority.TargetEntry.Descriptor.DescriptorHash, StringComparison.Ordinal);
-            var carrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
-                carrier,
-                diagnosticBinding,
-                now,
-                (candidate, _) => ValidateCrossSidecarProof(candidate, candidate.Proof));
             throw new OutOfProcessCapabilityException(
                 begin.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
-                $"{begin.Message ?? "The cross-sidecar carrier was rejected."}; "
-                + $"carrierValidation={carrierValidation.Code}:{carrierValidation.Message}; "
-                + $"requestValidation={diagnosticRequestValidation.Code}:{diagnosticRequestValidation.Message}; "
-                + $"bindingValidation={diagnosticBindingValidation.Code}:{diagnosticBindingValidation.Message}; "
-                + $"beginCode={begin.Code}; "
-                + $"issuedSession={DiagnosticCarrierSessionHashes.GetValueOrDefault(carrier.CarrierId)}; "
-                + $"currentSession={RuntimeHelpers.GetHashCode(Session)}; "
-                + $"manualCarrierReject={diagnosticManualCarrierReject}; terminalMismatch={diagnosticTerminalMismatch}; "
-                + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
-                + $"preBeginCarrier={preBeginCarrierValidation.Code}:{preBeginCarrierValidation.Message}; "
-                + $"preBeginTrusted={preBeginTrustedCarrierValidation.Code}:{preBeginTrustedCarrierValidation.Message}; "
-                + $"contractsAssembly={typeof(SidecarCrossSidecarActionEntryValidation).Assembly.FullName}; "
-                + $"contractsLocation={typeof(SidecarCrossSidecarActionEntryValidation).Assembly.Location}; "
-                + $"sessionSeparated={diagnosticAuthority.SourceParentCall.SessionId != diagnosticTargetCall.SessionId}; "
-                + $"callSeparated={diagnosticAuthority.SourceParentCall.CallId != diagnosticTargetCall.CallId}; "
-                + $"authorityEntryValid={diagnosticAuthority.TargetEntry.IsWellFormed}; "
-                + $"authorityActionValid={diagnosticAuthority.Action.IsWellFormed}; "
-                + $"authorityCaller={diagnosticAuthority.Caller.SubjectId}; "
-                + $"authorityFeatures={diagnosticAuthority.Features.Items.Count}; "
-                + $"authorityCancellationHash={!string.IsNullOrWhiteSpace(diagnosticAuthority.Cancellation.AuthorityHash)}; "
-                + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
-                + $"targetRequest={diagnosticTargetCall.RequestId == diagnosticBinding.RequestId}; "
-                + $"targetCancellation={diagnosticTargetCall.CancellationId == diagnosticBinding.CancellationId}; "
-                + $"targetModule={string.Equals(diagnosticTargetCall.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)}; "
-                + $"targetGraph={string.Equals(diagnosticTargetCall.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)}; "
-                + $"targetDeadline={diagnosticTargetCall.Deadline == diagnosticAuthority.Deadline}; "
-                + $"sourceDeadline={diagnosticAuthority.SourceParentCall.Deadline == diagnosticAuthority.Deadline}; "
-                + $"targetDeadlineValid={diagnosticAuthority.Deadline > now}; "
-                + $"targetGenerationPositive={diagnosticAuthority.TargetBindingGeneration > 0}; "
-                + $"targetGeneration={diagnosticAuthority.TargetBindingGeneration == Session.BindingGeneration}; "
-                + $"carrierGeneration={carrier.BindingGeneration}; "
-                + $"sessionGeneration={Session.BindingGeneration}; "
-                + $"sourceParentValid={diagnosticAuthority.SourceParentCall.IsValid}; "
-                + $"targetChildValid={diagnosticTargetCall.IsValid}; "
-                + $"targetEntryModule={string.Equals(diagnosticAuthority.TargetEntry.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal)}; "
-                + $"targetEntryGraph={string.Equals(diagnosticAuthority.TargetEntry.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)}; "
-                + $"expiresNotAfter={diagnosticAuthority.ExpiresAt <= diagnosticBinding.ExpiresAt}; "
-                + $"payloadValidation={SidecarCapabilityTransportValidation.ValidateSerializedPayload(carrier.Action, true, diagnosticBinding.PayloadLimits.ActionInputBytes).Code}; "
-                + $"expiry={diagnosticAuthority.ExpiresAt > now && diagnosticAuthority.Deadline > now}; "
-                + $"expiryWithinBinding={diagnosticAuthority.ExpiresAt <= diagnosticBinding.ExpiresAt}; "
-                + $"actionGrant={diagnosticBinding.Grant.Allows(SidecarCapabilityKind.Action)}; "
-                + $"owner={string.Equals(diagnosticAuthority.TargetEntry.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal) && string.Equals(diagnosticAuthority.TargetEntry.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)}; "
-                + $"canonical={string.Equals(diagnosticAuthority.CanonicalBindingHash, SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(diagnosticAuthority), StringComparison.OrdinalIgnoreCase)}; "
-                + $"proof={ValidateCrossSidecarProof(diagnosticAuthority, diagnosticAuthority.Proof)}");
+                begin.Message ?? "The cross-sidecar carrier was rejected.");
         }
 
         var authority = carrier.Authority;

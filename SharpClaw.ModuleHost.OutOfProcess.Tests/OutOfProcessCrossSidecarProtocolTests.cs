@@ -17,6 +17,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     private OutOfProcessModuleServer _sourceServer = null!;
     private OutOfProcessModuleServer _targetServer = null!;
     private OutOfProcessModuleClient _targetClient = null!;
+    private CountingActionDispatcher _targetDispatcher = null!;
     private Uri _sourceAddress = null!;
     private string _sourceToken = null!;
     private Uri _targetAddress = null!;
@@ -49,8 +50,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             _targetToken,
             targetCatalog);
 
+        _targetDispatcher = new CountingActionDispatcher();
         await _targetClient.ConnectCapabilitiesAsync(
-            CreateOptions(_targetClient, new CountingActionDispatcher()));
+            CreateOptions(_targetClient, _targetDispatcher));
 
     }
 
@@ -145,6 +147,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + "idempotency=22222222-2222-4222-8222-222222222222");
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
+        _targetDispatcher.RunCalls.Should().Be(1);
+        _targetDispatcher.TerminalCalls.Should().Be(1);
     }
 
     private async Task<OutOfProcessModuleServer> StartServerAsync(

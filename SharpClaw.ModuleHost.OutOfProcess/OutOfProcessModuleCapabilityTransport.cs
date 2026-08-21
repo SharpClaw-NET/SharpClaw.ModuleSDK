@@ -633,50 +633,30 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 if (response.CrossSidecarOutcome is { } crossOutcome)
                 {
                     var authority = crossOutcome.Authority;
-                    var outcomeWellFormed = crossOutcome.IsWellFormed;
-                    var targetCallMatches = authority.TargetChildCall == relay.Carrier.Authority.TargetChildCall;
-                    var targetEntryMatches = authority.TargetEntry == relay.TargetEntry;
-                    var resultIdentityMatches = response.ResultIdentity == authority.ResultIdentity;
                     var executionMatches = CanonicalCrossSidecarValueMatches(
                         response.Execution,
                         authority.Execution);
-                    var safeFailureMatches = response.SafeFailure == authority.ResponseSafeFailure;
                     var outcomeEnvelopeMatches = crossOutcome.Outcome is { } outcome
                         && authority.OutcomeEnvelope is { } authorityOutcome
                         && CanonicalCrossSidecarValueMatches(outcome, authorityOutcome);
-                    var canonicalHashMatches = string.Equals(
-                        authority.CanonicalBindingHash,
-                        SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
-                        StringComparison.OrdinalIgnoreCase);
-                    var descriptorMatches = CrossSidecarOutcomeMatchesDescriptor(
-                        crossOutcome,
-                        relay.TargetEntry.Descriptor);
-                    if (!outcomeWellFormed
-                        || !targetCallMatches
-                        || !targetEntryMatches
-                        || !resultIdentityMatches
+                    if (!crossOutcome.IsWellFormed
+                        || authority.TargetChildCall != relay.Carrier.Authority.TargetChildCall
+                        || authority.TargetEntry != relay.TargetEntry
+                        || response.ResultIdentity != authority.ResultIdentity
                         || !executionMatches
-                        || !safeFailureMatches
+                        || response.SafeFailure != authority.ResponseSafeFailure
                         || !outcomeEnvelopeMatches
-                        || !canonicalHashMatches
-                        || !descriptorMatches)
+                        || !string.Equals(
+                            authority.CanonicalBindingHash,
+                            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
+                            StringComparison.OrdinalIgnoreCase)
+                        || !CrossSidecarOutcomeMatchesDescriptor(
+                            crossOutcome,
+                            relay.TargetEntry.Descriptor))
                     {
                         throw new OutOfProcessCapabilityException(
                             SidecarCapabilityErrors.SpoofedIdentity,
-                            "The cross-sidecar outcome does not bind to the target authority. "
-                            + $"wellFormed={outcomeWellFormed}; targetCall={targetCallMatches}; "
-                            + $"targetEntry={targetEntryMatches}; resultIdentity={resultIdentityMatches}; "
-                            + $"execution={executionMatches}; safeFailure={safeFailureMatches}; "
-                            + $"outcome={outcomeEnvelopeMatches}; canonical={canonicalHashMatches}; "
-                            + $"descriptor={descriptorMatches}; "
-                            + $"responseResultCall={response.ResultIdentity?.CallId}; "
-                            + $"authorityResultCall={authority.ResultIdentity?.CallId}; "
-                            + $"responseReceiptCall={response.Receipt?.CallId}; "
-                            + $"responseExecution={response.Execution.Completed}:{response.Execution.Result?.TypeIdentity}:{response.Execution.Result?.SchemaVersion}:{response.Execution.Result?.ContentHash}:{response.Execution.Failure?.Code}; "
-                            + $"authorityExecution={authority.Execution.Completed}:{authority.Execution.Result?.TypeIdentity}:{authority.Execution.Result?.SchemaVersion}:{authority.Execution.Result?.ContentHash}:{authority.Execution.Failure?.Code}; "
-                            + $"responseOutcome={crossOutcome.Outcome?.Kind}:{crossOutcome.Outcome?.TerminalCallCount}:{crossOutcome.Outcome?.Receipt?.ReceiptId}:{crossOutcome.Outcome?.Result?.ContentHash}; "
-                            + $"authorityOutcome={authority.OutcomeEnvelope?.Kind}:{authority.OutcomeEnvelope?.TerminalCallCount}:{authority.OutcomeEnvelope?.Receipt?.ReceiptId}:{authority.OutcomeEnvelope?.Result?.ContentHash}; "
-                            + $"responseSafeFailure={response.SafeFailure?.Code}; authoritySafeFailure={authority.ResponseSafeFailure?.Code}");
+                            "The cross-sidecar outcome does not bind to the target authority.");
                     }
 
                     return response;
@@ -966,71 +946,47 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The cross-sidecar terminal request has no execution context.");
-        var authorityProofValid = ValidateTerminalAuthority(
+        var authorityValid = ValidateTerminalAuthority(
                 request.Authority,
                 SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(
-                    request.Authority));
-        var authorityModuleValid = request.Authority.ModuleId == Binding.ModuleId;
-        var authorityGraphValid = request.Authority.GraphId == Binding.GraphId;
-        var authorityInvocationValid =
-            request.Authority.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar;
-        var authorityCallValid = request.Authority.CallId == request.Call.CallId;
-        var authorityTerminalValid = request.Authority.TerminalId == request.TerminalId;
-        var authorityInvocationIdValid = request.Authority.InvocationId == context.InvocationId;
-        var authorityParentInvocationValid = request.Authority.ParentInvocationId == context.ParentInvocationId;
-        var authorityTraceValid = request.Authority.TraceId == context.TraceId;
-        var authorityIdempotencyValid = request.Authority.IdempotencyKey == context.IdempotencyKey;
-        var authorityDepthValid = request.Authority.Depth == context.Depth;
-        var authorityAttemptValid = request.Authority.Attempt == context.Attempt;
-        var authorityCallerValid = OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
-            request.Authority.Caller,
-            context.Caller);
-        var authorityFeaturesValid = string.Equals(
-            SidecarCapabilityTransportCodec.ComputeSha256(
-                SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
-            SidecarCapabilityTransportCodec.ComputeSha256(
-                SidecarCapabilityTransportCodec.Serialize(context.Features)),
-            StringComparison.Ordinal);
-        var authorityDescriptorValid = request.Descriptor.Key == context.Descriptor.Key
-            && request.Descriptor.Version == context.Descriptor.Version;
-        var authorityPayloadValid = OutOfProcessCapabilityTransportPayloadMatches(
-            request.EffectiveAction,
-            context.EffectiveAction);
-        var authoritySnapshotValid = string.Equals(
-            request.Authority.SnapshotContentHash,
-            SidecarCapabilityTransportCodec.ComputeSha256(
-                SidecarCapabilityTransportCodec.Serialize(context.Snapshot)),
-            StringComparison.Ordinal);
-        var authorityValid = authorityProofValid
-            && authorityModuleValid
-            && authorityGraphValid
-            && authorityInvocationValid
-            && authorityCallValid
-            && authorityTerminalValid
-            && authorityInvocationIdValid
-            && authorityParentInvocationValid
-            && authorityTraceValid
-            && authorityIdempotencyValid
-            && authorityDepthValid
-            && authorityAttemptValid
-            && authorityCallerValid
-            && authorityFeaturesValid
-            && authorityDescriptorValid
-            && authorityPayloadValid
-            && authoritySnapshotValid;
+                    request.Authority))
+            && request.Authority.ModuleId == Binding.ModuleId
+            && request.Authority.GraphId == Binding.GraphId
+            && request.Authority.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
+            && request.Authority.CallId == request.Call.CallId
+            && request.Authority.TerminalId == request.TerminalId
+            && request.Authority.InvocationId == context.InvocationId
+            && request.Authority.ParentInvocationId == context.ParentInvocationId
+            && request.Authority.TraceId == context.TraceId
+            && request.Authority.IdempotencyKey == context.IdempotencyKey
+            && request.Authority.Depth == context.Depth
+            && request.Authority.Attempt == context.Attempt
+            && request.Authority.Caller is not null
+            && context.Caller is not null
+            && OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
+                request.Authority.Caller,
+                context.Caller)
+            && string.Equals(
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(context.Features)),
+                StringComparison.Ordinal)
+            && request.Descriptor.Key == context.Descriptor.Key
+            && request.Descriptor.Version == context.Descriptor.Version
+            && OutOfProcessCapabilityTransportPayloadMatches(
+                request.EffectiveAction,
+                context.EffectiveAction)
+            && string.Equals(
+                request.Authority.SnapshotContentHash,
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(context.Snapshot)),
+                StringComparison.Ordinal);
         if (!authorityValid)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
-                "The cross-sidecar terminal authority does not match its execution context. "
-                + $"proof={authorityProofValid}; module={authorityModuleValid}; graph={authorityGraphValid}; "
-                + $"invocation={authorityInvocationValid}; call={authorityCallValid}; terminal={authorityTerminalValid}; "
-                + $"invocationId={authorityInvocationIdValid}; parentInvocation={authorityParentInvocationValid}; "
-                + $"trace={authorityTraceValid}; idempotency={authorityIdempotencyValid}; depth={authorityDepthValid}; "
-                + $"attempt={authorityAttemptValid}; caller={authorityCallerValid}; features={authorityFeaturesValid}; "
-                + $"descriptor={authorityDescriptorValid}; payload={authorityPayloadValid}; snapshot={authoritySnapshotValid}; "
-                + $"authorityCallId={request.Authority.CallId}; requestCallId={request.Call.CallId}; "
-                + $"authorityTerminalId={request.Authority.TerminalId}; requestTerminalId={request.TerminalId}");
+                "The cross-sidecar terminal authority does not match its execution context.");
         }
 
         var registration = _actionEntries.SingleOrDefault(entry =>
@@ -1438,40 +1394,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request,
             Binding,
             DateTimeOffset.UtcNow);
-        if (!validation.Accepted
-            && request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
-        {
-            var carrier = request.CrossSidecarCarrier;
-            var terminal = request.Terminal;
-            throw new OutOfProcessCapabilityException(
-                validation.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                $"{validation.Message}; "
-                + $"requestCall={DescribeCapabilityCall(request.Call)}; "
-                + $"descriptor={request.Descriptor.Key}:{request.Descriptor.Version}:{request.Descriptor.Category}:"
-                + $"{request.Descriptor.InputTypeIdentity}:{request.Descriptor.InputSchemaHash}:{request.Descriptor.InputSchemaVersion}:"
-                + $"{request.Descriptor.ResultTypeIdentity}:{request.Descriptor.ResultSchemaHash}:{request.Descriptor.ResultSchemaVersion}:"
-                + $"{request.Descriptor.DescriptorHash}; descriptorWellFormed={request.Descriptor.IsWellFormed}; "
-                + $"action={request.Action.TypeIdentity}:{request.Action.SchemaVersion}:{request.Action.ContentHash}:{request.Action.ByteLength}; "
-                + $"actionValid={request.Action.IsValid}; "
-                + $"carrierWellFormed={carrier?.IsWellFormed}; "
-                + $"carrierAction={carrier?.Action.TypeIdentity}:{carrier?.Action.SchemaVersion}:{carrier?.Action.ContentHash}:{carrier?.Action.ByteLength}; "
-                + $"carrierActionMatches={carrier is not null && carrier.Action == request.Action}; "
-                + $"carrierDescriptorMatches={carrier is not null && carrier.Authority.Descriptor == request.Descriptor}; "
-                + $"carrierTargetDescriptorMatches={carrier is not null && carrier.Authority.TargetEntry.Descriptor == request.Descriptor}; "
-                + $"callSessionMatches={request.Call.SessionId == Binding.SessionId}; "
-                + $"callRequestMatches={request.Call.RequestId == Binding.RequestId}; "
-                + $"callCancellationMatches={request.Call.CancellationId == Binding.CancellationId}; "
-                + $"callModuleMatches={request.Call.ModuleId == Binding.ModuleId}; "
-                + $"callGraphMatches={request.Call.GraphId == Binding.GraphId}; "
-                + $"requestCancellationMatches={request.Cancellation.CancellationId == request.Call.CancellationId}; "
-                + $"requestCancellationAuthorityMatches={request.Cancellation.AuthorityHash == SidecarCapabilitySessionValidator.ComputeBindingHash(Binding)}; "
-                + $"requestDeadlineMatches={request.Deadline == request.Call.Deadline}; "
-                + $"terminalWellFormed={terminal?.IsWellFormed}; terminalId={terminal?.TerminalId}; "
-                + $"terminalInput={terminal?.ActionTypeIdentity}:{terminal?.ActionSchemaVersion}; "
-                + $"terminalResult={terminal?.ResultTypeIdentity}:{terminal?.ResultSchemaVersion}; "
-                + $"terminalHash={terminal?.DescriptorHash};");
-        }
-
         ThrowIfRejected(validation);
     }
 
