@@ -186,7 +186,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 Session.Binding,
                 targetSession.Session.Binding,
                 DateTimeOffset.UtcNow,
-                targetSession.ValidateCrossSidecarProof);
+                targetSession.ValidateCrossSidecarOutcomeProof);
             if (!validation.Accepted)
             {
                 throw new OutOfProcessCapabilityException(
