@@ -279,11 +279,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             SidecarCapabilityKind.Action,
             deadline,
             cancellationToken);
-        var childRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
-            call,
-            relay.TargetEntry.Descriptor,
-            action,
-            new SidecarCancellationIdentity(
+            var childRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
+                call,
+                relay.TargetEntry.Descriptor,
+                relay.Carrier.Action,
+                new SidecarCancellationIdentity(
                 call.CancellationId,
                 SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
                 deadline),
