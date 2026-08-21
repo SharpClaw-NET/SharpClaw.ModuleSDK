@@ -1351,10 +1351,35 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private void ValidateActionRequest(SidecarActionCapabilityRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateActionRequest(
+        var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
             request,
             Binding,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow);
+        if (!validation.Accepted
+            && request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
+        {
+            var carrier = request.CrossSidecarCarrier;
+            var terminal = request.Terminal;
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                $"{validation.Message}; "
+                + $"requestCall={DescribeCapabilityCall(request.Call)}; "
+                + $"descriptor={request.Descriptor.Key}:{request.Descriptor.Version}:{request.Descriptor.Category}:"
+                + $"{request.Descriptor.InputTypeIdentity}:{request.Descriptor.InputSchemaHash}:{request.Descriptor.InputSchemaVersion}:"
+                + $"{request.Descriptor.ResultTypeIdentity}:{request.Descriptor.ResultSchemaHash}:{request.Descriptor.ResultSchemaVersion}:"
+                + $"{request.Descriptor.DescriptorHash}; descriptorWellFormed={request.Descriptor.IsWellFormed}; "
+                + $"action={request.Action.TypeIdentity}:{request.Action.SchemaVersion}:{request.Action.ContentHash}:{request.Action.ByteLength}; "
+                + $"actionWellFormed={request.Action.IsWellFormed}; "
+                + $"carrierWellFormed={carrier?.IsWellFormed}; "
+                + $"carrierAction={carrier?.Action.TypeIdentity}:{carrier?.Action.SchemaVersion}:{carrier?.Action.ContentHash}:{carrier?.Action.ByteLength}; "
+                + $"carrierActionMatches={carrier is not null && carrier.Action == request.Action}; "
+                + $"terminalWellFormed={terminal?.IsWellFormed}; terminalId={terminal?.TerminalId}; "
+                + $"terminalInput={terminal?.InputTypeIdentity}:{terminal?.InputSchemaVersion}; "
+                + $"terminalResult={terminal?.ResultTypeIdentity}:{terminal?.ResultSchemaVersion}; "
+                + $"terminalHash={terminal?.DescriptorHash};");
+        }
+
+        ThrowIfRejected(validation);
     }
 
     private void ValidateStorageRequest(SidecarStorageCapabilityRequest request)
