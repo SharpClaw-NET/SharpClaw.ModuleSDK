@@ -602,8 +602,31 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 SendGate,
                 ct);
             var response = await completion.Task.WaitAsync(ct);
+            if (request.CrossSidecarActionRequest is { } crossRequest)
+            {
+                ThrowIfRejected(
+                    SidecarCrossSidecarActionEntryValidation.ValidateRequest(
+                        crossRequest,
+                        request.Call,
+                        Binding,
+                        DateTimeOffset.UtcNow));
+                var relay = response.CrossSidecarRelay;
+                if (relay is null
+                    || !relay.IsWellFormed
+                    || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
+                    || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
+                    || relay.Carrier.Authority.SourceParentCall != request.Call)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The cross-sidecar relay does not bind to the parent terminal request.");
+                }
+            }
+            var validationRequest = request.CrossSidecarActionRequest is null
+                ? request
+                : request with { CrossSidecarActionRequest = null };
             var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
-                request,
+                validationRequest,
                 response,
                 Binding,
                 (authority, proof) => ValidateTerminalAuthority(authority, proof));
