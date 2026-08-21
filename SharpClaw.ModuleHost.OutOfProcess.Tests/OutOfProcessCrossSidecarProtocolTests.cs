@@ -106,7 +106,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             ApplicationSmokeModule.HostEntryIdempotencyKey,
             DateTimeOffset.UtcNow.AddMinutes(1));
         dispatcher.HostContextFactory = () => context;
-        OutOfProcessActionResult result;
+        SidecarCliExecutionResponse result;
         try
         {
             result = await client.InvokeCliAsync(
