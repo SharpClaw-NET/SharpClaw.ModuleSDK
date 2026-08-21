@@ -334,7 +334,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt);
-        hostContext = pendingContext;
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 1;
@@ -352,6 +351,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
 
+        hostContext = pendingContext;
         var carrierEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var carrierRelease = new TaskCompletionSource(
@@ -461,7 +461,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry()));
 
-        hostContext = IssueHostEntryContext(
+        var pendingContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt);
@@ -479,6 +479,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
         }
 
+        hostContext = pendingContext;
         var nested = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["nested"],
