@@ -19,6 +19,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private ModuleContributionGraph? _graph;
     private IServiceProvider? _services;
     private SidecarHostAuthorization? _authorization;
+    private Exception? _lastConnectionFailure;
+
+    internal Exception? LastConnectionFailure => Volatile.Read(ref _lastConnectionFailure);
     public void Initialize(
         string moduleId,
         string graphId,
@@ -293,6 +296,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         }
         finally
         {
+            Volatile.Write(ref _lastConnectionFailure, connection.RunFailure);
             lock (_sync)
             {
                 if (ReferenceEquals(_connection, connection))
@@ -385,6 +389,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _terminalQueue;
     private readonly object _rotationSync = new();
+    private Exception? _runFailure;
     private TaskCompletionSource? _rebindReady;
     private int _completedCallsForBinding;
     private long _sequence;
@@ -421,6 +426,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     public SidecarCapabilitySessionBinding Binding =>
         Volatile.Read(ref _session).Binding;
+
+    internal Exception? RunFailure => Volatile.Read(ref _runFailure);
 
     public SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
@@ -725,6 +732,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            Volatile.Write(ref _runFailure, ex);
             failure = ex;
         }
         finally

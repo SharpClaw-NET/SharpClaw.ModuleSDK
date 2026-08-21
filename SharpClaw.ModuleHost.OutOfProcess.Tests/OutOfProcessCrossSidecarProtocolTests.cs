@@ -120,6 +120,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 $"Cross-sidecar invocation failed: {ex}; "
                 + $"sourceFailure={client.CapabilitySession.RunFailure}; "
                 + $"targetFailure={_targetClient.CapabilitySession.RunFailure}; "
+                + $"sourceServerFailure={_sourceServer.CapabilityFailure}; "
+                + $"targetServerFailure={_targetServer.CapabilityFailure}; "
                 + $"dispatcher={dispatcher.LastException}",
                 ex);
         }

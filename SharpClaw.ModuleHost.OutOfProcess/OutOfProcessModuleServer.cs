@@ -125,6 +125,8 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
     /// <summary>Stops the server.</summary>
     public Task StopAsync(CancellationToken ct = default) => _app.StopAsync(ct);
 
+    internal Exception? CapabilityFailure => _capabilityTransport.LastConnectionFailure;
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
