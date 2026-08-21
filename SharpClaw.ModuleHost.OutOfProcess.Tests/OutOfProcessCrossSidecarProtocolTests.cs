@@ -144,9 +144,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + $"; sourceHandledFailure={client.CapabilitySession.LastHandledFailure}"
             + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}"
             + $"; sourceServerFailure={_sourceServer.CapabilityFailure}"
-            + $"; targetServerFailure={_targetServer.CapabilityFailure}"
-            + $"; targetOutcome={DescribeOutcome(_targetClient.CapabilitySession.LastCrossSidecarOutcome)}"
-            + $"; targetOutcomeRoundTrip={DescribeOutcomeRoundTrip(_targetClient)}");
+            + $"; targetServerFailure={_targetServer.CapabilityFailure}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
@@ -588,58 +586,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             ActionPipelineSnapshot snapshot,
             CancellationToken ct) =>
             (await RunAsync(descriptor, action, terminal, snapshot, ct)).Result;
-    }
-
-    private static string DescribeOutcome(SidecarCrossSidecarActionEntryOutcome? outcome) =>
-        outcome is null
-            ? "none"
-            : $"kind={outcome.Kind};outcomeKind={outcome.Outcome?.Kind};"
-              + $"terminalCalls={outcome.Outcome?.TerminalCallCount};"
-              + $"error={outcome.Outcome?.Error?.Code ?? "none"};"
-              + $"failure={outcome.Failure?.Code ?? "none"};"
-              + $"result={(outcome.Outcome?.Result is null ? "none" : outcome.Outcome.Result.TypeIdentity)};"
-              + $"outcomeReceipt={outcome.Outcome?.Receipt?.ReceiptId ?? "none"};"
-              + $"resultReceipt={outcome.ResultReceipt?.ReceiptId ?? "none"};"
-              + $"authorityResultReceipt={outcome.Authority.ResultReceipt?.ReceiptId ?? "none"};"
-              + $"executionResult={(outcome.Authority.Execution?.Result is null ? "none" : outcome.Authority.Execution.Result.TypeIdentity)};"
-              + $"executionFailure={outcome.Authority.Execution?.Failure?.Code ?? "none"};"
-              + $"continuation={(outcome.Outcome?.Continuation is null ? "none" : "present")};"
-              + $"uncertainty={(outcome.Outcome?.Uncertainty is null ? "none" : "present")}";
-
-    private static string DescribeOutcomeRoundTrip(OutOfProcessModuleClient targetClient)
-    {
-        var outcome = targetClient.CapabilitySession.LastCrossSidecarOutcome;
-        if (outcome is null)
-            return "none";
-
-        try
-        {
-            var roundTrip = SidecarCapabilityTransportCodec.Deserialize<
-                SidecarCrossSidecarActionEntryOutcome>(
-                SidecarCapabilityTransportCodec.Serialize(outcome));
-            var validation = targetClient.CapabilitySession.ValidateCrossSidecarOutcome(
-                roundTrip,
-                DateTimeOffset.UtcNow);
-            var authority = roundTrip.Authority;
-            var envelope = roundTrip.Outcome;
-            var execution = authority.Execution;
-            return $"accepted={validation.Accepted};code={validation.Code ?? "none"};message={validation.Message ?? "none"};"
-                + $"wellFormed={roundTrip.IsWellFormed};"
-                + $"authorityOutcome={authority.OutcomeEnvelope == envelope};"
-                + $"outcomeReceipt={envelope?.Receipt == roundTrip.ResultReceipt};"
-                + $"failure={authority.ResponseSafeFailure == roundTrip.Failure};"
-                + $"executionCompleted={execution?.Completed};"
-                + $"executionResult={execution?.Result == envelope?.Result};"
-                + $"executionFailure={execution?.Failure == (roundTrip.Kind == SidecarCrossSidecarActionEntryOutcomeKind.Completed ? null : roundTrip.Failure)};"
-                + $"receiptCall={roundTrip.ResultReceipt?.CallId == authority.TargetChildCall.CallId};"
-                + $"receiptAction={roundTrip.ResultReceipt?.ActionKey == authority.Descriptor.Key};"
-                + $"receiptVersion={roundTrip.ResultReceipt?.ActionVersion == authority.Descriptor.Version};"
-                + $"receiptAttempt={roundTrip.ResultReceipt?.Attempt == authority.Attempt}";
-        }
-        catch (Exception ex)
-        {
-            return $"exception={ex.GetType().Name}:{ex.Message}";
-        }
     }
 
     private sealed class CountingActionOutcome<TResult>(
