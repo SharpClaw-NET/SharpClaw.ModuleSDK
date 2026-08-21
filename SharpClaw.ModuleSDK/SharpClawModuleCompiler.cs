@@ -45,6 +45,7 @@ public static class SharpClawModuleCompiler
         ValidateStorage(state, errors);
         ValidateChat(state, errors);
         ValidateApplication(state, options, errors);
+        ValidateActionEntries(state, errors);
 
         var actionHooks = CompileActionHooks(state, manifest, options, errors);
         var eventHooks = CompileEventHooks(state, manifest, options, errors);
@@ -68,7 +69,8 @@ public static class SharpClawModuleCompiler
         var application = new ModuleApplicationContributions(
             Array.AsReadOnly(state.Endpoints.ToArray()),
             Array.AsReadOnly(state.CliCommands.ToArray()),
-            Array.AsReadOnly(state.UiContributions.ToArray()));
+            Array.AsReadOnly(state.UiContributions.ToArray()),
+            Array.AsReadOnly(state.ActionEntries.ToArray()));
         var chat = new ModuleChatContributions(
             state.ConversationResolvers.SingleOrDefault(),
             state.ConversationResolverRegistrations.SingleOrDefault(),
@@ -94,6 +96,7 @@ public static class SharpClawModuleCompiler
             tools,
             chat,
             application,
+            state.ActionEntries,
             features);
 
         return new ModuleContributionGraph(
@@ -107,6 +110,7 @@ public static class SharpClawModuleCompiler
             actionHooks,
             eventHooks,
             tools,
+            state.ActionEntries,
             chat,
             application,
             new ModuleActionDispatchMap(actionHooks),
@@ -416,6 +420,65 @@ public static class SharpClawModuleCompiler
                 "application",
                 "sidecar",
                 "The sidecar protocol does not transport UI contribution types."));
+        }
+    }
+
+    private static void ValidateActionEntries(
+        ModuleBuilderState state,
+        ICollection<GraphCompilationError> errors)
+    {
+        foreach (var duplicate in state.ActionEntries
+                     .GroupBy(entry => $"{entry.Descriptor.Key.Value}:{entry.Descriptor.Version}", StringComparer.Ordinal)
+                     .Where(group => group.Count() > 1))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.InvalidApplication,
+                state.Identity.Id,
+                duplicate.Key,
+                "action-entry",
+                "The module declares more than one terminal for the same action descriptor."));
+        }
+
+        foreach (var duplicate in state.ActionEntries
+                     .GroupBy(entry => entry.TerminalId)
+                     .Where(group => group.Key == Guid.Empty || group.Count() > 1))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.InvalidApplication,
+                state.Identity.Id,
+                duplicate.Key.ToString("D"),
+                "action-entry",
+                "Each action entry requires one unique non-empty terminal identifier."));
+        }
+
+        foreach (var entry in state.ActionEntries)
+        {
+            var action = state.Actions.SingleOrDefault(candidate =>
+                candidate.Descriptor.Key == entry.Descriptor.Key
+                && candidate.Descriptor.Version == entry.Descriptor.Version);
+            if (action is null
+                || action.ActionType != entry.ActionType
+                || action.ResultType != entry.ResultType
+                || !string.Equals(
+                    action.Descriptor.Category,
+                    entry.Descriptor.Category,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    action.Descriptor.InputSchema.ContentHash,
+                    entry.Descriptor.InputSchemaHash,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    action.Descriptor.ResultSchema.ContentHash,
+                    entry.Descriptor.ResultSchemaHash,
+                    StringComparison.Ordinal))
+            {
+                errors.Add(Error(
+                    ModuleGraphErrorCodes.InvalidTarget,
+                    state.Identity.Id,
+                    $"{entry.Descriptor.Key.Value}:{entry.Descriptor.Version}",
+                    "action-entry",
+                    "An action entry must target one exact action definition owned by the module."));
+            }
         }
     }
 
@@ -1082,6 +1145,7 @@ public static class SharpClawModuleCompiler
         IReadOnlyList<ModuleToolRegistration> tools,
         ModuleChatContributions chat,
         ModuleApplicationContributions application,
+        IReadOnlyList<ModuleActionEntryRegistration> actionEntries,
         IReadOnlyList<ModuleFeatureDescriptor> features)
     {
         var records = new List<string>
@@ -1102,6 +1166,8 @@ public static class SharpClawModuleCompiler
             .Select(value => $"tool|{value.Descriptor.Name}|{value.Descriptor.Version}|{value.HandlerType.AssemblyQualifiedName}|{value.InputSchema.ContentHash}|{value.ResultSchema.ContentHash}"));
         records.Add($"chat|{chat.ConversationResolver?.AssemblyQualifiedName}|{chat.ProfileResolver?.AssemblyQualifiedName}|{string.Join(',', chat.ContextContributors.Select(type => type.AssemblyQualifiedName))}");
         records.Add($"application|{string.Join(',', application.EndpointTypes.Select(type => type.AssemblyQualifiedName))}|{string.Join(',', application.CliCommands.Select(value => value.Descriptor.Name))}|{string.Join(',', application.UiContributionTypes.Select(type => type.AssemblyQualifiedName))}");
+        records.AddRange(actionEntries.OrderBy(value => value.Descriptor.Key.Value, StringComparer.Ordinal)
+            .Select(value => $"action-entry|{value.OwnerModuleId}|{value.Descriptor.Key.Value}|{value.Descriptor.Version}|{value.Descriptor.DescriptorHash}|{value.TerminalId:D}|{value.TerminalType.AssemblyQualifiedName}"));
         records.AddRange(features.OrderBy(value => value.ContractName, StringComparer.Ordinal)
             .Select(value => $"feature|{value.ContractName}|{value.SchemaVersion}|{value.OwnerModuleId}|{value.MaxBytes}|{value.Required}"));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', records))));

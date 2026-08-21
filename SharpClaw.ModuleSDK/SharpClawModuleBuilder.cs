@@ -47,6 +47,7 @@ internal sealed class ModuleBuilderState(ModuleIdentity identity)
     public List<ModuleContractContribution> Contracts { get; } = [];
     public List<ModuleStorageContractDescriptor> Storage { get; } = [];
     public List<ModuleActionDefinition> Actions { get; } = [];
+    public List<ModuleActionEntryRegistration> ActionEntries { get; } = [];
     public List<ModuleEventDefinition> Events { get; } = [];
     public List<PendingActionHook> ActionHooks { get; } = [];
     public List<PendingEventHook> EventHooks { get; } = [];
@@ -106,6 +107,47 @@ public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
     public IChatLifecycleBuilder Chat { get; }
 
     internal ModuleBuilderState State => _state;
+
+    internal void AddActionEntry<TAction, TResult, TTerminal>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        Guid terminalId)
+        where TTerminal : class, IHostActionEntryTerminal<TAction, TResult>
+    {
+        var input = descriptor.InputSchema
+            ?? throw new ArgumentException(
+                "The action descriptor must declare an input schema.",
+                nameof(descriptor));
+        var result = descriptor.ResultSchema
+            ?? throw new ArgumentException(
+                "The action descriptor must declare a result schema.",
+                nameof(descriptor));
+        var identity = new SidecarActionDescriptorIdentity(
+            descriptor.Key,
+            descriptor.Version,
+            descriptor.Category,
+            TypeIdentity(typeof(TAction)),
+            input.ContentHash,
+            input.Version,
+            TypeIdentity(typeof(TResult)),
+            result.ContentHash,
+            result.Version,
+            HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor));
+        var invoker = new ModuleActionEntryInvoker<TAction, TResult, TTerminal>(
+            identity,
+            terminalId);
+        _state.ActionEntries.Add(new ModuleActionEntryRegistration(
+            _state.Identity.Id,
+            identity,
+            typeof(TAction),
+            typeof(TResult),
+            typeof(TTerminal),
+            terminalId,
+            invoker));
+        _state.Services.AddTransient<TTerminal>();
+    }
+
+    private static string TypeIdentity(Type type) =>
+        type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 }
 
 /// <summary>Records application contributions for one module.</summary>

@@ -120,14 +120,18 @@ public sealed record ModuleCliContribution(
 public sealed record ModuleApplicationContributions(
     IReadOnlyList<Type> EndpointTypes,
     IReadOnlyList<ModuleCliContribution> CliCommands,
-    IReadOnlyList<Type> UiContributionTypes)
+    IReadOnlyList<Type> UiContributionTypes,
+    IReadOnlyList<ModuleActionEntryRegistration> ActionEntries)
 {
     /// <summary>Gets an empty contribution set.</summary>
-    public static ModuleApplicationContributions Empty { get; } = new([], [], []);
+    public static ModuleApplicationContributions Empty { get; } = new([], [], [], []);
 
     /// <summary>Gets whether the module declares an application contribution.</summary>
     public bool IsEmpty =>
-        EndpointTypes.Count == 0 && CliCommands.Count == 0 && UiContributionTypes.Count == 0;
+        EndpointTypes.Count == 0
+        && CliCommands.Count == 0
+        && UiContributionTypes.Count == 0
+        && ActionEntries.Count == 0;
 }
 
 /// <summary>Contains chat lifecycle registrations for one module.</summary>
@@ -156,6 +160,7 @@ public sealed class ModuleContributionGraph
         IReadOnlyList<ModuleActionHook> actionHooks,
         IReadOnlyList<ModuleEventHook> eventHooks,
         IReadOnlyList<ModuleToolRegistration> tools,
+        IReadOnlyList<ModuleActionEntryRegistration> actionEntries,
         ModuleChatContributions chat,
         ModuleApplicationContributions application,
         ModuleActionDispatchMap actionDispatch,
@@ -176,6 +181,7 @@ public sealed class ModuleContributionGraph
         ActionHooks = actionHooks;
         EventHooks = eventHooks;
         Tools = tools;
+        ActionEntries = actionEntries;
         Chat = chat;
         Application = application;
         ActionDispatch = actionDispatch;
@@ -216,6 +222,9 @@ public sealed class ModuleContributionGraph
 
     /// <summary>Gets tool registrations.</summary>
     public IReadOnlyList<ModuleToolRegistration> Tools { get; }
+
+    /// <summary>Gets module-owned action terminal registrations.</summary>
+    public IReadOnlyList<ModuleActionEntryRegistration> ActionEntries { get; }
 
     /// <summary>Gets chat lifecycle contributions.</summary>
     public ModuleChatContributions Chat { get; }

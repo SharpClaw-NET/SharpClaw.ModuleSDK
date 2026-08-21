@@ -13,15 +13,25 @@ public sealed record SidecarApplicationCliCommand(
     string AssemblyName,
     ModuleCliCommandDescriptor Descriptor);
 
+/// <summary>Describes one module-owned action terminal across the sidecar boundary.</summary>
+public sealed record SidecarApplicationActionEntry(
+    string ModuleId,
+    string ContractHash,
+    SidecarActionDescriptorIdentity Descriptor,
+    Guid TerminalId,
+    string TerminalTypeName,
+    string AssemblyName);
+
 /// <summary>Describes application contributions from one compiled sidecar graph.</summary>
 public sealed record SidecarApplicationDiscovery(
     string ModuleId,
     string ContractHash,
     IReadOnlyList<SidecarApplicationEndpoint> Endpoints,
-    IReadOnlyList<SidecarApplicationCliCommand> CliCommands)
+    IReadOnlyList<SidecarApplicationCliCommand> CliCommands,
+    IReadOnlyList<SidecarApplicationActionEntry> ActionEntries)
 {
-    /// <summary>Gets whether the graph has no endpoint or CLI contribution.</summary>
-    public bool IsEmpty => Endpoints.Count == 0 && CliCommands.Count == 0;
+    /// <summary>Gets whether the graph has no application contribution.</summary>
+    public bool IsEmpty => Endpoints.Count == 0 && CliCommands.Count == 0 && ActionEntries.Count == 0;
 }
 
 /// <summary>Invokes one discovered module CLI command.</summary>
@@ -88,6 +98,19 @@ public static class ModuleContributionGraphApplicationExtensions
                 .ToArray()),
             Array.AsReadOnly(graph.Application.CliCommands
                 .Select(CreateCliCommand)
+                .ToArray()),
+            Array.AsReadOnly(graph.ActionEntries
+                .Select(entry => new SidecarApplicationActionEntry(
+                    graph.Identity.Id,
+                    graph.ContractHash,
+                    entry.Descriptor,
+                    entry.TerminalId,
+                    entry.TerminalType.FullName
+                        ?? throw new InvalidOperationException(
+                            "An action entry terminal type must have a full name."),
+                    entry.TerminalType.Assembly.GetName().Name
+                        ?? throw new InvalidOperationException(
+                            "An action entry terminal type must have an assembly name.")))
                 .ToArray()));
     }
 
