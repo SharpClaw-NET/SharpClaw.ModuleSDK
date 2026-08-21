@@ -242,6 +242,44 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         }
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task CrossSidecarOutcomeMutationIsRejectedAndSessionRemainsUsable()
+    {
+        _targetDispatcher.Reset();
+        var (client, dispatcher) = await CreateSourceClientAsync(_targetClient);
+        await using (client)
+        {
+            var completed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
+            completed.Result.Succeeded.Should().BeTrue();
+
+            var signed = _targetClient.CapabilitySession.LastCrossSidecarOutcome
+                ?? throw new AssertionException("The target did not return a signed cross-sidecar outcome.");
+            var outcome = signed.Outcome
+                ?? throw new AssertionException("The target signed outcome has no outcome envelope.");
+
+            var proofMutation = signed with
+            {
+                Authority = signed.Authority with { Proof = "mutated-proof" },
+            };
+            _targetClient.CapabilitySession
+                .ValidateCrossSidecarOutcome(proofMutation, DateTimeOffset.UtcNow)
+                .Accepted.Should().BeFalse();
+
+            var terminalCountMutation = signed with
+            {
+                Outcome = outcome with { TerminalCallCount = 0 },
+            };
+            _targetClient.CapabilitySession
+                .ValidateCrossSidecarOutcome(terminalCountMutation, DateTimeOffset.UtcNow)
+                .Accepted.Should().BeFalse();
+
+            var recovered = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
+            recovered.Result.Succeeded.Should().BeTrue();
+            _targetDispatcher.RunCalls.Should().Be(2);
+            _targetDispatcher.TerminalCalls.Should().Be(2);
+        }
+    }
+
     private async Task<(OutOfProcessModuleClient Client, CountingActionDispatcher Dispatcher)> CreateSourceClientAsync(
         OutOfProcessModuleClient target)
     {

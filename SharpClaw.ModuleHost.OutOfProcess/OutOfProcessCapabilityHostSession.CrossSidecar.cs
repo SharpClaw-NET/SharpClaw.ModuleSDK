@@ -6,6 +6,8 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 
 internal sealed partial class OutOfProcessCapabilityHostSession
 {
+    private SidecarCrossSidecarActionEntryOutcome? _lastCrossSidecarOutcome;
+
     private async Task HandleCrossSidecarTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
@@ -551,12 +553,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     completion.Message ?? "The cross-sidecar result authority was rejected.");
             }
 
-            var outcomeValidation = SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
+            var outcomeValidation = ValidateCrossSidecarOutcome(
                 completed,
-                binding,
-                DateTimeOffset.UtcNow,
-                (targetAuthority, canonicalHash) =>
-                    ValidateCrossSidecarOutcomeProof(targetAuthority, canonicalHash));
+                DateTimeOffset.UtcNow);
             if (!outcomeValidation.Accepted)
             {
                 throw new OutOfProcessCapabilityException(
@@ -564,6 +563,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     outcomeValidation.Message ?? "The signed cross-sidecar outcome was rejected.");
             }
 
+            Volatile.Write(ref _lastCrossSidecarOutcome, completed);
             return response with { CrossSidecarOutcome = completed };
         }
         catch
@@ -584,6 +584,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
         return validation.Accepted;
     }
+
+    internal SidecarCrossSidecarActionEntryOutcome? LastCrossSidecarOutcome =>
+        Volatile.Read(ref _lastCrossSidecarOutcome);
+
+    internal SidecarCapabilityValidationResult ValidateCrossSidecarOutcome(
+        SidecarCrossSidecarActionEntryOutcome outcome,
+        DateTimeOffset now) =>
+        SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
+            outcome,
+            Session.Binding,
+            now,
+            (authority, canonicalHash) =>
+                ValidateCrossSidecarOutcomeProof(authority, canonicalHash));
 
     internal string IssueCrossSidecarProof(
         SidecarCrossSidecarActionEntryAuthority authority,
