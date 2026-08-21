@@ -191,7 +191,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             carrier,
             Session.Binding,
             now,
-            (authority, proof) => ValidateCrossSidecarProof(authority, proof));
+            (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
         var preBeginTrustedCarrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
             carrier,
             Session.Binding,
@@ -256,7 +256,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 carrier,
                 diagnosticBinding,
                 now,
-                (candidate, proof) => ValidateCrossSidecarProof(candidate, proof));
+                (candidate, _) => ValidateCrossSidecarProof(candidate, candidate.Proof));
             throw new OutOfProcessCapabilityException(
                 begin.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
                 $"{begin.Message ?? "The cross-sidecar carrier was rejected."}; "
@@ -463,7 +463,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             carrier,
             Session.Binding,
             now,
-            (authority, proof) => ValidateCrossSidecarProof(authority, proof));
+            (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
         return validation.Accepted;
     }
 
