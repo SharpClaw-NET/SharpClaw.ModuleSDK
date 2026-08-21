@@ -245,6 +245,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         }
         catch (Exception ex)
         {
+            Volatile.Write(ref _lastHandledFailure, ex);
             if (active is not null)
                 CompleteCall(request.Call.CallId, 1);
             await SendActionFailureAsync(

@@ -120,6 +120,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 $"Cross-sidecar invocation failed: {ex}; "
                 + $"sourceFailure={client.CapabilitySession.RunFailure}; "
                 + $"targetFailure={_targetClient.CapabilitySession.RunFailure}; "
+                + $"sourceHandledFailure={client.CapabilitySession.LastHandledFailure}; "
+                + $"targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}; "
                 + $"sourceServerFailure={_sourceServer.CapabilityFailure}; "
                 + $"targetServerFailure={_targetServer.CapabilityFailure}; "
                 + $"dispatcher={dispatcher.LastException}",
@@ -131,7 +133,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + string.Join(" | ", result.Result.Output.Select(item => item.Text))
             + $"; dispatcher={dispatcher.LastException}"
             + $"; sourceFailure={client.CapabilitySession.RunFailure}"
-            + $"; targetFailure={_targetClient.CapabilitySession.RunFailure}");
+            + $"; targetFailure={_targetClient.CapabilitySession.RunFailure}"
+            + $"; sourceHandledFailure={client.CapabilitySession.LastHandledFailure}"
+            + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"

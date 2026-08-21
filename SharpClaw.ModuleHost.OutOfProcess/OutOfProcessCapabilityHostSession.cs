@@ -26,6 +26,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private int _completedCallsForBinding;
     private readonly SemaphoreSlim _rotationGate = new(1, 1);
     private Exception? _runFailure;
+    private Exception? _lastHandledFailure;
     private int _disposed;
 
     private sealed class ActiveCall(CancellationTokenSource cancellation)
@@ -64,6 +65,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     public SemaphoreSlim SendGate { get; }
 
     internal Exception? RunFailure => Volatile.Read(ref _runFailure);
+
+    internal Exception? LastHandledFailure => Volatile.Read(ref _lastHandledFailure);
 
     private SidecarCapabilitySession Session => Volatile.Read(ref _session);
 
@@ -969,8 +972,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Volatile.Write(ref _lastHandledFailure, ex);
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
                 : 0;
