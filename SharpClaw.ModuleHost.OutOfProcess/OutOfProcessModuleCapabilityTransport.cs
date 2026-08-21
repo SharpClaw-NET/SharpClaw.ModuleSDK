@@ -1369,12 +1369,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 + $"{request.Descriptor.ResultTypeIdentity}:{request.Descriptor.ResultSchemaHash}:{request.Descriptor.ResultSchemaVersion}:"
                 + $"{request.Descriptor.DescriptorHash}; descriptorWellFormed={request.Descriptor.IsWellFormed}; "
                 + $"action={request.Action.TypeIdentity}:{request.Action.SchemaVersion}:{request.Action.ContentHash}:{request.Action.ByteLength}; "
-                + $"actionWellFormed={request.Action.IsWellFormed}; "
+                + $"actionValid={request.Action.IsValid}; "
                 + $"carrierWellFormed={carrier?.IsWellFormed}; "
                 + $"carrierAction={carrier?.Action.TypeIdentity}:{carrier?.Action.SchemaVersion}:{carrier?.Action.ContentHash}:{carrier?.Action.ByteLength}; "
                 + $"carrierActionMatches={carrier is not null && carrier.Action == request.Action}; "
                 + $"terminalWellFormed={terminal?.IsWellFormed}; terminalId={terminal?.TerminalId}; "
-                + $"terminalInput={terminal?.InputTypeIdentity}:{terminal?.InputSchemaVersion}; "
+                + $"terminalInput={terminal?.ActionTypeIdentity}:{terminal?.ActionSchemaVersion}; "
                 + $"terminalResult={terminal?.ResultTypeIdentity}:{terminal?.ResultSchemaVersion}; "
                 + $"terminalHash={terminal?.DescriptorHash};");
         }
