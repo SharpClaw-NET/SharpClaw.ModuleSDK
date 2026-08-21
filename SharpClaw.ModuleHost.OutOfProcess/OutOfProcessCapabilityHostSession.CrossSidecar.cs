@@ -483,7 +483,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             if (!completion.Accepted || completed is null)
             {
                 throw new OutOfProcessCapabilityException(
-                    completion.Code ?? SidecarCapabilityErrors.InvalidResponse,
+                    completion.Code ?? SidecarCapabilityErrors.HostFailure,
                     completion.Message ?? "The cross-sidecar result authority was rejected.");
             }
 
