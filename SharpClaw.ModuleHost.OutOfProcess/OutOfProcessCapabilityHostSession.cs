@@ -157,7 +157,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 SidecarCapabilityErrors.MalformedMessage,
                 "The host action context has no ingress contribution.");
         }
-        HostActionEntryCarrierAuthority authority;
+        HostActionEntryCarrierAuthority? authority = null;
         Task? rotation = null;
         _rotationGate.Wait(_disconnect.Token);
         try
@@ -225,7 +225,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
             rotation.GetAwaiter().GetResult();
         }
 
-        return authority;
+        return authority!;
     }
 
     internal void CompleteHostActionEntryCarrier(
