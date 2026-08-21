@@ -156,6 +156,131 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         _targetDispatcher.TerminalCalls.Should().Be(1);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task CrossSidecarUnknownTargetDoesNotDispatchTarget()
+    {
+        var targetCatalog = new SidecarHostDescriptorCatalog(
+            [],
+            [],
+            OutOfProcessModuleHostProtocol.Version,
+            new SidecarPayloadLimits());
+        await using var unauthorizedTarget = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            _targetAddress,
+            _targetToken,
+            targetCatalog);
+        var unauthorizedDispatcher = new CountingActionDispatcher();
+        await unauthorizedTarget.ConnectCapabilitiesAsync(
+            CreateOptions(unauthorizedTarget, unauthorizedDispatcher));
+
+        var (client, dispatcher) = await CreateSourceClientAsync(unauthorizedTarget);
+        await using (client)
+        {
+        var result = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
+
+        result.Result.Succeeded.Should().BeFalse();
+        unauthorizedDispatcher.RunCalls.Should().Be(0);
+        unauthorizedDispatcher.TerminalCalls.Should().Be(0);
+        result.Result.Output.Should().NotContain(item =>
+            item.Text.Contains(CrossSidecarModule.Id, StringComparison.Ordinal));
+        }
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task CrossSidecarFailedTargetReturnsSignedOutcomeAndKeepsSession()
+    {
+        _targetDispatcher.Reset();
+        var (client, dispatcher) = await CreateSourceClientAsync(_targetClient);
+        await using (client)
+        {
+
+        var failed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-fail");
+        failed.Result.Succeeded.Should().BeFalse();
+        _targetDispatcher.RunCalls.Should().Be(1);
+
+        var succeeded = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
+        succeeded.Result.Succeeded.Should().BeTrue();
+        _targetDispatcher.RunCalls.Should().Be(2);
+        _targetDispatcher.TerminalCalls.Should().Be(1);
+        }
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task CrossSidecarCancelledTargetReturnsSignedOutcomeAndKeepsSession()
+    {
+        _targetDispatcher.Reset();
+        _targetDispatcher.CancelOperations = true;
+        try
+        {
+            var (client, dispatcher) = await CreateSourceClientAsync(_targetClient);
+            await using (client)
+            {
+
+            var cancelled = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-cancel");
+            cancelled.Result.Succeeded.Should().BeFalse();
+            _targetDispatcher.RunCalls.Should().Be(1);
+            _targetDispatcher.TerminalCalls.Should().Be(0);
+
+            _targetDispatcher.CancelOperations = false;
+            var succeeded = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
+            succeeded.Result.Succeeded.Should().BeTrue();
+            _targetDispatcher.RunCalls.Should().Be(2);
+            _targetDispatcher.TerminalCalls.Should().Be(1);
+            }
+        }
+        finally
+        {
+            _targetDispatcher.CancelOperations = false;
+        }
+    }
+
+    private async Task<(OutOfProcessModuleClient Client, CountingActionDispatcher Dispatcher)> CreateSourceClientAsync(
+        OutOfProcessModuleClient target)
+    {
+        var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            _sourceAddress,
+            _sourceToken,
+            new SidecarHostDescriptorCatalog(
+                [
+                    ToDescriptor(ApplicationSmokeModule.HostAction),
+                    ToChildDescriptor(),
+                ],
+                [],
+                OutOfProcessModuleHostProtocol.Version,
+                new SidecarPayloadLimits()));
+        var dispatcher = new CountingActionDispatcher();
+        var sourceEntries = new OutOfProcessCrossSidecarActionEntryCatalog();
+        sourceEntries.Add(target);
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        descriptors.Add(ApplicationSmokeModule.ChildAction);
+        await client.ConnectCapabilitiesAsync(
+            CreateOptions(client, dispatcher, sourceEntries, descriptors));
+        return (client, dispatcher);
+    }
+
+    private static async Task<SidecarCliExecutionResponse> InvokeSourceAsync(
+        OutOfProcessModuleClient client,
+        CountingActionDispatcher dispatcher,
+        string mode)
+    {
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.HostEntryCliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction(mode, "source-value"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            ApplicationSmokeModule.HostEntryTraceId,
+            ApplicationSmokeModule.HostEntryIdempotencyKey,
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        dispatcher.HostContextFactory = () => context;
+        return await client.InvokeCliAsync(
+            ApplicationSmokeModule.HostEntryCliName,
+            [mode],
+            context);
+    }
+
     private async Task<OutOfProcessModuleServer> StartServerAsync(
         string name,
         string moduleId,
@@ -345,6 +470,15 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
         public Exception? LastException { get; private set; }
 
+        public bool CancelOperations { get; set; }
+
+        public void Reset()
+        {
+            RunCalls = 0;
+            TerminalCalls = 0;
+            LastException = null;
+        }
+
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -353,6 +487,16 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             CancellationToken ct)
         {
             RunCalls++;
+            if (CancelOperations
+                && action is CrossSidecarAction { Operation: "cancel" })
+            {
+                return new CountingActionOutcome<TResult>(
+                    ActionOutcomeKind.Cancelled,
+                    default!,
+                    new ExecutionError(
+                        SidecarCapabilityErrors.Cancelled,
+                        "The target action was cancelled."));
+            }
             var hostContext = HostContextFactory?.Invoke();
             TResult result;
             try
@@ -380,7 +524,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 throw;
             }
             TerminalCalls++;
-            return new CountingActionOutcome<TResult>(result);
+            return new CountingActionOutcome<TResult>(
+                ActionOutcomeKind.Completed,
+                result,
+                null);
         }
 
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
@@ -392,15 +539,18 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             (await RunAsync(descriptor, action, terminal, snapshot, ct)).Result;
     }
 
-    private sealed class CountingActionOutcome<TResult>(TResult result) : IActionOutcome<TResult>
+    private sealed class CountingActionOutcome<TResult>(
+        ActionOutcomeKind kind,
+        TResult result,
+        ExecutionError? error) : IActionOutcome<TResult>
     {
-        public ActionOutcomeKind Kind => ActionOutcomeKind.Completed;
+        public ActionOutcomeKind Kind => kind;
 
         public TResult Result => result;
 
         public ContinuationToken? Continuation => null;
 
-        public ExecutionError? Error => null;
+        public ExecutionError? Error => error;
 
         public ActionUncertainty? Uncertainty => null;
     }

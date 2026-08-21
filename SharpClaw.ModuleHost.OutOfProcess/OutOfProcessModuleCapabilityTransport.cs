@@ -1033,22 +1033,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         {
             execution = new SidecarTerminalExecutionResult(
                 null,
-                new SidecarSafeFailureIdentity(
-                    Guid.NewGuid(),
-                    SidecarCapabilityErrors.Cancelled,
-                    "The target action terminal was cancelled.",
-                    Retryable: true),
+                _session.Binding.SafeFailure,
                 Completed: true);
         }
         catch (Exception)
         {
             execution = new SidecarTerminalExecutionResult(
                 null,
-                new SidecarSafeFailureIdentity(
-                    Guid.NewGuid(),
-                    SidecarCapabilityErrors.HostFailure,
-                    "The target action terminal failed.",
-                    Retryable: false),
+                _session.Binding.SafeFailure,
                 Completed: true);
         }
 

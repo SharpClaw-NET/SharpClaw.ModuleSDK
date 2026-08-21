@@ -283,6 +283,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "sequential" => "sequential-root",
                     "cross-descriptor" => "cross-descriptor-root",
                     "cross-sidecar" => "cross-sidecar-root",
+                    "cross-sidecar-fail" => "cross-sidecar-fail-root",
+                    "cross-sidecar-cancel" => "cross-sidecar-cancel-root",
                     "rotation" => "rotation-root",
                     _ => "host-entry",
                 };
@@ -423,6 +425,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"cross-descriptor:{(await InvokeChildAsync(context, ct)).Value}"),
                 "cross-sidecar-root" => new ApplicationSmokeResult(
                     $"cross-sidecar:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-fail-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-fail:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-cancel-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-cancel:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "rotation-root" => new ApplicationSmokeResult(
                     $"rotation-root:{(await InvokeChildAsync(context, ct)).Value}"),
                 "sequential-root" => new ApplicationSmokeResult(
@@ -474,7 +480,14 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     CrossSidecarAction,
                     CrossSidecarResult>(
                     CrossSidecarModule.OwnedAction,
-                    new CrossSidecarAction("target", context.Action.Value)),
+                    new CrossSidecarAction(
+                        context.Action.Mode switch
+                        {
+                            "cross-sidecar-fail-root" => "fail",
+                            "cross-sidecar-cancel-root" => "cancel",
+                            _ => "target",
+                        },
+                        context.Action.Value)),
                 ct);
             if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
             {
@@ -582,11 +595,15 @@ public sealed class CrossSidecarModule : ISharpClawModule
         public ValueTask<CrossSidecarResult> InvokeAsync(
             ActionContext<CrossSidecarAction> context,
             CancellationToken ct) =>
-            ValueTask.FromResult(
-                new CrossSidecarResult(
-                    $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
-                    + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
-                    + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
-                    + $"idempotency={context.IdempotencyKey}"));
+            context.Action.Operation switch
+            {
+                "fail" => throw new InvalidOperationException("The target action terminal failed."),
+                _ => ValueTask.FromResult(
+                    new CrossSidecarResult(
+                        $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
+                        + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
+                        + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
+                        + $"idempotency={context.IdempotencyKey}")),
+            };
     }
 }
