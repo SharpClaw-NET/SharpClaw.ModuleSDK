@@ -623,7 +623,23 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         + $"requestCall={request.Call.CallId}; "
                         + $"relayParentCall={relay.Carrier.Authority.SourceParentCall.CallId}; "
                         + $"requestSequence={request.Call.Sequence}; "
-                        + $"relayParentSequence={relay.Carrier.Authority.SourceParentCall.Sequence}");
+                        + $"relayParentSequence={relay.Carrier.Authority.SourceParentCall.Sequence}; "
+                        + $"requestSession={request.Call.SessionId}; "
+                        + $"relayParentSession={relay.Carrier.Authority.SourceParentCall.SessionId}; "
+                        + $"requestRequest={request.Call.RequestId}; "
+                        + $"relayParentRequest={relay.Carrier.Authority.SourceParentCall.RequestId}; "
+                        + $"requestCancellation={request.Call.CancellationId}; "
+                        + $"relayParentCancellation={relay.Carrier.Authority.SourceParentCall.CancellationId}; "
+                        + $"requestNonce={request.Call.ReplayNonce}; "
+                        + $"relayParentNonce={relay.Carrier.Authority.SourceParentCall.ReplayNonce}; "
+                        + $"requestModule={request.Call.ModuleId}; "
+                        + $"relayParentModule={relay.Carrier.Authority.SourceParentCall.ModuleId}; "
+                        + $"requestGraph={request.Call.GraphId}; "
+                        + $"relayParentGraph={relay.Carrier.Authority.SourceParentCall.GraphId}; "
+                        + $"requestCapability={request.Call.Capability}; "
+                        + $"relayParentCapability={relay.Carrier.Authority.SourceParentCall.Capability}; "
+                        + $"requestDeadline={request.Call.Deadline:O}; "
+                        + $"relayParentDeadline={relay.Carrier.Authority.SourceParentCall.Deadline:O}");
                 }
             }
             var validationRequest = request.CrossSidecarActionRequest is null
