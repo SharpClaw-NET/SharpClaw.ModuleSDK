@@ -192,6 +192,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             Session.Binding,
             now,
             (authority, proof) => ValidateCrossSidecarProof(authority, proof));
+        var preBeginTrustedCarrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
+            carrier,
+            Session.Binding,
+            now,
+            (_, _) => true);
         var begin = Session.BeginCrossSidecarActionEntryCall(
             carrier,
             terminal,
@@ -264,6 +269,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"manualCarrierReject={diagnosticManualCarrierReject}; terminalMismatch={diagnosticTerminalMismatch}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
                 + $"preBeginCarrier={preBeginCarrierValidation.Code}:{preBeginCarrierValidation.Message}; "
+                + $"preBeginTrusted={preBeginTrustedCarrierValidation.Code}:{preBeginTrustedCarrierValidation.Message}; "
+                + $"contractsAssembly={typeof(SidecarCrossSidecarActionEntryValidation).Assembly.FullName}; "
+                + $"contractsLocation={typeof(SidecarCrossSidecarActionEntryValidation).Assembly.Location}; "
                 + $"sessionSeparated={diagnosticAuthority.SourceParentCall.SessionId != diagnosticTargetCall.SessionId}; "
                 + $"callSeparated={diagnosticAuthority.SourceParentCall.CallId != diagnosticTargetCall.CallId}; "
                 + $"authorityEntryValid={diagnosticAuthority.TargetEntry.IsWellFormed}; "
