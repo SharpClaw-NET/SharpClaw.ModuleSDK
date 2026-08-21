@@ -1297,8 +1297,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
         {
         }
-        catch
+        catch (Exception ex)
         {
+            Volatile.Write(ref _runFailure, ex);
             try
             {
                 _disconnect.Cancel();
