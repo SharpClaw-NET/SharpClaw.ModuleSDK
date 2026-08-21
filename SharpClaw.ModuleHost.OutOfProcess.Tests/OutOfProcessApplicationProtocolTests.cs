@@ -252,7 +252,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         await client.ConnectCapabilitiesAsync(options);
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
-        const int priorCalls = maximumCalls - 1;
+        const int priorCalls = maximumCalls - 2;
         for (var i = 0; i < priorCalls; i++)
         {
             var result = await client.InvokeCliAsync(
