@@ -473,7 +473,6 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 new ModuleCrossSidecarActionEntryRequest<
                     CrossSidecarAction,
                     CrossSidecarResult>(
-                    CrossSidecarModule.Id,
                     CrossSidecarModule.OwnedAction,
                     new CrossSidecarAction("target", context.Action.Value)),
                 ct);

@@ -217,6 +217,15 @@ public sealed class OutOfProcessActionDescriptorCatalog
                     identity,
                     request,
                     hostTerminal,
+                    cancellationToken),
+            (session, carrier, request, terminal, hostContext, cancellationToken) =>
+                session.DispatchCrossSidecarAsync(
+                    descriptor,
+                    identity,
+                    carrier,
+                    request,
+                    terminal,
+                    hostContext,
                     cancellationToken));
         if (!_registrations.TryAdd(Key(identity), registration))
         {
@@ -275,7 +284,15 @@ public sealed class OutOfProcessActionDescriptorCatalog
             OutOfProcessCapabilityHostSession,
             SidecarActionCapabilityRequest,
             CancellationToken,
-            ValueTask<OutOfProcessActionDispatchResult>> Dispatch);
+            ValueTask<OutOfProcessActionDispatchResult>> Dispatch,
+        Func<
+            OutOfProcessCapabilityHostSession,
+            SidecarCrossSidecarActionEntryCarrier,
+            SidecarActionTerminalTransportRequest,
+            SidecarActionTerminalRegistration,
+            HostActionEntryRequestContext,
+            CancellationToken,
+            ValueTask<OutOfProcessCrossSidecarDispatchResult>> DispatchCrossSidecar);
 }
 
 internal sealed record OutOfProcessActionDispatchResult(
@@ -285,6 +302,14 @@ internal sealed record OutOfProcessActionDispatchResult(
     ActionUncertainty? Uncertainty,
     ContinuationToken? Continuation,
     int TerminalCallCount);
+
+internal sealed record OutOfProcessCrossSidecarDispatchResult(
+    ActionOutcomeKind Kind,
+    SidecarSerializedPayload? Result,
+    ExecutionError? Error,
+    ActionUncertainty? Uncertainty,
+    ContinuationToken? Continuation,
+    SidecarActionTerminalTransportResponse? TerminalResponse);
 
 /// <summary>Supplies the exact host services used by one authorized sidecar session.</summary>
 public sealed class OutOfProcessCapabilityHostOptions

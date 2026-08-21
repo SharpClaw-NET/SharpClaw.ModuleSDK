@@ -217,13 +217,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (string.IsNullOrWhiteSpace(request.TargetModuleId))
-        {
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The cross-sidecar request has no target module identity.");
-        }
-
         if (_parentTerminalRequest is null)
         {
             throw new OutOfProcessCapabilityException(
@@ -253,11 +246,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             },
             cancellationToken);
         var relay = relayResponse.CrossSidecarRelay;
-        if (relay is null
-            || !string.Equals(
-                relay.TargetEntry.ModuleId,
-                request.TargetModuleId,
-                StringComparison.Ordinal))
+        if (relay is null)
         {
             throw new OutOfProcessCapabilityException(
                 relayResponse.CrossSidecarOutcome?.Failure?.Code

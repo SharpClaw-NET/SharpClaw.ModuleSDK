@@ -23,7 +23,6 @@ public interface IModuleActionEntryInvoker
 
 /// <summary>Describes one neutral request for an action owned by another sidecar.</summary>
 public sealed record ModuleCrossSidecarActionEntryRequest<TAction, TResult>(
-    string TargetModuleId,
     ActionDescriptor<TAction, TResult> Descriptor,
     TAction Action);
 
