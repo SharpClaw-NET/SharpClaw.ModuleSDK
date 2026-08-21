@@ -168,9 +168,11 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         {
             Contribution = contextRequestContribution,
         };
-        var context = issuer(request);
+        var context = issuer(request) with
+        {
+            Contribution = contribution,
+        };
         ArgumentNullException.ThrowIfNull(context);
-        context.Contribution = contribution;
         if (!context.IsWellFormed(now))
         {
             throw new InvalidOperationException(
