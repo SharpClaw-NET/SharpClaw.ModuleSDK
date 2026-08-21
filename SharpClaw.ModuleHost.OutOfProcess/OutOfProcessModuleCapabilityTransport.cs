@@ -619,7 +619,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.SpoofedIdentity,
-                        "The cross-sidecar relay does not bind to the parent terminal request.");
+                        $"The cross-sidecar relay does not bind to the parent terminal request. "
+                        + $"requestCall={request.Call.CallId}; "
+                        + $"relayParentCall={relay.Carrier.Authority.SourceParentCall.CallId}; "
+                        + $"requestSequence={request.Call.Sequence}; "
+                        + $"relayParentSequence={relay.Carrier.Authority.SourceParentCall.Sequence}");
                 }
             }
             var validationRequest = request.CrossSidecarActionRequest is null
