@@ -125,13 +125,26 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 SidecarCapabilityErrors.PayloadTooLarge,
                 "The host action context payload exceeds the configured action input limit.");
         }
+        var ingressBinding = new HostActionEntryIngressBinding(
+            ingress,
+            primaryIdentity,
+            ingress == HostActionEntryIngress.CrossModule
+                ? secondaryIdentity
+                : null);
+        var payloadBoundLineage = new HostActionEntryLineage(
+            identity.Key,
+            identity.Version,
+            identity.DescriptorHash,
+            identity.InputTypeIdentity,
+            inputSchema.Version,
+            inputSchemaHash,
+            payload.ContentHash,
+            payload.ByteLength);
         var contribution = new HostActionEntryContribution(
-            new HostActionEntryIngressBinding(
-                ingress,
-                primaryIdentity,
-                ingress == HostActionEntryIngress.CrossModule
-                    ? secondaryIdentity
-                    : null),
+            ingressBinding,
+            payloadBoundLineage);
+        var contextRequestContribution = new HostActionEntryContribution(
+            ingressBinding,
             new HostActionEntryLineage(
                 identity.Key,
                 identity.Version,
@@ -139,8 +152,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 identity.InputTypeIdentity,
                 inputSchema.Version,
                 inputSchemaHash,
-                payload.ContentHash,
-                payload.ByteLength));
+                null,
+                null));
         var request = new HostActionEntryContextRequest(
             ingress,
             invocationId ?? Guid.NewGuid(),
@@ -153,10 +166,11 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             deadline,
             binding.ExpiresAt)
         {
-            Contribution = contribution,
+            Contribution = contextRequestContribution,
         };
         var context = issuer(request);
         ArgumentNullException.ThrowIfNull(context);
+        context.Contribution = contribution;
         if (!context.IsWellFormed(now))
         {
             throw new InvalidOperationException(
