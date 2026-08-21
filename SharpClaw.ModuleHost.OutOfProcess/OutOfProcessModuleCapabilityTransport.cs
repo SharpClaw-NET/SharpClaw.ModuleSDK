@@ -616,58 +616,42 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     && MatchesCapabilityCall(
                         relayParentCall,
                         request.Call);
-                if (relay is null
-                    || !relay.IsWellFormed
-                    || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
-                    || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
-                    || !parentCallMatches)
+                if (relay is not null)
+                {
+                    if (!relay.IsWellFormed
+                        || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
+                        || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
+                        || !parentCallMatches
+                        || !response.Execution.Completed
+                        || response.Execution.Result is not null
+                        || response.Execution.Failure is not null
+                        || response.Receipt != request.Receipt
+                        || response.TerminalId != request.TerminalId
+                        || response.SafeFailure != Binding.SafeFailure)
+                    {
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.SpoofedIdentity,
+                            "The cross-sidecar relay does not bind to the parent terminal request.");
+                    }
+
+                    return response;
+                }
+
+                if (!response.Execution.Completed
+                    || response.Execution.Failure is null
+                    || response.Execution.Result is not null
+                    || response.Receipt != request.Receipt
+                    || response.TerminalId != request.TerminalId
+                    || response.SafeFailure != Binding.SafeFailure)
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.SpoofedIdentity,
-                        $"The cross-sidecar relay does not bind to the parent terminal request. "
-                        + $"relayWellFormed={relay?.IsWellFormed}; "
-                        + $"carrierWellFormed={relay?.Carrier.IsWellFormed}; "
-                        + $"authorityValid={relay?.Carrier.Authority.IsValid}; "
-                        + $"targetEntryWellFormed={relay?.TargetEntry.IsWellFormed}; "
-                        + $"relayDescriptor={relay?.Descriptor.Key}:{relay?.Descriptor.Version}; "
-                        + $"authorityDescriptor={relay?.Carrier.Authority.Descriptor.Key}:{relay?.Carrier.Authority.Descriptor.Version}; "
-                        + $"authorityActionWellFormed={relay?.Carrier.Authority.Action.IsWellFormed}; "
-                        + $"authorityHasReceipt={relay?.Carrier.Authority.HasResultReceipt}; "
-                        + $"authorityTerminal={relay?.Carrier.Authority.TerminalId}; "
-                        + $"authorityProofLength={relay?.Carrier.Authority.Proof?.Length}; "
-                        + $"authorityBinding={relay?.Carrier.Authority.CanonicalBindingHash}; "
-                        + $"sourceSession={relay?.Carrier.Authority.SourceParentCall.SessionId}; "
-                        + $"targetSession={relay?.Carrier.Authority.TargetChildCall.SessionId}; "
-                        + $"sourceGeneration={relay?.Carrier.Authority.SourceBindingGeneration}; "
-                        + $"targetGeneration={relay?.Carrier.Authority.TargetBindingGeneration}; "
-                        + $"sourceCallValid={relay?.Carrier.Authority.SourceParentCall.IsValid}; "
-                        + $"targetCallValid={relay?.Carrier.Authority.TargetChildCall.IsValid}; "
-                        + $"sourceTargetSessionsDifferent={relay is not null && relay.Carrier.Authority.SourceParentCall.SessionId != relay.Carrier.Authority.TargetChildCall.SessionId}; "
-                        + $"sourceTargetCallsDifferent={relay is not null && relay.Carrier.Authority.SourceParentCall.CallId != relay.Carrier.Authority.TargetChildCall.CallId}; "
-                        + $"caller={relay?.Carrier.Authority.Caller.SubjectId}; "
-                        + $"features={relay?.Carrier.Authority.Features.Items.Count}; "
-                        + $"trace={relay?.Carrier.Authority.TraceId}; "
-                        + $"idempotency={relay?.Carrier.Authority.IdempotencyKey}; "
-                        + $"cancellationMatch={relay is not null && relay.Carrier.Authority.Cancellation.CancellationId == relay.Carrier.Authority.TargetChildCall.CancellationId}; "
-                        + $"deadlineIssued={relay?.Carrier.Authority.Deadline > relay?.Carrier.Authority.IssuedAt}; "
-                        + $"deadlineExpiry={relay?.Carrier.Authority.Deadline <= relay?.Carrier.Authority.ExpiresAt}; "
-                        + $"owner={relay?.Carrier.Authority.TerminalOwnerModuleId}/{relay?.Carrier.Authority.TerminalOwnerGraphId}; "
-                        + $"outcome={relay?.Carrier.Authority.OutcomeEnvelope?.TerminalCallCount}; "
-                        + $"execution={relay?.Carrier.Authority.Execution is not null}; "
-                        + $"responseFailure={relay?.Carrier.Authority.ResponseSafeFailure?.IsValid}; "
-                        + $"outcomeReceipt={relay?.Carrier.Authority.OutcomeEnvelope?.Receipt == relay?.Carrier.Authority.ResultReceipt}; "
-                        + $"relayKey={relay?.TargetEntry.Descriptor.Key}; "
-                        + $"relayVersion={relay?.TargetEntry.Descriptor.Version}; "
-                        + $"requestKey={crossRequest.ActionKey}; "
-                        + $"requestVersion={crossRequest.ActionVersion}; "
-                        + $"parentMatches={parentCallMatches}; "
-                        + $"request={DescribeCapabilityCall(request.Call)}; "
-                        + $"parent={DescribeCapabilityCall(relayParentCall)};");
+                        "The cross-sidecar relay failure does not bind to the parent terminal request.");
                 }
+
+                return response;
             }
-            var validationRequest = request.CrossSidecarActionRequest is null
-                ? request
-                : request with { CrossSidecarActionRequest = null };
+            var validationRequest = request;
             var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
                 validationRequest,
                 response,
