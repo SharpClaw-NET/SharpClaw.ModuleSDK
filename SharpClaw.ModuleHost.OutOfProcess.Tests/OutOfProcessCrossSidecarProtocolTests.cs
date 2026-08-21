@@ -135,7 +135,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + $"; sourceFailure={client.CapabilitySession.RunFailure}"
             + $"; targetFailure={_targetClient.CapabilitySession.RunFailure}"
             + $"; sourceHandledFailure={client.CapabilitySession.LastHandledFailure}"
-            + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}");
+            + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}"
+            + $"; sourceServerFailure={_sourceServer.CapabilityFailure}"
+            + $"; targetServerFailure={_targetServer.CapabilityFailure}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
