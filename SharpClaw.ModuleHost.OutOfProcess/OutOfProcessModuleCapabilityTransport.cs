@@ -16,12 +16,15 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private string? _graphId;
     private SidecarPayloadLimits? _payloadLimits;
     private IReadOnlyList<ModuleActionHook>? _actionHooks;
+    private ModuleContributionGraph? _graph;
+    private IServiceProvider? _services;
     private SidecarHostAuthorization? _authorization;
     public void Initialize(
         string moduleId,
         string graphId,
         SidecarPayloadLimits payloadLimits,
-        IReadOnlyList<ModuleActionHook> actionHooks)
+        IReadOnlyList<ModuleActionHook> actionHooks,
+        ModuleContributionGraph? graph = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
         ArgumentException.ThrowIfNullOrWhiteSpace(graphId);
@@ -35,7 +38,15 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _graphId = graphId;
             _payloadLimits = payloadLimits;
             _actionHooks = actionHooks;
+            _graph = graph;
         }
+    }
+
+    internal void SetServices(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        lock (_sync)
+            _services = services;
     }
 
     internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
@@ -187,6 +198,12 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
                 "The module capability transport is not authorized.");
+        var graph = Volatile.Read(ref _graph)
+            ?? throw new InvalidOperationException(
+                "The module capability transport has no compiled graph.");
+        var services = Volatile.Read(ref _services)
+            ?? throw new InvalidOperationException(
+                "The module capability transport has no module service provider.");
         var first = await OutOfProcessCapabilityWire.ReceiveAsync(
             socket,
             limits.ProtocolMessageBytes,
@@ -246,7 +263,10 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             controlToken,
             limits,
             authorization,
-            RegisterAuthenticationNonce);
+            RegisterAuthenticationNonce,
+            this,
+            graph.ActionEntries,
+            services);
         lock (_sync)
         {
             if (_connection is not null)
@@ -355,6 +375,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly SidecarPayloadLimits _limits;
     private readonly SidecarHostAuthorization _authorization;
     private readonly Func<string, bool> _registerAuthenticationNonce;
+    private readonly OutOfProcessModuleCapabilityTransport _transport;
+    private readonly IReadOnlyList<ModuleActionEntryRegistration> _actionEntries;
+    private readonly IServiceProvider _services;
     private readonly ConcurrentDictionary<Guid, PendingAction> _actions = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarStorageCapabilityResponse>> _storage = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
@@ -373,7 +396,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         string controlToken,
         SidecarPayloadLimits limits,
         SidecarHostAuthorization authorization,
-        Func<string, bool> registerAuthenticationNonce)
+        Func<string, bool> registerAuthenticationNonce,
+        OutOfProcessModuleCapabilityTransport transport,
+        IReadOnlyList<ModuleActionEntryRegistration> actionEntries,
+        IServiceProvider services)
     {
         _socket = socket;
         _session = session;
@@ -382,6 +408,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
         _registerAuthenticationNonce = registerAuthenticationNonce
             ?? throw new ArgumentNullException(nameof(registerAuthenticationNonce));
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _actionEntries = actionEntries ?? throw new ArgumentNullException(nameof(actionEntries));
+        _services = services ?? throw new ArgumentNullException(nameof(services));
         _terminalQueue = new BoundedExecutionQueue(
             Math.Max(session.Binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
             Math.Max(session.Binding.ConcurrencyLimits.MaximumInFlightCalls, 1));
@@ -747,6 +776,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
     {
+        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
+            && request.CrossSidecarActionRequest is null
+            && request.Context is not null)
+        {
+            await HandleCrossSidecarTerminalRequestAsync(request, ct);
+            return;
+        }
+
         if (!_actions.TryGetValue(request.Call.CallId, out var pending)
             || pending.Terminal is null)
         {
@@ -803,6 +840,164 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             SendGate,
             ct);
     }
+
+    private async Task HandleCrossSidecarTerminalRequestAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken ct)
+    {
+        var context = request.Context
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The cross-sidecar terminal request has no execution context.");
+        var authorityValid = ValidateTerminalAuthority(
+                request.Authority,
+                SidecarCapabilityTransportValidation.ComputeTerminalAuthorityBindingHash(
+                    request.Authority))
+            && request.Authority.ModuleId == Binding.ModuleId
+            && request.Authority.GraphId == Binding.GraphId
+            && request.Authority.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
+            && request.Authority.CallId == request.Call.CallId
+            && request.Authority.TerminalId == request.TerminalId
+            && request.Authority.InvocationId == context.InvocationId
+            && request.Authority.ParentInvocationId == context.ParentInvocationId
+            && request.Authority.TraceId == context.TraceId
+            && request.Authority.IdempotencyKey == context.IdempotencyKey
+            && request.Authority.Depth == context.Depth
+            && request.Authority.Attempt == context.Attempt
+            && request.Authority.Caller.Equals(context.Caller)
+            && string.Equals(
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(request.Authority.Features)),
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(context.Features)),
+                StringComparison.Ordinal)
+            && request.Descriptor.Key == context.Descriptor.Key
+            && request.Descriptor.Version == context.Descriptor.Version
+            && OutOfProcessCapabilityTransportPayloadMatches(
+                request.EffectiveAction,
+                context.EffectiveAction)
+            && string.Equals(
+                request.Authority.SnapshotContentHash,
+                SidecarCapabilityTransportCodec.ComputeSha256(
+                    SidecarCapabilityTransportCodec.Serialize(context.Snapshot)),
+                StringComparison.Ordinal);
+        if (!authorityValid)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar terminal authority does not match its execution context.");
+        }
+
+        var registration = _actionEntries.SingleOrDefault(entry =>
+            entry.TerminalId == request.TerminalId
+            && OutOfProcessCapabilityTransportDescriptorMatches(
+                entry.Descriptor,
+                request.Descriptor));
+        if (registration is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The target module does not own the requested action terminal.");
+        }
+
+        var contribution = new HostActionEntryContribution(
+            new HostActionEntryIngressBinding(
+                HostActionEntryIngress.CrossModule,
+                Binding.ModuleId,
+                Binding.GraphId),
+            new HostActionEntryLineage(
+                request.Descriptor.Key,
+                request.Descriptor.Version,
+                request.Descriptor.DescriptorHash,
+                request.Descriptor.InputTypeIdentity,
+                request.Descriptor.InputSchemaVersion,
+                request.Descriptor.InputSchemaHash,
+                request.EffectiveAction.ContentHash,
+                request.EffectiveAction.ByteLength));
+        var hostEntry = new OutOfProcessHostActionEntry(
+            _transport,
+            request.Descriptor,
+            request,
+            contribution);
+        SidecarTerminalExecutionResult execution;
+        try
+        {
+            execution = await registration.Invoker.InvokeAsync(
+                _services,
+                context,
+                hostEntry,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            execution = new SidecarTerminalExecutionResult(
+                null,
+                new SidecarSafeFailureIdentity(
+                    Guid.NewGuid(),
+                    SidecarCapabilityErrors.Cancelled,
+                    "The target action terminal was cancelled.",
+                    Retryable: true),
+                Completed: true);
+        }
+        catch (Exception)
+        {
+            execution = new SidecarTerminalExecutionResult(
+                null,
+                new SidecarSafeFailureIdentity(
+                    Guid.NewGuid(),
+                    SidecarCapabilityErrors.HostFailure,
+                    "The target action terminal failed.",
+                    Retryable: false),
+                Completed: true);
+        }
+
+        var response = new SidecarActionTerminalTransportResponse(
+            execution.Result is null
+                ? null
+                : new SidecarActionResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    request.Descriptor.Key,
+                    request.Descriptor.Version,
+                    execution.Result.TypeIdentity,
+                    execution.Result.ContentHash),
+            execution,
+            request.Receipt,
+            _session.Binding.SafeFailure)
+        {
+            TerminalId = request.TerminalId,
+        };
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+            response,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
+    }
+
+    private static bool OutOfProcessCapabilityTransportPayloadMatches(
+        SidecarSerializedPayload left,
+        SidecarSerializedPayload right) =>
+        string.Equals(left.TypeIdentity, right.TypeIdentity, StringComparison.Ordinal)
+        && left.SchemaVersion == right.SchemaVersion
+        && string.Equals(left.ContentHash, right.ContentHash, StringComparison.Ordinal)
+        && left.ByteLength == right.ByteLength
+        && string.Equals(left.Value.GetRawText(), right.Value.GetRawText(), StringComparison.Ordinal);
+
+    private static bool OutOfProcessCapabilityTransportDescriptorMatches(
+        SidecarActionDescriptorIdentity left,
+        SidecarActionDescriptorIdentity right) =>
+        left.Key == right.Key
+        && left.Version == right.Version
+        && string.Equals(left.Category, right.Category, StringComparison.Ordinal)
+        && string.Equals(left.InputTypeIdentity, right.InputTypeIdentity, StringComparison.Ordinal)
+        && left.InputSchemaVersion == right.InputSchemaVersion
+        && string.Equals(left.InputSchemaHash, right.InputSchemaHash, StringComparison.Ordinal)
+        && string.Equals(left.ResultTypeIdentity, right.ResultTypeIdentity, StringComparison.Ordinal)
+        && left.ResultSchemaVersion == right.ResultSchemaVersion
+        && string.Equals(left.ResultSchemaHash, right.ResultSchemaHash, StringComparison.Ordinal)
+        && string.Equals(left.DescriptorHash, right.DescriptorHash, StringComparison.Ordinal);
 
     private async Task HandleRebindAsync(
         SidecarCapabilitySessionBinding binding,

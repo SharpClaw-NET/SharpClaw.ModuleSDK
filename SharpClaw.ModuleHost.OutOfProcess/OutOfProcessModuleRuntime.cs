@@ -111,7 +111,8 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
                 graph.Identity.Id,
                 graph.ContractHash,
                 graph.PayloadLimits,
-                graph.ActionHooks);
+                graph.ActionHooks,
+                graph);
             IServiceCollection services = new ServiceCollection();
             foreach (var descriptor in graph.Services)
             {
@@ -142,6 +143,7 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
                 ValidateOnBuild = true,
                 ValidateScopes = true,
             });
+            capabilityTransport.SetServices(provider);
             return new OutOfProcessModuleRuntime(
                 root,
                 loadContext,

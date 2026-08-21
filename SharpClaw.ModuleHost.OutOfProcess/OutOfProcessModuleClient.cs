@@ -57,7 +57,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         ?? throw new InvalidOperationException(
             "The sidecar capability channel is not connected.");
 
-    private OutOfProcessCapabilityHostSession ConnectedCapabilitySession =>
+    internal OutOfProcessCapabilityHostSession CapabilitySession =>
         Volatile.Read(ref _capabilitySession)
         ?? throw new InvalidOperationException(
             "The sidecar capability channel is not connected.");
@@ -84,7 +84,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         DateTimeOffset deadline,
         Guid? invocationId = null)
     {
-        var context = ConnectedCapabilitySession.IssueHostActionEntryContext(
+        var context = CapabilitySession.IssueHostActionEntryContext(
             ingress,
             primaryIdentity,
             secondaryIdentity,
@@ -96,7 +96,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             idempotencyKey,
             deadline,
             invocationId);
-        ConnectedCapabilitySession.RequestRotationRetry();
+        CapabilitySession.RequestRotationRetry();
         return context;
     }
 
@@ -384,7 +384,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 $"CLI command '{command}' is not declared by the sidecar.");
         }
 
-        var carrierAuthority = ConnectedCapabilitySession
+            var carrierAuthority = CapabilitySession
             .BeginHostActionEntryCarrier(hostActionContext);
         var completion = HostActionEntryCarrierCompletionKind.Failed;
         try
@@ -426,7 +426,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
         finally
         {
-            ConnectedCapabilitySession.CompleteHostActionEntryCarrier(
+            CapabilitySession.CompleteHostActionEntryCarrier(
                 carrierAuthority,
                 completion);
         }
@@ -568,7 +568,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 SidecarProtocolErrors.MalformedMessage,
                 "The tool host action context is invalid for the requested tool.");
         }
-        var carrierAuthority = ConnectedCapabilitySession
+        var carrierAuthority = CapabilitySession
             .BeginHostActionEntryCarrier(hostActionContext);
         var completion = HostActionEntryCarrierCompletionKind.Failed;
         ClientWebSocket? socket = null;
@@ -624,7 +624,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         finally
         {
             socket?.Dispose();
-            ConnectedCapabilitySession.CompleteHostActionEntryCarrier(
+            CapabilitySession.CompleteHostActionEntryCarrier(
                 carrierAuthority,
                 completion);
         }

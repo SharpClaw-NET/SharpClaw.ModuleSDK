@@ -3,7 +3,7 @@ using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
-internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
+internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
 {
     private readonly OutOfProcessModuleCapabilityTransport _transport;
     private readonly SidecarActionDescriptorIdentity? _parentDescriptor;
@@ -206,6 +206,100 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry
                 terminalCancellation,
                 _transport,
                 contribution),
+            cancellationToken);
+        ThrowIfHostEntryFailed(response);
+        return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+    }
+
+    public async ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+        ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (string.IsNullOrWhiteSpace(request.TargetModuleId))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The cross-sidecar request has no target module identity.");
+        }
+
+        if (_parentTerminalRequest is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnsupportedCapability,
+                "Cross-sidecar action entry requires an authenticated parent terminal exchange.");
+        }
+
+        var identity = OutOfProcessActionDescriptorIdentity.Create(request.Descriptor);
+        var deadline = _parentTerminalRequest.Deadline;
+        if (_parentTerminalRequest.Call.Deadline < deadline)
+            deadline = _parentTerminalRequest.Call.Deadline;
+        var action = OutOfProcessActionDispatcher.Payload(
+            request.Action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        var neutralRequest = new SidecarCrossSidecarActionEntryRequest(
+            identity.Key,
+            identity.Version,
+            action,
+            deadline,
+            deadline);
+        var relayResponse = await _transport.InvokeActionTerminalAsync(
+            _parentTerminalRequest with
+            {
+                CrossSidecarActionRequest = neutralRequest,
+                NestedCarrierRequest = null,
+            },
+            cancellationToken);
+        var relay = relayResponse.CrossSidecarRelay;
+        if (relay is null
+            || !string.Equals(
+                relay.TargetEntry.ModuleId,
+                request.TargetModuleId,
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                relayResponse.CrossSidecarOutcome?.Failure?.Code
+                    ?? SidecarCapabilityErrors.UnknownAction,
+                relayResponse.CrossSidecarOutcome?.Failure?.Message
+                    ?? "The host did not issue a target action-entry carrier.");
+        }
+
+        if (!OutOfProcessActionDescriptorIdentity.Matches(
+                identity,
+                relay.TargetEntry.Descriptor))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The target relay descriptor does not match the requested typed action.");
+        }
+
+        var call = _transport.CreateCall(
+            SidecarCapabilityKind.Action,
+            deadline,
+            cancellationToken);
+        var childRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
+            call,
+            relay.TargetEntry.Descriptor,
+            action,
+            new SidecarCancellationIdentity(
+                call.CancellationId,
+                SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
+                deadline),
+            deadline,
+            relay.Carrier,
+            new SidecarActionTerminalRegistration(
+                relay.TargetEntry.Descriptor.DescriptorHash == identity.DescriptorHash
+                    ? relay.Carrier.Authority.TerminalId
+                    : Guid.Empty,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.ResultTypeIdentity,
+                identity.ResultSchemaVersion,
+                identity.DescriptorHash));
+        var response = await _transport.InvokeActionAsync(
+            childRequest,
+            terminal: null,
             cancellationToken);
         ThrowIfHostEntryFailed(response);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);

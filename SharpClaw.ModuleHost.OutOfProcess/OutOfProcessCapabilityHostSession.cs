@@ -5,7 +5,7 @@ using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
-internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
+internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposable
 {
     private readonly WebSocket _socket;
     private SidecarCapabilitySession _session;
@@ -776,6 +776,25 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
 
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
+        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
+        {
+            var carrier = request.CrossSidecarCarrier;
+            var catalog = _options.CrossSidecarActionEntries;
+            return carrier is not null
+                && request.Terminal is { IsWellFormed: true }
+                && catalog is not null
+                && catalog.TryResolve(
+                    carrier.Authority.TargetEntry.Descriptor.Key,
+                    carrier.Authority.TargetEntry.Descriptor.Version,
+                    out var target)
+                && OutOfProcessActionDescriptorIdentity.Matches(
+                    target.Entry.Descriptor,
+                    request.Descriptor)
+                && target.Client.CapabilitySession.ValidateCrossSidecarCarrier(
+                    carrier,
+                    DateTimeOffset.UtcNow);
+        }
+
         var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
             grant.ActionKey == request.Descriptor.Key
             && grant.ActionVersion == request.Descriptor.Version);
@@ -822,6 +841,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
+        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
+        {
+            await HandleCrossSidecarActionRequestAsync(request, channelCt);
+            return;
+        }
+
         ActiveCall? active = null;
         try
         {
@@ -963,6 +988,12 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
     {
+        if (request.CrossSidecarActionRequest is not null)
+        {
+            await HandleCrossSidecarTerminalRequestAsync(request, ct);
+            return;
+        }
+
         if (request.NestedCarrierRequest is null
             || !_calls.TryGetValue(request.Call.CallId, out var active)
             || active.ActionRequest is not { } initiatingRequest

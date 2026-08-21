@@ -21,6 +21,45 @@ public interface IModuleActionEntryInvoker
         CancellationToken cancellationToken);
 }
 
+/// <summary>Describes one neutral request for an action owned by another sidecar.</summary>
+public sealed record ModuleCrossSidecarActionEntryRequest<TAction, TResult>(
+    string TargetModuleId,
+    ActionDescriptor<TAction, TResult> Descriptor,
+    TAction Action);
+
+/// <summary>Provides cross-sidecar action entry transport for an out-of-process host.</summary>
+public interface IModuleCrossSidecarActionEntry
+{
+    /// <summary>Invokes one target-sidecar-owned action entry.</summary>
+    ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+        ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Provides the cross-sidecar action-entry extension on the Contracts host entry.</summary>
+public static class ModuleCrossSidecarActionEntryExtensions
+{
+    /// <summary>Invokes one target module terminal through the existing action exchange.</summary>
+    public static ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+        this IHostActionEntry hostActionEntry,
+        ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hostActionEntry);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Descriptor);
+        if (hostActionEntry is not IModuleCrossSidecarActionEntry crossSidecar)
+        {
+            throw new InvalidOperationException(
+                "The configured host action entry does not support cross-sidecar transport.");
+        }
+
+        return crossSidecar.InvokeCrossSidecarAsync(
+            request,
+            cancellationToken);
+    }
+}
+
 /// <summary>Describes one action terminal owned by a module.</summary>
 public sealed class ModuleActionEntryRegistration
 {

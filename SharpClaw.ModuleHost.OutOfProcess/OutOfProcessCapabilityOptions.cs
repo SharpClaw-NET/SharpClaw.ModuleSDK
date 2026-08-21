@@ -297,7 +297,8 @@ public sealed class OutOfProcessCapabilityHostOptions
         IEnumerable<string> ownedStorageNames,
         OutOfProcessActionDescriptorCatalog actionDescriptors,
         ActionPipelineSnapshot actionSnapshot,
-        OutOfProcessHostActionEntryContextRegistry hostActionEntryContexts)
+        OutOfProcessHostActionEntryContextRegistry hostActionEntryContexts,
+        OutOfProcessCrossSidecarActionEntryCatalog? crossSidecarActionEntries = null)
     {
         StorageGateway = storageGateway
             ?? throw new ArgumentNullException(nameof(storageGateway));
@@ -310,6 +311,7 @@ public sealed class OutOfProcessCapabilityHostOptions
             ?? throw new ArgumentNullException(nameof(actionSnapshot));
         HostActionEntryContexts = hostActionEntryContexts
             ?? throw new ArgumentNullException(nameof(hostActionEntryContexts));
+        CrossSidecarActionEntries = crossSidecarActionEntries;
         ArgumentNullException.ThrowIfNull(ownedStorageNames);
         OwnedStorageNames = new HashSet<string>(
             ownedStorageNames.Where(value => !string.IsNullOrWhiteSpace(value)),
@@ -340,6 +342,9 @@ public sealed class OutOfProcessCapabilityHostOptions
 
     /// <summary>Gets the one-use host context registry for ingress carriers.</summary>
     public OutOfProcessHostActionEntryContextRegistry HostActionEntryContexts { get; }
+
+    /// <summary>Gets the host-owned target action-entry catalog.</summary>
+    public OutOfProcessCrossSidecarActionEntryCatalog? CrossSidecarActionEntries { get; }
 
     internal Func<Task>? BeforeRotationStartAsync { get; set; }
 
