@@ -106,10 +106,23 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             ApplicationSmokeModule.HostEntryIdempotencyKey,
             DateTimeOffset.UtcNow.AddMinutes(1));
         dispatcher.HostContextFactory = () => context;
-        var result = await client.InvokeCliAsync(
-            ApplicationSmokeModule.HostEntryCliName,
-            ["cross-sidecar"],
-            context);
+        OutOfProcessActionResult result;
+        try
+        {
+            result = await client.InvokeCliAsync(
+                ApplicationSmokeModule.HostEntryCliName,
+                ["cross-sidecar"],
+                context);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Cross-sidecar invocation failed: {ex}; "
+                + $"sourceFailure={client.CapabilitySession.RunFailure}; "
+                + $"targetFailure={_targetClient.CapabilitySession.RunFailure}; "
+                + $"dispatcher={dispatcher.LastException}",
+                ex);
+        }
 
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
