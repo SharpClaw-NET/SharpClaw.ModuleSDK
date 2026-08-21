@@ -187,6 +187,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         ArgumentNullException.ThrowIfNull(carrier);
         ArgumentNullException.ThrowIfNull(terminal);
         var now = DateTimeOffset.UtcNow;
+        var preBeginCarrierValidation = SidecarCrossSidecarActionEntryValidation.ValidateCarrier(
+            carrier,
+            Session.Binding,
+            now,
+            (authority, proof) => ValidateCrossSidecarProof(authority, proof));
         var begin = Session.BeginCrossSidecarActionEntryCall(
             carrier,
             terminal,
@@ -258,6 +263,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"currentSession={RuntimeHelpers.GetHashCode(Session)}; "
                 + $"manualCarrierReject={diagnosticManualCarrierReject}; terminalMismatch={diagnosticTerminalMismatch}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
+                + $"preBeginCarrier={preBeginCarrierValidation.Code}:{preBeginCarrierValidation.Message}; "
+                + $"sessionSeparated={diagnosticAuthority.SourceParentCall.SessionId != diagnosticTargetCall.SessionId}; "
+                + $"callSeparated={diagnosticAuthority.SourceParentCall.CallId != diagnosticTargetCall.CallId}; "
+                + $"authorityEntryValid={diagnosticAuthority.TargetEntry.IsWellFormed}; "
+                + $"authorityActionValid={diagnosticAuthority.Action.IsWellFormed}; "
+                + $"authorityCaller={diagnosticAuthority.Caller.SubjectId}; "
+                + $"authorityFeatures={diagnosticAuthority.Features.Items.Count}; "
+                + $"authorityCancellationHash={!string.IsNullOrWhiteSpace(diagnosticAuthority.Cancellation.AuthorityHash)}; "
                 + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
                 + $"targetRequest={diagnosticTargetCall.RequestId == diagnosticBinding.RequestId}; "
                 + $"targetCancellation={diagnosticTargetCall.CancellationId == diagnosticBinding.CancellationId}; "
