@@ -615,31 +615,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     || !relay.IsWellFormed
                     || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
                     || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
-                    || relay.Carrier.Authority.SourceParentCall != request.Call)
+                    || !MatchesCapabilityCall(
+                        relay.Carrier.Authority.SourceParentCall,
+                        request.Call))
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.SpoofedIdentity,
-                        $"The cross-sidecar relay does not bind to the parent terminal request. "
-                        + $"requestCall={request.Call.CallId}; "
-                        + $"relayParentCall={relay.Carrier.Authority.SourceParentCall.CallId}; "
-                        + $"requestSequence={request.Call.Sequence}; "
-                        + $"relayParentSequence={relay.Carrier.Authority.SourceParentCall.Sequence}; "
-                        + $"requestSession={request.Call.SessionId}; "
-                        + $"relayParentSession={relay.Carrier.Authority.SourceParentCall.SessionId}; "
-                        + $"requestRequest={request.Call.RequestId}; "
-                        + $"relayParentRequest={relay.Carrier.Authority.SourceParentCall.RequestId}; "
-                        + $"requestCancellation={request.Call.CancellationId}; "
-                        + $"relayParentCancellation={relay.Carrier.Authority.SourceParentCall.CancellationId}; "
-                        + $"requestNonce={request.Call.ReplayNonce}; "
-                        + $"relayParentNonce={relay.Carrier.Authority.SourceParentCall.ReplayNonce}; "
-                        + $"requestModule={request.Call.ModuleId}; "
-                        + $"relayParentModule={relay.Carrier.Authority.SourceParentCall.ModuleId}; "
-                        + $"requestGraph={request.Call.GraphId}; "
-                        + $"relayParentGraph={relay.Carrier.Authority.SourceParentCall.GraphId}; "
-                        + $"requestCapability={request.Call.Capability}; "
-                        + $"relayParentCapability={relay.Carrier.Authority.SourceParentCall.Capability}; "
-                        + $"requestDeadline={request.Call.Deadline:O}; "
-                        + $"relayParentDeadline={relay.Carrier.Authority.SourceParentCall.Deadline:O}");
+                        "The cross-sidecar relay does not bind to the parent terminal request.");
                 }
             }
             var validationRequest = request.CrossSidecarActionRequest is null
@@ -1066,6 +1048,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         && left.ResultSchemaVersion == right.ResultSchemaVersion
         && string.Equals(left.ResultSchemaHash, right.ResultSchemaHash, StringComparison.Ordinal)
         && string.Equals(left.DescriptorHash, right.DescriptorHash, StringComparison.Ordinal);
+
+    private static bool MatchesCapabilityCall(
+        SidecarCapabilityCallIdentity left,
+        SidecarCapabilityCallIdentity right) =>
+        left.SessionId == right.SessionId
+        && left.RequestId == right.RequestId
+        && left.CancellationId == right.CancellationId
+        && left.CallId == right.CallId
+        && string.Equals(left.ReplayNonce, right.ReplayNonce, StringComparison.Ordinal)
+        && string.Equals(left.ModuleId, right.ModuleId, StringComparison.Ordinal)
+        && string.Equals(left.GraphId, right.GraphId, StringComparison.Ordinal)
+        && left.Capability == right.Capability
+        && left.Sequence == right.Sequence
+        && left.Deadline == right.Deadline;
 
     private async Task HandleRebindAsync(
         SidecarCapabilitySessionBinding binding,
