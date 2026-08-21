@@ -1299,7 +1299,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             Completed: true);
     }
 
-    private static SidecarActionCapabilityResponse CreateIncomingActionFailure(
+    private SidecarActionCapabilityResponse CreateIncomingActionFailure(
         SidecarActionCapabilityRequest request,
         ActionOutcomeKind kind,
         ExecutionError? error) =>
@@ -1312,10 +1312,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 error!,
                 null!,
                 null!,
-                null!,
+                Binding.SafeFailure,
                 TerminalCallCount: 0),
             null!,
-            null!,
+            Binding.SafeFailure,
             Completed: true);
 
     private static bool OutOfProcessActionDescriptorMatches(
