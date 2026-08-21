@@ -212,6 +212,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"targetDeadlineValid={diagnosticAuthority.Deadline > now}; "
                 + $"targetGenerationPositive={diagnosticAuthority.TargetBindingGeneration > 0}; "
                 + $"targetGeneration={diagnosticAuthority.TargetBindingGeneration == Session.BindingGeneration}; "
+                + $"carrierGeneration={carrier.BindingGeneration}; "
+                + $"sessionGeneration={Session.BindingGeneration}; "
                 + $"expiry={diagnosticAuthority.ExpiresAt > now && diagnosticAuthority.Deadline > now}; "
                 + $"expiryWithinBinding={diagnosticAuthority.ExpiresAt <= diagnosticBinding.ExpiresAt}; "
                 + $"actionGrant={diagnosticBinding.Grant.Allows(SidecarCapabilityKind.Action)}; "
