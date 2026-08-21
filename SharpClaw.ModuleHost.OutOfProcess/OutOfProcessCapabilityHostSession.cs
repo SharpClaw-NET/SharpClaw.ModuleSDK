@@ -198,6 +198,7 @@ internal sealed class OutOfProcessCapabilityHostSession : IAsyncDisposable
                 var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
                 if (_rotationReady is null
                     && (_rotationTask is null || _rotationTask.IsCompleted)
+                    && !_options.HostActionEntryContexts.HasPendingContexts
                     && Volatile.Read(ref _completedCallsForBinding)
                         >= Math.Max(maximumCalls - 2, 1))
                 {
