@@ -538,14 +538,6 @@ public sealed class CrossSidecarModule : ISharpClawModule
 {
     public const string Id = "cross_sidecar_target_module";
 
-    private static int _terminalCalls;
-
-    public static int TerminalCalls =>
-        System.Threading.Volatile.Read(ref _terminalCalls);
-
-    public static void ResetTerminalCalls() =>
-        System.Threading.Volatile.Write(ref _terminalCalls, 0);
-
     public static Guid TerminalId { get; } =
         new("33333333-3333-4333-8333-333333333333");
 
@@ -590,15 +582,12 @@ public sealed class CrossSidecarModule : ISharpClawModule
 
         public ValueTask<CrossSidecarResult> InvokeAsync(
             ActionContext<CrossSidecarAction> context,
-            CancellationToken ct)
-        {
-            System.Threading.Interlocked.Increment(ref _terminalCalls);
-            return ValueTask.FromResult(
+            CancellationToken ct) =>
+            ValueTask.FromResult(
                 new CrossSidecarResult(
                     $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
                     + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
                     + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
                     + $"idempotency={context.IdempotencyKey}"));
-        }
     }
 }
