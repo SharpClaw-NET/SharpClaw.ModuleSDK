@@ -214,7 +214,7 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         endpoint.Succeeded.Should().BeTrue();
         endpoint.Payload.Should().NotBeNull();
-        endpoint.Payload!.Value.GetProperty("value").GetString().Should().Be("endpoint:action");
+        endpoint.Payload!.Value.GetProperty("value").GetString().Should().Be("entry-terminal:action");
 
         var importAction = new AgentsJobImportAction("job-123");
         var importContext = client.IssueHostActionContext(
@@ -404,7 +404,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         var pendingContext = IssueHostEntryContextThroughRegistry(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "nested-root");
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 2;
@@ -535,7 +536,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         var pendingContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "nested-root");
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
         for (var i = 0; i < priorCalls; i++)
         {
@@ -575,7 +577,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         hostContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "sequential-root");
         var sequential = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
@@ -620,7 +623,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         var pendingContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "sequential-root");
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
         for (var i = 0; i < priorCalls; i++)
         {
@@ -702,11 +706,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         var nestedContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "nested-root");
         var sequentialContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "sequential-root");
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
         for (var i = 0; i < priorCalls; i++)
         {
@@ -760,7 +766,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         hostContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "sequential-root");
         var sequential = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
@@ -818,7 +825,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         hostContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "cross-descriptor-root");
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["cross-descriptor"],
@@ -874,7 +882,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         hostContext = IssueHostEntryContext(
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
-            grantExpiresAt);
+            grantExpiresAt,
+            "rotation-root");
         var nested = await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["rotation"],
@@ -1054,7 +1063,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         start.HostActionContext.Deadline.Should().Be(deadline);
         start.HostActionContext.Contribution!.Lineage.ActionKey.Should().Be(
             ApplicationSmokeModule.HostAction.Key);
-        start.HostActionContext.Contribution.Lineage.IsPayloadBound.Should().BeFalse();
+        start.HostActionContext.Contribution.Lineage.IsPayloadBound.Should().BeTrue();
         start.InputSchema.Should().Be(definition.InputSchema);
 
         var result = await client.InvokeToolAsync(start);
@@ -1421,18 +1430,20 @@ public sealed class OutOfProcessApplicationProtocolTests
         IssueHostEntryContext(
             client,
             ApplicationSmokeModule.HostEntryCliName,
-            deadline);
+            deadline,
+            "host-entry");
 
     private static HostActionEntryRequestContext IssueHostEntryContext(
         OutOfProcessModuleClient client,
         string command,
-        DateTimeOffset deadline) =>
+        DateTimeOffset deadline,
+        string actionMode = "host-entry") =>
         client.IssueHostActionContext(
             HostActionEntryIngress.Cli,
             command,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
-            new ApplicationSmokeAction("host-entry", "action"),
+            new ApplicationSmokeAction(actionMode, "action"),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
             Guid.NewGuid(),
@@ -1445,18 +1456,20 @@ public sealed class OutOfProcessApplicationProtocolTests
         IssueHostEntryContextThroughRegistry(
             client,
             ApplicationSmokeModule.HostEntryCliName,
-            deadline);
+            deadline,
+            "host-entry");
 
     private static HostActionEntryRequestContext IssueHostEntryContextThroughRegistry(
         OutOfProcessModuleClient client,
         string command,
-        DateTimeOffset deadline) =>
+        DateTimeOffset deadline,
+        string actionMode = "host-entry") =>
         client.HostActionEntryContexts.Issue(
             HostActionEntryIngress.Cli,
             command,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
-            new ApplicationSmokeAction("host-entry", "action"),
+            new ApplicationSmokeAction(actionMode, "action"),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
             Guid.NewGuid(),

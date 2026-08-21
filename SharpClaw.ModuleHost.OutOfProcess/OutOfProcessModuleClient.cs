@@ -714,7 +714,14 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(start);
         var now = DateTimeOffset.UtcNow;
         var hostActionContext = start.HostActionContext;
-        if (!start.IsWellFormed(now)
+        var validationStart = hostActionContext is null
+            ? start
+            : start with
+            {
+                HostActionContext = OutOfProcessHostActionEntryContextRegistry
+                    .WithoutPayloadBinding(hostActionContext),
+            };
+        if (!validationStart.IsWellFormed(now)
             || hostActionContext is null
             || !hostActionContext.IsWellFormed(now)
             || hostActionContext.Ingress != HostActionEntryIngress.Tool
