@@ -620,7 +620,21 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             var validation = targetClient.CapabilitySession.ValidateCrossSidecarOutcome(
                 roundTrip,
                 DateTimeOffset.UtcNow);
-            return $"accepted={validation.Accepted};code={validation.Code ?? "none"};message={validation.Message ?? "none"}";
+            var authority = roundTrip.Authority;
+            var envelope = roundTrip.Outcome;
+            var execution = authority.Execution;
+            return $"accepted={validation.Accepted};code={validation.Code ?? "none"};message={validation.Message ?? "none"};"
+                + $"wellFormed={roundTrip.IsWellFormed};"
+                + $"authorityOutcome={authority.OutcomeEnvelope == envelope};"
+                + $"outcomeReceipt={envelope?.Receipt == roundTrip.ResultReceipt};"
+                + $"failure={authority.ResponseSafeFailure == roundTrip.Failure};"
+                + $"executionCompleted={execution?.Completed};"
+                + $"executionResult={execution?.Result == envelope?.Result};"
+                + $"executionFailure={execution?.Failure == (roundTrip.Kind == SidecarCrossSidecarActionEntryOutcomeKind.Completed ? null : roundTrip.Failure)};"
+                + $"receiptCall={roundTrip.ResultReceipt?.CallId == authority.TargetChildCall.CallId};"
+                + $"receiptAction={roundTrip.ResultReceipt?.ActionKey == authority.Descriptor.Key};"
+                + $"receiptVersion={roundTrip.ResultReceipt?.ActionVersion == authority.Descriptor.Version};"
+                + $"receiptAttempt={roundTrip.ResultReceipt?.Attempt == authority.Attempt}";
         }
         catch (Exception ex)
         {
