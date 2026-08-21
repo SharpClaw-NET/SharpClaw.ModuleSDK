@@ -209,8 +209,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"targetGraph={string.Equals(diagnosticTargetCall.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)}; "
                 + $"targetDeadline={diagnosticTargetCall.Deadline == diagnosticAuthority.Deadline}; "
                 + $"sourceDeadline={diagnosticAuthority.SourceParentCall.Deadline == diagnosticAuthority.Deadline}; "
+                + $"targetDeadlineValid={diagnosticAuthority.Deadline > now}; "
+                + $"targetGenerationPositive={diagnosticAuthority.TargetBindingGeneration > 0}; "
                 + $"targetGeneration={diagnosticAuthority.TargetBindingGeneration == Session.BindingGeneration}; "
                 + $"expiry={diagnosticAuthority.ExpiresAt > now && diagnosticAuthority.Deadline > now}; "
+                + $"expiryWithinBinding={diagnosticAuthority.ExpiresAt <= diagnosticBinding.ExpiresAt}; "
+                + $"actionGrant={diagnosticBinding.Grant.Allows(SidecarCapabilityKind.Action)}; "
                 + $"owner={string.Equals(diagnosticAuthority.TargetEntry.ModuleId, diagnosticBinding.ModuleId, StringComparison.Ordinal) && string.Equals(diagnosticAuthority.TargetEntry.GraphId, diagnosticBinding.GraphId, StringComparison.Ordinal)}; "
                 + $"canonical={string.Equals(diagnosticAuthority.CanonicalBindingHash, SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(diagnosticAuthority), StringComparison.OrdinalIgnoreCase)}; "
                 + $"proof={ValidateCrossSidecarProof(diagnosticAuthority, diagnosticAuthority.Proof)}");
