@@ -384,7 +384,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                     failure,
                     Completed: true),
                 request.Receipt,
-                failure)
+                safeFailure)
             {
                 TerminalId = request.TerminalId,
             };
