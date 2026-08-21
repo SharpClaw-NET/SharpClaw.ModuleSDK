@@ -285,6 +285,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "cross-sidecar" => "cross-sidecar-root",
                     "cross-sidecar-fail" => "cross-sidecar-fail-root",
                     "cross-sidecar-cancel" => "cross-sidecar-cancel-root",
+                    "cross-sidecar-fail-observe" => "cross-sidecar-fail-observe-root",
+                    "cross-sidecar-cancel-observe" => "cross-sidecar-cancel-observe-root",
                     "rotation" => "rotation-root",
                     _ => "host-entry",
                 };
@@ -429,6 +431,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"cross-sidecar-fail:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-cancel-root" => new ApplicationSmokeResult(
                     $"cross-sidecar-cancel:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-fail-observe-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-fail-observe:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-cancel-observe-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-cancel-observe:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "rotation-root" => new ApplicationSmokeResult(
                     $"rotation-root:{(await InvokeChildAsync(context, ct)).Value}"),
                 "sequential-root" => new ApplicationSmokeResult(
@@ -483,12 +489,20 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     new CrossSidecarAction(
                         context.Action.Mode switch
                         {
-                            "cross-sidecar-fail-root" => "fail",
-                            "cross-sidecar-cancel-root" => "cancel",
+                            "cross-sidecar-fail-root" or "cross-sidecar-fail-observe-root" => "fail",
+                            "cross-sidecar-cancel-root" or "cross-sidecar-cancel-observe-root" => "cancel",
                             _ => "target",
                         },
                         context.Action.Value)),
                 ct);
+            if (context.Action.Mode is
+                "cross-sidecar-fail-observe-root" or
+                "cross-sidecar-cancel-observe-root")
+            {
+                return new CrossSidecarResult(
+                    $"outcome={outcome.Kind};error={outcome.Error?.Code ?? "none"};"
+                    + $"result={outcome.Result?.Value ?? "none"}");
+            }
             if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
             {
                 throw new InvalidOperationException(

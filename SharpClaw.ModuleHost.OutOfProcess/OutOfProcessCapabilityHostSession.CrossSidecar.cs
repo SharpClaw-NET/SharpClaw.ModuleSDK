@@ -126,34 +126,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             target.Entry.Descriptor.ResultTypeIdentity,
             target.Entry.Descriptor.ResultSchemaVersion,
             target.Entry.Descriptor.DescriptorHash);
-        try
-        {
-            var targetResponse = await target.Client.CapabilitySession
-                .ExecuteCrossSidecarCarrierAsync(
-                    relay.Carrier,
-                    targetTerminal,
-                    targetRegistration,
-                    ct);
-            await SendCrossSidecarRelayResponseAsync(
-                request,
-                relay,
-                targetResponse,
-                null,
+        var targetResponse = await target.Client.CapabilitySession
+            .ExecuteCrossSidecarCarrierAsync(
+                relay.Carrier,
+                targetTerminal,
+                targetRegistration,
                 ct);
-        }
-        catch (OutOfProcessCapabilityException ex)
-        {
-            await SendCrossSidecarRelayResponseAsync(
-                request,
-                relay,
-                null,
-                new SidecarSafeFailureIdentity(
-                    Guid.NewGuid(),
-                    ex.Code,
-                    ex.Message,
-                    Retryable: false),
-                ct);
-        }
+        await SendCrossSidecarRelayResponseAsync(
+            request,
+            relay,
+            targetResponse,
+            null,
+            ct);
     }
 
     private async Task SendCrossSidecarRelayResponseAsync(
@@ -262,9 +246,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             return new OutOfProcessCrossSidecarDispatchResult(
                 ActionOutcomeKind.Cancelled,
                 null,
-                new ExecutionError(
-                    SidecarCapabilityErrors.Cancelled,
-                    "The target cross-sidecar action was cancelled."),
+                null,
                 null,
                 null,
                 terminalResponse);
@@ -276,7 +258,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     ? ActionOutcomeKind.Cancelled
                     : ActionOutcomeKind.Failed,
                 null,
-                new ExecutionError(ex.Code, ex.Message),
+                ex.Code == SidecarCapabilityErrors.Cancelled
+                    ? null
+                    : new ExecutionError(ex.Code, ex.Message),
                 null,
                 null,
                 terminalResponse);
@@ -484,35 +468,55 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 terminal,
                 hostContext,
                 cancellationToken);
+            var receivedTerminalResponse = dispatch.TerminalResponse is not null;
             var response = dispatch.TerminalResponse
                 ?? CreateCrossSidecarDispatchResponse(
                     request,
                     dispatch,
                     binding.SafeFailure);
-            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
-                request,
-                response,
-                binding,
-                (targetTerminalAuthority, proof) => ValidateTerminalAuthority(targetTerminalAuthority, proof));
-            if (!responseValidation.Accepted)
+            if (receivedTerminalResponse)
             {
-                throw new OutOfProcessCapabilityException(
-                    responseValidation.Code ?? SidecarCapabilityErrors.HostFailure,
-                    responseValidation.Message ?? "The target terminal response was rejected.");
-            }
-
-            if (dispatch.TerminalResponse is not null)
-            {
-                var terminalRecord = Session.RecordTerminal(
-                    authority.TargetChildCall.CallId,
-                    targetAuthority.AuthorityId,
-                    response.Receipt);
-                if (!terminalRecord.Accepted)
+                var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+                    request,
+                    response,
+                    binding,
+                    (targetTerminalAuthority, proof) => ValidateTerminalAuthority(targetTerminalAuthority, proof));
+                if (!responseValidation.Accepted)
                 {
                     throw new OutOfProcessCapabilityException(
-                        terminalRecord.Code ?? SidecarCapabilityErrors.HostFailure,
-                        terminalRecord.Message ?? "The target terminal receipt was rejected.");
+                        responseValidation.Code ?? SidecarCapabilityErrors.HostFailure,
+                        responseValidation.Message ?? "The target terminal response was rejected.");
                 }
+            }
+            else if (!response.Execution.Completed
+                || response.Execution.Result is not null
+                || response.Execution.Failure != binding.SafeFailure
+                || response.SafeFailure != binding.SafeFailure
+                || response.Receipt != request.Receipt
+                || response.TerminalId != request.TerminalId)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The synthetic target terminal response is not bound to the target safe failure.");
+            }
+
+            var terminalRecord = Session.RecordTerminal(
+                authority.TargetChildCall.CallId,
+                targetAuthority.AuthorityId,
+                response.Receipt);
+            if (!terminalRecord.Accepted && !Session.TryGetTerminalReceipt(
+                    authority.TargetChildCall.CallId,
+                    out _))
+            {
+                throw new OutOfProcessCapabilityException(
+                    terminalRecord.Code ?? SidecarCapabilityErrors.HostFailure,
+                    terminalRecord.Message ?? "The target terminal receipt was rejected.");
+            }
+            if (!Session.TryGetTerminalReceipt(authority.TargetChildCall.CallId, out _))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The target terminal receipt was not recorded.");
             }
 
             var kind = dispatch.Kind switch
@@ -529,9 +533,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 dispatch.Uncertainty,
                 response.Receipt,
                 binding.SafeFailure,
-                Session.TryGetTerminalReceipt(authority.TargetChildCall.CallId, out _)
-                    ? 1
-                    : 0);
+                1);
             var completion = Session.CompleteCrossSidecarActionEntry(
                 carrier,
                 outcome,
@@ -547,6 +549,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 throw new OutOfProcessCapabilityException(
                     completion.Code ?? SidecarCapabilityErrors.HostFailure,
                     completion.Message ?? "The cross-sidecar result authority was rejected.");
+            }
+
+            var outcomeValidation = SidecarCrossSidecarActionEntryValidation.ValidateOutcome(
+                completed,
+                binding,
+                DateTimeOffset.UtcNow,
+                (targetAuthority, proof) => ValidateCrossSidecarProof(targetAuthority, proof));
+            if (!outcomeValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    outcomeValidation.Code ?? SidecarCapabilityErrors.HostFailure,
+                    outcomeValidation.Message ?? "The signed cross-sidecar outcome was rejected.");
             }
 
             return response with { CrossSidecarOutcome = completed };

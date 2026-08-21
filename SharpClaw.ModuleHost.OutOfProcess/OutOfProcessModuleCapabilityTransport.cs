@@ -630,45 +630,38 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         "The cross-sidecar relay does not bind to the parent terminal request.");
                 }
 
-                if (response.CrossSidecarOutcome is { } crossOutcome)
-                {
-                    var authority = crossOutcome.Authority;
-                    var executionMatches = CanonicalCrossSidecarValueMatches(
-                        response.Execution,
-                        authority.Execution);
-                    var outcomeEnvelopeMatches = crossOutcome.Outcome is { } outcome
-                        && authority.OutcomeEnvelope is { } authorityOutcome
-                        && CanonicalCrossSidecarValueMatches(outcome, authorityOutcome);
-                    if (!crossOutcome.IsWellFormed
-                        || authority.TargetChildCall != relay.Carrier.Authority.TargetChildCall
-                        || authority.TargetEntry != relay.TargetEntry
-                        || response.ResultIdentity != authority.ResultIdentity
-                        || !executionMatches
-                        || response.SafeFailure != authority.ResponseSafeFailure
-                        || !outcomeEnvelopeMatches
-                        || !string.Equals(
-                            authority.CanonicalBindingHash,
-                            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
-                            StringComparison.OrdinalIgnoreCase)
-                        || !CrossSidecarOutcomeMatchesDescriptor(
-                            crossOutcome,
-                            relay.TargetEntry.Descriptor))
-                    {
-                        throw new OutOfProcessCapabilityException(
-                            SidecarCapabilityErrors.SpoofedIdentity,
-                            "The cross-sidecar outcome does not bind to the target authority.");
-                    }
-
-                    return response;
-                }
-
-                if (response.Execution.Failure is null
-                    || response.Execution.Result is not null
-                    || response.SafeFailure != Binding.SafeFailure)
+                if (response.CrossSidecarOutcome is not { } crossOutcome)
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.SpoofedIdentity,
-                        "The cross-sidecar relay failure does not bind to the parent terminal request.");
+                        "The cross-sidecar response has no signed target outcome.");
+                }
+
+                var authority = crossOutcome.Authority;
+                var executionMatches = CanonicalCrossSidecarValueMatches(
+                    response.Execution,
+                    authority.Execution);
+                var outcomeEnvelopeMatches = crossOutcome.Outcome is { } outcome
+                    && authority.OutcomeEnvelope is { } authorityOutcome
+                    && CanonicalCrossSidecarValueMatches(outcome, authorityOutcome);
+                if (!crossOutcome.IsWellFormed
+                    || authority.TargetChildCall != relay.Carrier.Authority.TargetChildCall
+                    || authority.TargetEntry != relay.TargetEntry
+                    || response.ResultIdentity != authority.ResultIdentity
+                    || !executionMatches
+                    || response.SafeFailure != authority.ResponseSafeFailure
+                    || !outcomeEnvelopeMatches
+                    || !string.Equals(
+                        authority.CanonicalBindingHash,
+                        SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
+                        StringComparison.OrdinalIgnoreCase)
+                    || !CrossSidecarOutcomeMatchesDescriptor(
+                        crossOutcome,
+                        relay.TargetEntry.Descriptor))
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The cross-sidecar outcome does not bind to the target authority.");
                 }
 
                 return response;
@@ -1416,9 +1409,17 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     StringComparison.OrdinalIgnoreCase);
         }
 
-        return outcome.Outcome?.Kind is ActionOutcomeKind.Failed or ActionOutcomeKind.Cancelled
+        if (outcome.Outcome is not { } failedOutcome)
+            return false;
+
+        return failedOutcome.Kind is ActionOutcomeKind.Failed or ActionOutcomeKind.Cancelled
             && payload is null
-            && outcome.Authority.ResultIdentity is null;
+            && outcome.Authority.ResultIdentity is null
+            && failedOutcome.TerminalCallCount == 1
+            && (failedOutcome.Error is not null) == (outcome.Kind
+                == SidecarCrossSidecarActionEntryOutcomeKind.Failed)
+            && (outcome.Kind != SidecarCrossSidecarActionEntryOutcomeKind.Cancelled
+                || failedOutcome.Error is null);
     }
 
     private static bool CanonicalCrossSidecarValueMatches<T>(T actual, T expected) =>

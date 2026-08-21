@@ -197,8 +197,11 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         await using (client)
         {
 
-        var failed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-fail");
-        failed.Result.Succeeded.Should().BeFalse();
+        var failed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-fail-observe");
+        failed.Result.Succeeded.Should().BeTrue();
+        failed.Result.Output.Single().Text.Should().Contain(
+            "cross-sidecar-fail-observe:outcome=Failed;error=");
+        failed.Result.Output.Single().Text.Should().Contain(";result=none");
         _targetDispatcher.RunCalls.Should().Be(1);
 
         var succeeded = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
@@ -219,8 +222,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             await using (client)
             {
 
-            var cancelled = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-cancel");
-            cancelled.Result.Succeeded.Should().BeFalse();
+            var cancelled = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-cancel-observe");
+            cancelled.Result.Succeeded.Should().BeTrue();
+            cancelled.Result.Output.Single().Text.Should().Contain(
+                "cross-sidecar-cancel-observe:outcome=Cancelled;error=none;result=none");
             _targetDispatcher.RunCalls.Should().Be(1);
             _targetDispatcher.TerminalCalls.Should().Be(0);
 
@@ -497,9 +502,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 return new CountingActionOutcome<TResult>(
                     ActionOutcomeKind.Cancelled,
                     default!,
-                    new ExecutionError(
-                        SidecarCapabilityErrors.Cancelled,
-                        "The target action was cancelled."));
+                    null);
             }
             var hostContext = HostContextFactory?.Invoke();
             TResult result;
