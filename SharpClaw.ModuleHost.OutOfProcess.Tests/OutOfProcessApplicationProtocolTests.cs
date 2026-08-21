@@ -405,7 +405,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             client,
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt,
-            "nested-root");
+            "cross-descriptor-root");
 
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 2;

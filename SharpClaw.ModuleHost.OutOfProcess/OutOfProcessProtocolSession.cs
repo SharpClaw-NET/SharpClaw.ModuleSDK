@@ -73,7 +73,20 @@ internal sealed class OutOfProcessProtocolSession
 
     private void Apply(ISidecarProtocolMessage message)
     {
-        var result = SidecarProtocolStateMachine.Validate(State, message, DateTimeOffset.UtcNow);
+        var validationMessage = message switch
+        {
+            SidecarToolHandlerInvokeStart start when start.HostActionContext is not null =>
+                start with
+                {
+                    HostActionContext = OutOfProcessHostActionEntryContextRegistry
+                        .WithoutPayloadBinding(start.HostActionContext),
+                },
+            _ => message,
+        };
+        var result = SidecarProtocolStateMachine.Validate(
+            State,
+            validationMessage,
+            DateTimeOffset.UtcNow);
         if (!result.Accepted || result.State is null)
         {
             throw new OutOfProcessProtocolException(
