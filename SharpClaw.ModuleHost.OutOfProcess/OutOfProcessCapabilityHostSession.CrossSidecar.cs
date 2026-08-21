@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using SharpClaw.Contracts.Modules;
@@ -6,6 +8,8 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 
 internal sealed partial class OutOfProcessCapabilityHostSession
 {
+    private static readonly ConcurrentDictionary<Guid, int> DiagnosticCarrierSessionHashes = new();
+
     private async Task HandleCrossSidecarTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct)
@@ -102,6 +106,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 ct);
             return;
         }
+
+        DiagnosticCarrierSessionHashes[relay.Carrier.CarrierId] =
+            RuntimeHelpers.GetHashCode(target.Client.CapabilitySession.Session);
 
         var targetTerminal = new SidecarActionTerminalRegistration(
             target.Entry.TerminalId,
@@ -247,6 +254,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 + $"requestValidation={diagnosticRequestValidation.Code}:{diagnosticRequestValidation.Message}; "
                 + $"bindingValidation={diagnosticBindingValidation.Code}:{diagnosticBindingValidation.Message}; "
                 + $"beginCode={begin.Code}; "
+                + $"issuedSession={DiagnosticCarrierSessionHashes.GetValueOrDefault(carrier.CarrierId)}; "
+                + $"currentSession={RuntimeHelpers.GetHashCode(Session)}; "
                 + $"manualCarrierReject={diagnosticManualCarrierReject}; terminalMismatch={diagnosticTerminalMismatch}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
                 + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
