@@ -637,9 +637,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     var targetCallMatches = authority.TargetChildCall == relay.Carrier.Authority.TargetChildCall;
                     var targetEntryMatches = authority.TargetEntry == relay.TargetEntry;
                     var resultIdentityMatches = response.ResultIdentity == authority.ResultIdentity;
-                    var executionMatches = response.Execution == authority.Execution;
+                    var executionMatches = CanonicalCrossSidecarValueMatches(
+                        response.Execution,
+                        authority.Execution);
                     var safeFailureMatches = response.SafeFailure == authority.ResponseSafeFailure;
-                    var outcomeEnvelopeMatches = crossOutcome.Outcome == authority.OutcomeEnvelope;
+                    var outcomeEnvelopeMatches = crossOutcome.Outcome is { } outcome
+                        && authority.OutcomeEnvelope is { } authorityOutcome
+                        && CanonicalCrossSidecarValueMatches(outcome, authorityOutcome);
                     var canonicalHashMatches = string.Equals(
                         authority.CanonicalBindingHash,
                         SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
@@ -1502,6 +1506,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             && payload is null
             && outcome.Authority.ResultIdentity is null;
     }
+
+    private static bool CanonicalCrossSidecarValueMatches<T>(T actual, T expected) =>
+        string.Equals(
+            SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(actual)),
+            SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(expected)),
+            StringComparison.Ordinal);
 
     private void ValidateStorageRequest(SidecarStorageCapabilityRequest request)
     {
