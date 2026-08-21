@@ -219,8 +219,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             SidecarCapabilityKind.Action,
             action,
             action.ByteLength,
-            DateTimeOffset.UtcNow,
-            hostContext);
+            DateTimeOffset.UtcNow);
         if (!begin.Accepted)
         {
             linked.Dispose();
