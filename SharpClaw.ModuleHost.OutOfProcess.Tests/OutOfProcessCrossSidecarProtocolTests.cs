@@ -113,7 +113,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
         result.Result.Succeeded.Should().BeTrue(
             $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
-            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text))
+            + $"; dispatcher={dispatcher.LastException}");
         result.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
@@ -310,6 +311,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
         public Func<HostActionEntryRequestContext?>? HostContextFactory { get; set; }
 
+        public Exception? LastException { get; private set; }
+
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -319,22 +322,31 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         {
             RunCalls++;
             var hostContext = HostContextFactory?.Invoke();
-            var result = await terminal(
-                new ActionContext<TAction>(
-                    hostContext?.InvocationId ?? Guid.NewGuid(),
-                    hostContext?.ParentInvocationId,
-                    hostContext?.TraceId ?? Guid.NewGuid(),
-                    hostContext?.IdempotencyKey ?? Guid.NewGuid(),
-                    hostContext?.Depth ?? 0,
-                    hostContext?.Attempt ?? 1,
-                    hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
-                    descriptor.Key,
-                    ApplicationSmokeModule.Id,
-                    hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
-                    action,
-                    hostContext?.Features ?? ExtensionFeatureSet.Empty,
-                    snapshot),
-                ct);
+            TResult result;
+            try
+            {
+                result = await terminal(
+                    new ActionContext<TAction>(
+                        hostContext?.InvocationId ?? Guid.NewGuid(),
+                        hostContext?.ParentInvocationId,
+                        hostContext?.TraceId ?? Guid.NewGuid(),
+                        hostContext?.IdempotencyKey ?? Guid.NewGuid(),
+                        hostContext?.Depth ?? 0,
+                        hostContext?.Attempt ?? 1,
+                        hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
+                        descriptor.Key,
+                        ApplicationSmokeModule.Id,
+                        hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
+                        action,
+                        hostContext?.Features ?? ExtensionFeatureSet.Empty,
+                        snapshot),
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                LastException = ex;
+                throw;
+            }
             TerminalCalls++;
             return new CountingActionOutcome<TResult>(result);
         }
