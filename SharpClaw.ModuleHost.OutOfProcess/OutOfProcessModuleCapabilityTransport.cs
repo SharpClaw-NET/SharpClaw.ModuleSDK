@@ -667,8 +667,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                             + $"descriptor={descriptorMatches}; "
                             + $"responseResultCall={response.ResultIdentity?.CallId}; "
                             + $"authorityResultCall={authority.ResultIdentity?.CallId}; "
-                            + $"responseReceiptCall={response.Receipt?.CallId}; "
-                            + $"authorityReceiptCall={authority.Receipt?.CallId}");
+                            + $"responseReceiptCall={response.Receipt?.CallId}");
                     }
 
                     return response;
