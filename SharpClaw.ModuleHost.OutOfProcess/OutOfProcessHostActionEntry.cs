@@ -275,33 +275,26 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 "The target relay descriptor does not match the requested typed action.");
         }
 
-        var call = _transport.CreateCall(
-            SidecarCapabilityKind.Action,
-            deadline,
-            cancellationToken);
-            var childRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
-                call,
-                relay.TargetEntry.Descriptor,
-                relay.Carrier.Action,
-                new SidecarCancellationIdentity(
-                call.CancellationId,
-                SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
-                deadline),
-            deadline,
-            relay.Carrier,
-            new SidecarActionTerminalRegistration(
-                Guid.NewGuid(),
-                identity.InputTypeIdentity,
-                identity.InputSchemaVersion,
-                identity.ResultTypeIdentity,
-                identity.ResultSchemaVersion,
-                identity.DescriptorHash));
-        var response = await _transport.InvokeActionAsync(
-            childRequest,
-            terminal: null,
-            cancellationToken);
-        ThrowIfHostEntryFailed(response);
-        return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+        if (relayResponse.CrossSidecarOutcome is not { } crossOutcome
+            || !crossOutcome.IsWellFormed
+            || crossOutcome.Outcome is not { } outcome)
+        {
+            throw new OutOfProcessCapabilityException(
+                relayResponse.CrossSidecarRelay is null
+                    ? relayResponse.Execution.Failure?.Code
+                        ?? SidecarCapabilityErrors.UnknownAction
+                    : SidecarCapabilityErrors.HostFailure,
+                relayResponse.Execution.Failure?.Message
+                    ?? "The target sidecar action did not return a terminal outcome.");
+        }
+
+        return OutOfProcessActionDispatcher.CreateOutcome<TResult>(
+            new SidecarActionCapabilityResponse(
+                relayResponse.ResultIdentity,
+                outcome,
+                continuation: null,
+                relayResponse.SafeFailure,
+                Completed: true));
     }
 
     private static void ThrowIfHostEntryFailed(SidecarActionCapabilityResponse response)

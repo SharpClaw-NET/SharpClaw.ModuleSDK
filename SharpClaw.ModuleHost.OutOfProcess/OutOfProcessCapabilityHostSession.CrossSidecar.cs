@@ -69,7 +69,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 SidecarCapabilityErrors.UnknownAction,
                 "The requested target action entry is not registered.",
                 Retryable: false);
-            await SendCrossSidecarRelayResponseAsync(request, null, failure, ct);
+            await SendCrossSidecarRelayResponseAsync(request, null, null, failure, ct);
             return;
         }
 
@@ -93,6 +93,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             await SendCrossSidecarRelayResponseAsync(
                 request,
                 null,
+                null,
                 new SidecarSafeFailureIdentity(
                     Guid.NewGuid(),
                     issuance.Code ?? SidecarCapabilityErrors.Unauthorized,
@@ -102,26 +103,63 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             return;
         }
 
-        await SendCrossSidecarRelayResponseAsync(request, relay, null, ct);
+        var targetTerminal = new SidecarActionTerminalRegistration(
+            target.Entry.TerminalId,
+            target.Entry.Descriptor.InputTypeIdentity,
+            target.Entry.Descriptor.InputSchemaVersion,
+            target.Entry.Descriptor.ResultTypeIdentity,
+            target.Entry.Descriptor.ResultSchemaVersion,
+            target.Entry.Descriptor.DescriptorHash);
+        try
+        {
+            var targetResponse = await target.Client.CapabilitySession
+                .ExecuteCrossSidecarCarrierAsync(
+                    relay.Carrier,
+                    targetTerminal,
+                    ct);
+            await SendCrossSidecarRelayResponseAsync(
+                request,
+                relay,
+                targetResponse,
+                null,
+                ct);
+        }
+        catch (OutOfProcessCapabilityException ex)
+        {
+            await SendCrossSidecarRelayResponseAsync(
+                request,
+                relay,
+                null,
+                new SidecarSafeFailureIdentity(
+                    Guid.NewGuid(),
+                    ex.Code,
+                    ex.Message,
+                    Retryable: false),
+                ct);
+        }
     }
 
     private async Task SendCrossSidecarRelayResponseAsync(
         SidecarActionTerminalTransportRequest request,
         SidecarCrossSidecarActionEntryRelay? relay,
+        SidecarActionTerminalTransportResponse? targetResponse,
         SidecarSafeFailureIdentity? failure,
         CancellationToken ct)
     {
-        var response = new SidecarActionTerminalTransportResponse(
-            null,
-            new SidecarTerminalExecutionResult(
+        var execution = targetResponse?.Execution
+            ?? new SidecarTerminalExecutionResult(
                 null,
                 failure,
-                Completed: true),
+                Completed: true);
+        var response = new SidecarActionTerminalTransportResponse(
+            targetResponse?.ResultIdentity,
+            execution,
             request.Receipt,
-            _session.Binding.SafeFailure)
+            targetResponse?.SafeFailure ?? _session.Binding.SafeFailure)
         {
             TerminalId = request.TerminalId,
             CrossSidecarRelay = relay,
+            CrossSidecarOutcome = targetResponse?.CrossSidecarOutcome,
         };
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
@@ -130,196 +168,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             _limits.ProtocolMessageBytes,
             SendGate,
             ct);
-    }
-
-    private async Task HandleCrossSidecarActionRequestAsync(
-        SidecarActionCapabilityRequest request,
-        CancellationToken channelCt)
-    {
-        ActiveCall? active = null;
-        try
-        {
-            var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
-                request,
-                Session.Binding,
-                DateTimeOffset.UtcNow);
-            if (!validation.Accepted)
-            {
-                await SendActionFailureAsync(request, validation.Code, validation.Message, channelCt);
-                return;
-            }
-
-            if (!IsHostActionAuthorized(request)
-                || request.CrossSidecarCarrier is null
-                || _options.CrossSidecarActionEntries is null)
-            {
-                await SendActionFailureAsync(
-                    request,
-                    SidecarCapabilityErrors.Unauthorized,
-                    "The cross-sidecar action request is not authorized by a target entry.",
-                    channelCt);
-                return;
-            }
-
-            active = RegisterCall(request.Call, channelCt, request);
-            var begin = Session.BeginActionCall(
-                request,
-                request.Action.ByteLength,
-                DateTimeOffset.UtcNow,
-                out var hostContext);
-            active.HostContext = hostContext;
-            if (!begin.Accepted)
-            {
-                AbandonCall(request.Call.CallId, active);
-                active = null;
-                await SendActionFailureAsync(request, begin.Code, begin.Message, channelCt);
-                return;
-            }
-
-            var target = _options.CrossSidecarActionEntries.TryResolve(
-                request.CrossSidecarCarrier.Authority.TargetEntry.Descriptor.Key,
-                request.CrossSidecarCarrier.Authority.TargetEntry.Descriptor.Version,
-                out var resolvedTarget)
-                ? resolvedTarget
-                : throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.UnknownAction,
-                    "The target action entry is no longer registered.");
-            var targetTerminal = new SidecarActionTerminalRegistration(
-                resolvedTarget.Entry.TerminalId,
-                resolvedTarget.Entry.Descriptor.InputTypeIdentity,
-                resolvedTarget.Entry.Descriptor.InputSchemaVersion,
-                resolvedTarget.Entry.Descriptor.ResultTypeIdentity,
-                resolvedTarget.Entry.Descriptor.ResultSchemaVersion,
-                resolvedTarget.Entry.Descriptor.DescriptorHash);
-            var targetResponse = await target.Client.CapabilitySession
-                .ExecuteCrossSidecarCarrierAsync(
-                    request.CrossSidecarCarrier,
-                    targetTerminal,
-                    active.Cancellation.Token);
-            var response = CreateCrossSidecarActionResponse(request, targetResponse);
-            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
-                request,
-                response,
-                Session.Binding,
-                Session);
-            if (!responseValidation.Accepted)
-            {
-                await SendActionFailureAsync(
-                    request,
-                    responseValidation.Code,
-                    responseValidation.Message,
-                    channelCt);
-                return;
-            }
-
-            if (!CompleteCall(request.Call.CallId, response.Outcome.TerminalCallCount))
-            {
-                await SendActionFailureAsync(
-                    request,
-                    SidecarCapabilityErrors.HostFailure,
-                    "The cross-sidecar action call could not be completed.",
-                    channelCt);
-                return;
-            }
-
-            await OutOfProcessCapabilityWire.SendAsync(
-                _socket,
-                OutOfProcessCapabilityFrameKind.ActionResponse,
-                response,
-                _limits.ProtocolMessageBytes,
-                SendGate,
-                channelCt);
-        }
-        catch (OperationCanceledException) when (
-            active is not null
-            && active.Cancellation.IsCancellationRequested
-            && !channelCt.IsCancellationRequested)
-        {
-            if (active is not null)
-                CompleteCall(request.Call.CallId, 1);
-            await SendActionFailureAsync(
-                request,
-                SidecarCapabilityErrors.Cancelled,
-                "The cross-sidecar action was cancelled.",
-                channelCt);
-        }
-        catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            Volatile.Write(ref _lastHandledFailure, ex);
-            if (active is not null)
-                CompleteCall(request.Call.CallId, 1);
-            await SendActionFailureAsync(
-                request,
-                ex is OutOfProcessCapabilityException capability
-                    ? capability.Code
-                    : SidecarCapabilityErrors.HostFailure,
-                ex is OutOfProcessCapabilityException capabilityFailure
-                    ? capabilityFailure.Message
-                    : "The target sidecar action entry failed.",
-                channelCt);
-        }
-        finally
-        {
-            await FinishCallAsync(request.Call.CallId, active, channelCt);
-        }
-    }
-
-    private SidecarActionCapabilityResponse CreateCrossSidecarActionResponse(
-        SidecarActionCapabilityRequest request,
-        SidecarActionTerminalTransportResponse targetResponse)
-    {
-        var execution = targetResponse.Execution;
-        var result = execution.Result;
-        var failure = execution.Failure;
-        var receipt = new SidecarTerminalReceipt(
-            Guid.NewGuid().ToString("N"),
-            request.Descriptor.Key,
-            request.Descriptor.Version,
-            request.Call.CallId,
-            1,
-            $"{Session.Binding.GraphId}:{request.Call.CallId:N}",
-            result?.ContentHash ?? request.Action.ContentHash);
-        var record = Session.RecordTerminal(
-            request.Call.CallId,
-            Guid.NewGuid(),
-            receipt);
-        if (!record.Accepted && !Session.TryGetTerminalReceipt(request.Call.CallId, out _))
-        {
-            throw new OutOfProcessCapabilityException(
-                record.Code ?? SidecarCapabilityErrors.HostFailure,
-                record.Message ?? "The cross-sidecar terminal receipt was rejected.");
-        }
-
-        var succeeded = execution.Completed && failure is null && result is not null;
-        var error = failure is null
-            ? null
-            : new ExecutionError(failure.Code, failure.Message);
-        var outcome = new SidecarActionOutcomeEnvelope(
-            succeeded ? ActionOutcomeKind.Completed : ActionOutcomeKind.Failed,
-            result!,
-            null!,
-            error!,
-            null!,
-            receipt,
-            _session.Binding.SafeFailure,
-            1);
-        return new SidecarActionCapabilityResponse(
-            result is null
-                ? null
-                : new SidecarActionResultIdentity(
-                    Guid.NewGuid(),
-                    request.Call.CallId,
-                    request.Descriptor.Key,
-                    request.Descriptor.Version,
-                    result.TypeIdentity,
-                    result.ContentHash),
-            outcome,
-            null,
-            _session.Binding.SafeFailure,
-            Completed: true);
     }
 
     internal long BindingGeneration => Session.BindingGeneration;

@@ -616,32 +616,48 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     && MatchesCapabilityCall(
                         relayParentCall,
                         request.Call);
-                if (relay is not null)
+                if (relay is null
+                    || !relay.IsWellFormed
+                    || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
+                    || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
+                    || !parentCallMatches
+                    || !response.Execution.Completed
+                    || response.Receipt != request.Receipt
+                    || response.TerminalId != request.TerminalId)
                 {
-                    if (!relay.IsWellFormed
-                        || relay.TargetEntry.Descriptor.Key != crossRequest.ActionKey
-                        || relay.TargetEntry.Descriptor.Version != crossRequest.ActionVersion
-                        || !parentCallMatches
-                        || !response.Execution.Completed
-                        || response.Execution.Result is not null
-                        || response.Execution.Failure is not null
-                        || response.Receipt != request.Receipt
-                        || response.TerminalId != request.TerminalId
-                        || response.SafeFailure != Binding.SafeFailure)
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The cross-sidecar relay does not bind to the parent terminal request.");
+                }
+
+                if (response.CrossSidecarOutcome is { } crossOutcome)
+                {
+                    var authority = crossOutcome.Authority;
+                    if (!crossOutcome.IsWellFormed
+                        || authority.TargetChildCall != relay.Carrier.Authority.TargetChildCall
+                        || authority.TargetEntry != relay.TargetEntry
+                        || response.ResultIdentity != authority.ResultIdentity
+                        || response.Execution != authority.Execution
+                        || response.SafeFailure != authority.ResponseSafeFailure
+                        || crossOutcome.Outcome != authority.OutcomeEnvelope
+                        || !string.Equals(
+                            authority.CanonicalBindingHash,
+                            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
+                            StringComparison.OrdinalIgnoreCase)
+                        || !CrossSidecarOutcomeMatchesDescriptor(
+                            crossOutcome,
+                            relay.TargetEntry.Descriptor))
                     {
                         throw new OutOfProcessCapabilityException(
                             SidecarCapabilityErrors.SpoofedIdentity,
-                            "The cross-sidecar relay does not bind to the parent terminal request.");
+                            "The cross-sidecar outcome does not bind to the target authority.");
                     }
 
                     return response;
                 }
 
-                if (!response.Execution.Completed
-                    || response.Execution.Failure is null
+                if (response.Execution.Failure is null
                     || response.Execution.Result is not null
-                    || response.Receipt != request.Receipt
-                    || response.TerminalId != request.TerminalId
                     || response.SafeFailure != Binding.SafeFailure)
                 {
                     throw new OutOfProcessCapabilityException(
@@ -1390,6 +1406,38 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
 
         ThrowIfRejected(validation);
+    }
+
+    private static bool CrossSidecarOutcomeMatchesDescriptor(
+        SidecarCrossSidecarActionEntryOutcome outcome,
+        SidecarActionDescriptorIdentity descriptor)
+    {
+        var payload = outcome.Outcome?.Result;
+        if (outcome.Kind == SidecarCrossSidecarActionEntryOutcomeKind.Completed)
+        {
+            return outcome.Outcome?.Kind == ActionOutcomeKind.Completed
+                && payload is not null
+                && string.Equals(
+                    payload.TypeIdentity,
+                    descriptor.ResultTypeIdentity,
+                    StringComparison.Ordinal)
+                && payload.SchemaVersion == descriptor.ResultSchemaVersion
+                && outcome.Authority.ResultIdentity is not null
+                && outcome.Authority.ResultIdentity.ActionKey == descriptor.Key
+                && outcome.Authority.ResultIdentity.ActionVersion == descriptor.Version
+                && string.Equals(
+                    outcome.Authority.ResultIdentity.ResultTypeIdentity,
+                    descriptor.ResultTypeIdentity,
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    outcome.Authority.ResultIdentity.ContentHash,
+                    payload.ContentHash,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        return outcome.Outcome?.Kind is ActionOutcomeKind.Failed or ActionOutcomeKind.Cancelled
+            && payload is null
+            && outcome.Authority.ResultIdentity is null;
     }
 
     private void ValidateStorageRequest(SidecarStorageCapabilityRequest request)

@@ -783,25 +783,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
-        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
-        {
-            var carrier = request.CrossSidecarCarrier;
-            var catalog = _options.CrossSidecarActionEntries;
-            return carrier is not null
-                && request.Terminal is { IsWellFormed: true }
-                && catalog is not null
-                && catalog.TryResolve(
-                    carrier.Authority.TargetEntry.Descriptor.Key,
-                    carrier.Authority.TargetEntry.Descriptor.Version,
-                    out var target)
-                && OutOfProcessActionDescriptorIdentity.Matches(
-                    target.Entry.Descriptor,
-                    request.Descriptor)
-                && target.Client.CapabilitySession.ValidateCrossSidecarCarrier(
-                    carrier,
-                    DateTimeOffset.UtcNow);
-        }
-
         var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
             grant.ActionKey == request.Descriptor.Key
             && grant.ActionVersion == request.Descriptor.Version);
@@ -848,12 +829,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
-        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
-        {
-            await HandleCrossSidecarActionRequestAsync(request, channelCt);
-            return;
-        }
-
         ActiveCall? active = null;
         try
         {
