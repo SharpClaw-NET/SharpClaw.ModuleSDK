@@ -20,8 +20,13 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private IServiceProvider? _services;
     private SidecarHostAuthorization? _authorization;
     private Exception? _lastConnectionFailure;
+    private Exception? _lastTerminalFailure;
 
     internal Exception? LastConnectionFailure => Volatile.Read(ref _lastConnectionFailure);
+    internal Exception? LastTerminalFailure => Volatile.Read(ref _lastTerminalFailure);
+
+    internal void RecordTerminalFailure(Exception exception) =>
+        Volatile.Write(ref _lastTerminalFailure, exception);
     public void Initialize(
         string moduleId,
         string graphId,
