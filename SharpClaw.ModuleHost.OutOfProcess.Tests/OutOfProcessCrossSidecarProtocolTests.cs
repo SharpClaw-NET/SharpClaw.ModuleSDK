@@ -596,7 +596,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
               + $"terminalCalls={outcome.Outcome?.TerminalCallCount};"
               + $"error={outcome.Outcome?.Error?.Code ?? "none"};"
               + $"failure={outcome.Failure?.Code ?? "none"};"
-              + $"result={(outcome.Outcome?.Result is null ? "none" : outcome.Outcome.Result.TypeIdentity)}";
+              + $"result={(outcome.Outcome?.Result is null ? "none" : outcome.Outcome.Result.TypeIdentity)};"
+              + $"outcomeReceipt={outcome.Outcome?.Receipt?.ReceiptId ?? "none"};"
+              + $"resultReceipt={outcome.ResultReceipt?.ReceiptId ?? "none"};"
+              + $"authorityResultReceipt={outcome.Authority.ResultReceipt?.ReceiptId ?? "none"};"
+              + $"executionResult={(outcome.Authority.Execution?.Result is null ? "none" : outcome.Authority.Execution.Result.TypeIdentity)};"
+              + $"executionFailure={outcome.Authority.Execution?.Failure?.Code ?? "none"};"
+              + $"continuation={(outcome.Outcome?.Continuation is null ? "none" : "present")};"
+              + $"uncertainty={(outcome.Outcome?.Uncertainty is null ? "none" : "present")}";
 
     private sealed class CountingActionOutcome<TResult>(
         ActionOutcomeKind kind,
