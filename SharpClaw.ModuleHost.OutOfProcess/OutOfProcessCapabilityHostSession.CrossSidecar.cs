@@ -411,6 +411,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     responseValidation.Message ?? "The target terminal response was rejected.");
             }
 
+            var terminalRecord = Session.RecordTerminal(
+                authority.TargetChildCall.CallId,
+                targetAuthority.AuthorityId,
+                response.Receipt);
+            if (!terminalRecord.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    terminalRecord.Code ?? SidecarCapabilityErrors.HostFailure,
+                    terminalRecord.Message ?? "The target terminal receipt was rejected.");
+            }
+
             var kind = response.Execution.Result is not null
                 ? ActionOutcomeKind.Completed
                 : response.Execution.Failure?.Code == SidecarCapabilityErrors.Cancelled
