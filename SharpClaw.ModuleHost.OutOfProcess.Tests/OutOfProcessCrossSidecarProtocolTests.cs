@@ -82,7 +82,11 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         var dispatcher = new CountingActionDispatcher();
         var sourceEntries = new OutOfProcessCrossSidecarActionEntryCatalog();
         sourceEntries.Add(_targetClient);
-        await client.ConnectCapabilitiesAsync(CreateOptions(client, dispatcher, sourceEntries));
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        descriptors.Add(ApplicationSmokeModule.ChildAction);
+        await client.ConnectCapabilitiesAsync(
+            CreateOptions(client, dispatcher, sourceEntries, descriptors));
 
         client.Application.ActionEntries.Should().BeEmpty();
         _targetClient.Application.ActionEntries.Should().ContainSingle(entry =>
@@ -192,13 +196,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     private static OutOfProcessCapabilityHostOptions CreateOptions(
         OutOfProcessModuleClient client,
         CountingActionDispatcher dispatcher,
-        OutOfProcessCrossSidecarActionEntryCatalog? targetEntries = null) =>
+        OutOfProcessCrossSidecarActionEntryCatalog? targetEntries = null,
+        OutOfProcessActionDescriptorCatalog? descriptors = null) =>
         new(
             new EmptyStorageGateway(),
             dispatcher,
             client.CreateCapabilityGrant(DateTimeOffset.UtcNow.AddMinutes(2)),
             ["unused"],
-            new OutOfProcessActionDescriptorCatalog(),
+            descriptors ?? new OutOfProcessActionDescriptorCatalog(),
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
