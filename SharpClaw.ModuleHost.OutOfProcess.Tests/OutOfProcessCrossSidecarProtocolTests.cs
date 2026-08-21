@@ -159,6 +159,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     [Test, CancelAfter(30000)]
     public async Task CrossSidecarUnknownTargetDoesNotDispatchTarget()
     {
+        await using var unknownServer = await StartServerAsync(
+            "cross-unknown-target",
+            CrossSidecarModule.Id,
+            typeof(CrossSidecarModule));
         var targetCatalog = new SidecarHostDescriptorCatalog(
             [],
             [],
