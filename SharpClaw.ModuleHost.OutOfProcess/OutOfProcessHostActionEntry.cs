@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
