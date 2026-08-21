@@ -667,7 +667,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                             + $"descriptor={descriptorMatches}; "
                             + $"responseResultCall={response.ResultIdentity?.CallId}; "
                             + $"authorityResultCall={authority.ResultIdentity?.CallId}; "
-                            + $"responseReceiptCall={response.Receipt?.CallId}");
+                            + $"responseReceiptCall={response.Receipt?.CallId}; "
+                            + $"responseExecution={response.Execution.Completed}:{response.Execution.Result?.TypeIdentity}:{response.Execution.Result?.SchemaVersion}:{response.Execution.Result?.ContentHash}:{response.Execution.Failure?.Code}; "
+                            + $"authorityExecution={authority.Execution.Completed}:{authority.Execution.Result?.TypeIdentity}:{authority.Execution.Result?.SchemaVersion}:{authority.Execution.Result?.ContentHash}:{authority.Execution.Failure?.Code}; "
+                            + $"responseOutcome={crossOutcome.Outcome?.Kind}:{crossOutcome.Outcome?.TerminalCallCount}:{crossOutcome.Outcome?.Receipt?.ReceiptId}:{crossOutcome.Outcome?.Result?.ContentHash}; "
+                            + $"authorityOutcome={authority.OutcomeEnvelope?.Kind}:{authority.OutcomeEnvelope?.TerminalCallCount}:{authority.OutcomeEnvelope?.Receipt?.ReceiptId}:{authority.OutcomeEnvelope?.Result?.ContentHash}; "
+                            + $"responseSafeFailure={response.SafeFailure?.Code}; authoritySafeFailure={authority.ResponseSafeFailure?.Code}");
                     }
 
                     return response;
