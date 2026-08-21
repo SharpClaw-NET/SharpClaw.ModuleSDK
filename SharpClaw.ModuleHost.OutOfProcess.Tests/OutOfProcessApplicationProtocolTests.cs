@@ -233,7 +233,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             importAction,
             importContext);
 
-        import.Kind.Should().Be(ActionOutcomeKind.Completed);
+        import.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"Typed action failed with {import.Error?.Code}: {import.Error?.Message}");
         import.Result.Value.Should().Be("imported:job-123:caller=module-agent");
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
