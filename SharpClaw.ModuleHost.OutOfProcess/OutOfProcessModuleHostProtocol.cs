@@ -38,4 +38,7 @@ public static class OutOfProcessModuleHostProtocol
 
     /// <summary>Gets the module CLI invocation route.</summary>
     public const string ApplicationCliPath = "/.sharpclaw/module/v1/application/cli";
+
+    /// <summary>Gets the module endpoint invocation route.</summary>
+    public const string ApplicationEndpointPath = "/.sharpclaw/module/v1/application/endpoint";
 }

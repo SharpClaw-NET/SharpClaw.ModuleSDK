@@ -14,6 +14,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly OutOfProcessCapabilityHostOptions _options;
     private readonly SidecarHostAuthorization _authorization;
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
+    private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _capabilityQueue;
@@ -24,6 +25,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private Task? _rotationRetryTask;
     private TaskCompletionSource _rotationRetryWake = CreateSignal();
     private int _completedCallsForBinding;
+    private long _sequence;
     private readonly SemaphoreSlim _rotationGate = new(1, 1);
     private Exception? _runFailure;
     private Exception? _lastHandledFailure;
@@ -40,6 +42,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         public int Completed;
 
         public int CompletionAccepted;
+    }
+
+    private sealed class PendingOutgoingAction(CancellationTokenSource cancellation)
+    {
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public TaskCompletionSource<SidecarActionCapabilityResponse> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public SidecarActionCapabilityRequest? Request { get; set; }
     }
 
     public OutOfProcessCapabilityHostSession(
@@ -150,6 +162,165 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             RequestRotationRetry();
             rotation?.GetAwaiter().GetResult();
+        }
+    }
+
+    internal async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryAsync(
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload action,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
+            || hostContext.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The module action entry host context is invalid.");
+        }
+
+        await WaitForRotationAsync(ct);
+        var deadline = hostContext.Deadline;
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _disconnect.Token);
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            linked.Cancel();
+        else
+            linked.CancelAfter(remaining);
+
+        var call = CreateOutgoingCall(deadline);
+        var cancellation = new SidecarCancellationIdentity(
+            call.CancellationId,
+            SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
+            deadline);
+        var request = SidecarActionCapabilityRequest.HostEntry(
+            call,
+            identity,
+            action,
+            cancellation,
+            deadline,
+            hostContext,
+            new SidecarActionTerminalRegistration(
+                terminalId,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.ResultTypeIdentity,
+                identity.ResultSchemaVersion,
+                identity.DescriptorHash)) with
+        {
+            Snapshot = _options.ActionSnapshot,
+        };
+        var begin = Session.BeginCall(
+            call,
+            SidecarCapabilityKind.Action,
+            action,
+            action.ByteLength,
+            DateTimeOffset.UtcNow,
+            hostContext);
+        if (!begin.Accepted)
+        {
+            linked.Dispose();
+            throw new OutOfProcessCapabilityException(
+                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                begin.Message ?? "The capability session rejected the module action entry.");
+        }
+
+        var pending = new PendingOutgoingAction(linked)
+        {
+            Request = request,
+        };
+        if (!_outgoingActions.TryAdd(call.CallId, pending))
+        {
+            CompleteSessionCall(call.CallId, 0);
+            linked.Dispose();
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The module action entry call identifier was reused.");
+        }
+
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionRequest,
+                request,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                linked.Token);
+            var response = await pending.Completion.Task.WaitAsync(linked.Token);
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
+                request,
+                response,
+                Session.Binding,
+                Session);
+            if (!responseValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    responseValidation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                    responseValidation.Message
+                        ?? "The module action entry response was rejected.");
+            }
+
+            var completion = CompleteSessionCall(
+                call.CallId,
+                response.Outcome.TerminalCallCount);
+            if (!completion)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The module action entry call could not be completed.");
+            }
+
+            return response;
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+            await SendCancellationAsync(
+                call,
+                cancellation,
+                deadline,
+                linked.Token,
+                ct);
+            CompleteSessionCall(call.CallId, 0);
+            throw;
+        }
+        finally
+        {
+            _outgoingActions.TryRemove(call.CallId, out _);
+            linked.Dispose();
+            RequestRotationRetry();
+        }
+    }
+
+    private SidecarCapabilityCallIdentity CreateOutgoingCall(DateTimeOffset deadline)
+    {
+        var binding = Session.Binding;
+        var sequence = Interlocked.Increment(ref _sequence);
+        return new SidecarCapabilityCallIdentity(
+            binding.SessionId,
+            binding.RequestId,
+            binding.CancellationId,
+            Guid.NewGuid(),
+            $"{binding.SessionId:N}:{sequence}:{Guid.NewGuid():N}",
+            binding.ModuleId,
+            binding.GraphId,
+            SidecarCapabilityKind.Action,
+            sequence,
+            deadline);
+    }
+
+    private void ObserveSequence(long sequence)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _sequence);
+            if (sequence <= current
+                || Interlocked.CompareExchange(ref _sequence, sequence, current) == current)
+                return;
         }
     }
 
@@ -292,6 +463,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                             OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityRequest>(frame.Payload),
                             ct);
                         break;
+                    case OutOfProcessCapabilityFrameKind.ActionResponse:
+                        CompleteOutgoingAction(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(frame.Payload));
+                        break;
                     case OutOfProcessCapabilityFrameKind.StorageRequest:
                         await ScheduleStorageRequestAsync(
                             OutOfProcessCapabilityWire.Deserialize<SidecarStorageCapabilityRequest>(frame.Payload),
@@ -351,6 +526,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     SidecarCapabilityErrors.Disconnected,
                     "The sidecar capability channel disconnected."));
             }
+            foreach (var action in _outgoingActions.Values)
+            {
+                action.Cancellation.Cancel();
+                action.Completion.TrySetException(new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Disconnected,
+                    "The sidecar capability channel disconnected."));
+            }
             foreach (var call in _calls.Values)
                 call.Cancellation.Cancel();
         }
@@ -376,6 +558,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         foreach (var terminal in _terminals.Values)
         {
             terminal.TrySetException(new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+        }
+        foreach (var action in _outgoingActions.Values)
+        {
+            action.Cancellation.Cancel();
+            action.Completion.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
         }
 
         try
@@ -781,6 +969,39 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
+    private void CompleteOutgoingAction(SidecarActionCapabilityResponse response)
+    {
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Outcome.Receipt?.CallId;
+        if (callId is null || callId == Guid.Empty)
+        {
+            var pending = _outgoingActions.Values
+                .Select(value => value.Request?.Call.CallId)
+                .Where(value => value is not null)
+                .Select(value => value!.Value)
+                .Take(2)
+                .ToArray();
+            if (pending.Length != 1)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The module action response has no unique pending call.");
+            }
+
+            callId = pending[0];
+        }
+
+        if (_outgoingActions.TryGetValue(callId.Value, out var action))
+        {
+            action.Completion.TrySetResult(response);
+            return;
+        }
+
+        throw new OutOfProcessCapabilityException(
+            SidecarCapabilityErrors.Unauthorized,
+            "The module action response does not match an active call.");
+    }
+
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
         var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
@@ -847,6 +1068,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 await SendActionFailureAsync(request, validation.Code, validation.Message, channelCt);
                 return;
             }
+
+            ObserveSequence(request.Call.Sequence);
 
             if (!IsHostActionAuthorized(request))
             {
@@ -1183,6 +1406,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 await SendStorageFailureAsync(request, validation.Code, validation.Message, channelCt);
                 return;
             }
+
+            ObserveSequence(request.Call.Sequence);
 
             if (!string.Equals(request.ModuleId, _session.Binding.ModuleId, StringComparison.Ordinal)
                 || (request.Operation != SidecarStorageOperationKind.ListContracts
@@ -1888,6 +2113,43 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             _limits.ProtocolMessageBytes,
             SendGate,
             ct);
+    }
+
+    private async Task SendCancellationAsync(
+        SidecarCapabilityCallIdentity call,
+        SidecarCancellationIdentity cancellation,
+        DateTimeOffset deadline,
+        CancellationToken callCancellation,
+        CancellationToken callerCancellation)
+    {
+        var reason = deadline <= DateTimeOffset.UtcNow
+            ? "deadline"
+            : callerCancellation.IsCancellationRequested
+                ? "caller"
+                : "call";
+        using var sendTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.CapabilityCancellation,
+                new OutOfProcessCapabilityCancellation(
+                    call,
+                    cancellation,
+                    reason,
+                    DateTimeOffset.UtcNow),
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                sendTimeout.Token);
+        }
+        catch (OperationCanceledException) when (sendTimeout.IsCancellationRequested)
+        {
+            _disconnect.Cancel();
+        }
+        catch (WebSocketException)
+        {
+            _disconnect.Cancel();
+        }
     }
 
     private SidecarActionCapabilityResponse CreateActionResponse(

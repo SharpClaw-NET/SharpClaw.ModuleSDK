@@ -1,3 +1,4 @@
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleSDK;
@@ -6,6 +7,34 @@ namespace SharpClaw.ModuleSDK;
 public sealed record SidecarApplicationEndpoint(
     string TypeName,
     string AssemblyName);
+
+/// <summary>Returns one authenticated endpoint execution result.</summary>
+public sealed record ModuleEndpointResult(
+    bool Succeeded,
+    JsonElement? Payload,
+    ExecutionError? Error)
+{
+    /// <summary>Creates a successful endpoint result.</summary>
+    public static ModuleEndpointResult Success(JsonElement payload) =>
+        new(true, payload, null);
+
+    /// <summary>Creates a failed endpoint result.</summary>
+    public static ModuleEndpointResult Failure(string code, string message) =>
+        new(
+            false,
+            null,
+            new ExecutionError(code, message));
+}
+
+/// <summary>Executes one explicitly registered module endpoint contribution.</summary>
+public interface IModuleEndpointHandler
+{
+    /// <summary>Executes the endpoint with host-authenticated action authority.</summary>
+    ValueTask<ModuleEndpointResult> InvokeAsync(
+        HostEndpointInvocation invocation,
+        IHostActionEntry hostActionEntry,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>Describes one CLI handler contribution across the sidecar boundary.</summary>
 public sealed record SidecarApplicationCliCommand(
@@ -48,6 +77,12 @@ public sealed record SidecarCliExecutionResponse(
     string ModuleId,
     string ContractHash,
     ModuleCliResult Result);
+
+/// <summary>Returns one endpoint result with graph identity.</summary>
+public sealed record SidecarEndpointExecutionResponse(
+    string ModuleId,
+    string ContractHash,
+    ModuleEndpointResult Result);
 
 /// <summary>Extends the flat sidecar discovery document with application metadata.</summary>
 public sealed record SidecarDiscoveryDocument(

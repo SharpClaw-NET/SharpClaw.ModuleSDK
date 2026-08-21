@@ -12,6 +12,10 @@ public sealed record ApplicationChildAction(string Name, int Count);
 
 public sealed record ApplicationChildResult(string Value);
 
+public sealed record AgentsJobImportAction(string JobId);
+
+public sealed record AgentsJobImportResult(string Value);
+
 public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplicationModule
 {
     public const string Id = "application_smoke_module";
@@ -23,6 +27,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string HostEntryCliName = "application.host-entry";
     public const string NestedHostEntryCliName = "application.host-entry-nested";
     public const string HostEntryToolName = "application.host-entry-tool";
+    public const string AgentsJobImportActionHookId = "agents.job.import.authorization";
+
+    public static Guid AgentsJobImportTerminalId { get; } =
+        new("44444444-4444-4444-8444-444444444444");
 
     public static RequestPrincipal HostEntryCaller { get; } =
         new(
@@ -111,6 +119,30 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 typeof(ApplicationChildResult)),
         };
 
+    public static ActionDescriptor<AgentsJobImportAction, AgentsJobImportResult> AgentsJobImportAction { get; } =
+        new(
+            new SharpClawActionKey("agents.job.import"),
+            1,
+            "agents",
+            ActionInterceptionCapabilities.Inspect,
+            ContainsSensitiveData: false,
+            HasIrreversibleEffects: false,
+            new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "agents.job.import"),
+            ContinuationPolicy: null,
+            TimeSpan.FromSeconds(5))
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(1),
+            SafePoints = [ActionSafePoint.BeforeTerminal],
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("agents.job.import"),
+                1,
+                typeof(AgentsJobImportAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("agents.job.import"),
+                1,
+                typeof(AgentsJobImportResult)),
+        };
+
     public ModuleIdentity Identity { get; } = new(Id, "Application Smoke", "appsmoke");
 
     public void Configure(ISharpClawModuleBuilder module)
@@ -130,6 +162,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         module.Hooks.For(OwnedAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(OwnedActionHookId));
+        module.AddActionEntry<AgentsJobImportAction, AgentsJobImportResult, AgentsJobImportTerminal>(
+            AgentsJobImportAction,
+            AgentsJobImportTerminalId);
         module.Tools.Add<HostEntryToolHandler>(new ToolDescriptor(
             HostEntryToolName,
             "Invokes the host-owned application action through the tool ingress.",
@@ -207,7 +242,39 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"{module.Identity.Id}|{graph.Identity.Id}|{graph.ContractHash}|{invocation.Command}")]));
     }
 
-    public sealed class ApplicationEndpoint;
+    public sealed class ApplicationEndpoint : IModuleEndpointHandler
+    {
+        public async ValueTask<ModuleEndpointResult> InvokeAsync(
+            HostEndpointInvocation invocation,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken)
+        {
+            var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
+                new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
+                    HostAction,
+                    new ApplicationSmokeAction("endpoint", "action"),
+                    invocation.HostActionContext),
+                new HostActionTerminal(),
+                cancellationToken);
+            return ModuleEndpointResult.Success(
+                JsonSerializer.SerializeToElement(new
+                {
+                    outcome = outcome.Kind.ToString(),
+                    value = outcome.Result?.Value,
+                }));
+        }
+    }
+
+    public sealed class AgentsJobImportTerminal : IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
+    {
+        public Guid TerminalId => AgentsJobImportTerminalId;
+
+        public ValueTask<AgentsJobImportResult> InvokeAsync(
+            ActionContext<AgentsJobImportAction> context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new AgentsJobImportResult($"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}"));
+    }
 
     public sealed class HostEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
     {

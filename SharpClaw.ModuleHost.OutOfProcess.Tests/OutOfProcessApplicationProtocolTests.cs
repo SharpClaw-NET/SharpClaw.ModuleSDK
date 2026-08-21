@@ -169,6 +169,77 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.LastSnapshotCapabilities.Should().Be(ApplicationSmokeModule.HostCapabilities);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task EndpointAndTypedModuleActionEntryUseTheAuthenticatedCapabilitySession()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var endpointContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Endpoint,
+            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("endpoint", "action"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var endpoint = await client.InvokeEndpointAsync(
+            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+            endpointContext);
+
+        endpoint.Succeeded.Should().BeTrue();
+        endpoint.Payload.Should().NotBeNull();
+        endpoint.Payload!.Value.GetProperty("value").GetString().Should().Be("endpoint:action");
+
+        var importAction = new AgentsJobImportAction("job-123");
+        var importContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.AgentsJobImportAction,
+            importAction,
+            new RequestPrincipal("module-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var import = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            importAction,
+            importContext);
+
+        import.Kind.Should().Be(ActionOutcomeKind.Completed);
+        import.Result.Value.Should().Be("imported:job-123:caller=module-agent");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
     [Test, CancelAfter(30000)]
     public async Task CapabilitySessionRotatesAfterMaximumCalls()
     {

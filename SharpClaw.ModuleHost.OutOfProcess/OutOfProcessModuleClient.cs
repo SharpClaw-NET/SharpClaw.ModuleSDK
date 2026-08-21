@@ -432,6 +432,171 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Invokes one explicitly registered module endpoint.</summary>
+    public async ValueTask<ModuleEndpointResult> InvokeEndpointAsync(
+        string endpoint,
+        HostActionEntryRequestContext hostActionContext,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        ArgumentNullException.ThrowIfNull(hostActionContext);
+        var now = DateTimeOffset.UtcNow;
+        if (!hostActionContext.IsWellFormed(now)
+            || hostActionContext.Ingress != HostActionEntryIngress.Endpoint
+            || hostActionContext.Contribution is null
+            || !string.Equals(
+                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
+                endpoint,
+                StringComparison.Ordinal)
+            || hostActionContext.InvocationId == Guid.Empty)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The endpoint host action context is invalid for the requested endpoint.");
+        }
+
+        if (!Application.Endpoints.Any(item =>
+                string.Equals(item.TypeName, endpoint, StringComparison.Ordinal)))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"Endpoint '{endpoint}' is not declared by the sidecar.");
+        }
+
+        var carrierAuthority = CapabilitySession
+            .BeginHostActionEntryCarrier(hostActionContext);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        try
+        {
+            var request = new HostEndpointInvocation(
+                hostActionContext.InvocationId,
+                endpoint,
+                hostActionContext);
+            using var response = await _httpClient.PostAsJsonAsync(
+                OutOfProcessModuleHostProtocol.ApplicationEndpointPath,
+                request,
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var failure = await response.Content.ReadAsStringAsync(ct);
+                throw new OutOfProcessProtocolException(
+                    "module_endpoint_http_failed",
+                    $"The sidecar rejected the endpoint request with HTTP "
+                    + $"{(int)response.StatusCode}: {failure}");
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<SidecarEndpointExecutionResponse>(
+                    OutOfProcessProtocolCodec.JsonOptions,
+                    ct)
+                ?? throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar returned no endpoint execution response.");
+            if (!string.Equals(result.ModuleId, Discovery.ModuleId, StringComparison.Ordinal)
+                || !string.Equals(result.ContractHash, Discovery.ContractHash, StringComparison.Ordinal))
+            {
+                throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.ExchangeIdentityMismatch,
+                    "The endpoint response does not match the authorized module graph.");
+            }
+
+            completion = result.Result.Succeeded
+                ? HostActionEntryCarrierCompletionKind.Succeeded
+                : HostActionEntryCarrierCompletionKind.Failed;
+            return result.Result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
+        }
+        finally
+        {
+            CapabilitySession.CompleteHostActionEntryCarrier(
+                carrierAuthority,
+                completion);
+        }
+    }
+
+    /// <summary>Invokes one typed action entry owned by this module sidecar.</summary>
+    public async ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        HostActionEntryRequestContext hostActionContext,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(hostActionContext);
+        var now = DateTimeOffset.UtcNow;
+        if (!hostActionContext.IsWellFormed(now)
+            || hostActionContext.Contribution is null
+            || hostActionContext.Ingress is not (
+                HostActionEntryIngress.Cli
+                or HostActionEntryIngress.Tool
+                or HostActionEntryIngress.Endpoint
+                or HostActionEntryIngress.CrossModule))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The module action entry context is invalid.");
+        }
+
+        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+        var entry = Application.ActionEntries.SingleOrDefault(item =>
+            item.Descriptor == identity);
+        if (entry is null)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"The module does not declare action entry '{identity.Key.Value}:{identity.Version}'.");
+        }
+
+        var payload = OutOfProcessActionDispatcher.Payload(
+            action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        var lineage = hostActionContext.Contribution.Lineage;
+        if (!HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
+                lineage,
+                descriptor)
+            || !string.Equals(lineage.PayloadContentHash, payload.ContentHash, StringComparison.Ordinal)
+            || lineage.PayloadByteLength != payload.ByteLength)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The module action entry context does not bind the typed payload.");
+        }
+
+        var carrierAuthority = CapabilitySession
+            .BeginHostActionEntryCarrier(hostActionContext);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        try
+        {
+            var response = await CapabilitySession.InvokeModuleActionEntryAsync(
+                identity,
+                payload,
+                hostActionContext,
+                entry.TerminalId,
+                ct);
+            var outcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+            completion = outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred
+                ? HostActionEntryCarrierCompletionKind.Succeeded
+                : HostActionEntryCarrierCompletionKind.Failed;
+            return outcome;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
+        }
+        finally
+        {
+            CapabilitySession.CompleteHostActionEntryCarrier(
+                carrierAuthority,
+                completion);
+        }
+    }
+
     /// <summary>Runs one event interceptor exchange.</summary>
     public async ValueTask<EventInterceptOutcome> InterceptEventAsync(
         EventInterceptStart start,

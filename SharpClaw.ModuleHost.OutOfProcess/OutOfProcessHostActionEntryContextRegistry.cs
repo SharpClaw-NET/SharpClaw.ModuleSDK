@@ -114,6 +114,17 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 "The host action descriptor must declare an input schema hash.",
                 nameof(descriptor));
         }
+        var payload = OutOfProcessActionDispatcher.Payload(
+            action,
+            identity.InputTypeIdentity,
+            inputSchema.Version);
+        if (!payload.IsValid
+            || payload.ByteLength > binding.PayloadLimits.ActionInputBytes)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.PayloadTooLarge,
+                "The host action context payload exceeds the configured action input limit.");
+        }
         var contribution = new HostActionEntryContribution(
             new HostActionEntryIngressBinding(
                 ingress,
@@ -128,8 +139,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 identity.InputTypeIdentity,
                 inputSchema.Version,
                 inputSchemaHash,
-                null,
-                null));
+                payload.ContentHash,
+                payload.ByteLength));
         var request = new HostActionEntryContextRequest(
             ingress,
             invocationId ?? Guid.NewGuid(),
