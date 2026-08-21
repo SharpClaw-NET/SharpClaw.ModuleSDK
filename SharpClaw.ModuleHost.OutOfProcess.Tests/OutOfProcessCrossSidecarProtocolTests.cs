@@ -17,7 +17,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     private OutOfProcessModuleServer _sourceServer = null!;
     private OutOfProcessModuleServer _targetServer = null!;
     private OutOfProcessModuleClient _targetClient = null!;
-    private CountingActionDispatcher _targetDispatcher = null!;
     private Uri _sourceAddress = null!;
     private string _sourceToken = null!;
     private Uri _targetAddress = null!;
@@ -50,9 +49,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             _targetToken,
             targetCatalog);
 
-        _targetDispatcher = new CountingActionDispatcher();
         await _targetClient.ConnectCapabilitiesAsync(
-            CreateOptions(_targetClient, _targetDispatcher));
+            CreateOptions(_targetClient, new CountingActionDispatcher()));
 
     }
 
@@ -96,6 +94,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             && entry.Descriptor.Key == CrossSidecarModule.OwnedAction.Key
             && entry.TerminalId == CrossSidecarModule.TerminalId);
 
+        CrossSidecarModule.ResetTerminalCalls();
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Cli,
             ApplicationSmokeModule.HostEntryCliName,
@@ -145,10 +144,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
             + "caller=module-agent|trace=11111111-1111-4111-8111-111111111111|"
             + "idempotency=22222222-2222-4222-8222-222222222222");
+        CrossSidecarModule.TerminalCalls.Should().Be(1);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
-        _targetDispatcher.RunCalls.Should().Be(1);
-        _targetDispatcher.TerminalCalls.Should().Be(1);
     }
 
     private async Task<OutOfProcessModuleServer> StartServerAsync(
