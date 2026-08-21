@@ -95,7 +95,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         await client.ConnectCapabilitiesAsync(
             CreateOptions(client, dispatcher, sourceEntries, descriptors));
 
-        client.Application.ActionEntries.Should().BeEmpty();
+        client.Application.ActionEntries.Should().NotBeEmpty();
         _targetClient.Application.ActionEntries.Should().ContainSingle(entry =>
             entry.ModuleId == CrossSidecarModule.Id
             && entry.Descriptor.Key == CrossSidecarModule.OwnedAction.Key

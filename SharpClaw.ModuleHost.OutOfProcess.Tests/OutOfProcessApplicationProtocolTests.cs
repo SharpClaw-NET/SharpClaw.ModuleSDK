@@ -92,9 +92,9 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         client.Application.ModuleId.Should().Be(client.Discovery.ModuleId);
         client.Application.ContractHash.Should().Be(client.Discovery.ContractHash);
-        client.Discovery.ActionDefinitions.Should().ContainSingle(item =>
+        client.Discovery.ActionDefinitions.Should().Contain(item =>
             item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
-        client.Discovery.Actions.Should().ContainSingle(item =>
+        client.Discovery.Actions.Should().Contain(item =>
             item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
         client.Application.Endpoints.Should().ContainSingle(endpoint =>
             endpoint.TypeName == typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName);

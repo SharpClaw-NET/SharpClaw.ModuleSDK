@@ -148,6 +148,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Actions.Add(OwnedAction);
+        module.Actions.Add(AgentsJobImportAction);
         module.Storage.Add(new ModuleStorageContractDescriptor(
             Id,
             "application-store",
