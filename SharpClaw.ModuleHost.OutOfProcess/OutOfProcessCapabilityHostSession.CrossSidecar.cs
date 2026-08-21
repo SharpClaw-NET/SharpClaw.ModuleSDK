@@ -201,6 +201,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 begin.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
                 $"{begin.Message ?? "The cross-sidecar carrier was rejected."}; "
                 + $"carrierValidation={carrierValidation.Code}:{carrierValidation.Message}; "
+                + $"beginCode={begin.Code}; "
                 + $"carrierWellFormed={carrier.IsWellFormed}; authorityValid={diagnosticAuthority.IsValid}; "
                 + $"targetSession={diagnosticTargetCall.SessionId == diagnosticBinding.SessionId}; "
                 + $"targetRequest={diagnosticTargetCall.RequestId == diagnosticBinding.RequestId}; "
