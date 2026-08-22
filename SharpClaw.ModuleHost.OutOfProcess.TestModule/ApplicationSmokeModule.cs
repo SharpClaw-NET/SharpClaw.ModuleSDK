@@ -485,8 +485,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         AgentsJobImportResult>(
                         new HostActionEntryRequest<AgentsJobImportAction, AgentsJobImportResult>(
                             AgentsJobImportAction,
-                            action with { JobId = action.JobId + "-spoofed" },
-                            invocation.HostActionContext),
+                            action,
+                            invocation.HostActionContext with { TraceId = Guid.NewGuid() }),
                         new BadAgentsJobImportTerminal(),
                         ct);
                     return CreateResult(rejected);
