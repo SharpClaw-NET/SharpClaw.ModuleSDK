@@ -572,13 +572,14 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         var completion = HostActionEntryCarrierCompletionKind.Failed;
         try
         {
-            var response = await CapabilitySession.InvokeModuleActionEntryAsync(
+            var outcome = await CapabilitySession.InvokeModuleActionEntryAsync(
+                descriptor,
+                action,
                 identity,
                 payload,
                 hostActionContext,
                 entry.TerminalId,
                 ct);
-            var outcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
             completion = outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred
                 ? HostActionEntryCarrierCompletionKind.Succeeded
                 : HostActionEntryCarrierCompletionKind.Failed;

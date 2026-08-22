@@ -165,7 +165,126 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
-    internal async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryAsync(
+    internal async ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(actionPayload);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
+            || hostContext.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The module action entry host context is invalid.");
+        }
+
+        if (!OutOfProcessActionDescriptorIdentity.Matches(
+                identity,
+                OutOfProcessActionDescriptorIdentity.Create(descriptor)))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The typed module action descriptor does not match its host identity.");
+        }
+
+        using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            ct,
+            _disconnect.Token);
+        var remaining = hostContext.Deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            dispatchCancellation.Cancel();
+        else
+            dispatchCancellation.CancelAfter(remaining);
+
+        var terminalCalls = 0;
+        try
+        {
+            async ValueTask<TResult> InvokeTerminalAsync(
+                ActionContext<TAction> _,
+                CancellationToken terminalCancellation)
+            {
+                if (Interlocked.Exchange(ref terminalCalls, 1) != 0)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Replay,
+                        "The typed module action dispatcher invoked its terminal more than once.");
+                }
+
+                var response = await InvokeModuleActionEntryExchangeAsync(
+                    identity,
+                    actionPayload,
+                    hostContext,
+                    terminalId,
+                    terminalCancellation);
+                var terminalOutcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+                if (terminalOutcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
+                    return terminalOutcome.Result;
+
+                throw new OutOfProcessCapabilityException(
+                    terminalOutcome.Error?.Code
+                        ?? response.SafeFailure?.Code
+                        ?? SidecarCapabilityErrors.HostFailure,
+                    terminalOutcome.Error?.Message
+                        ?? response.SafeFailure?.Message
+                        ?? "The module action entry failed.");
+            }
+
+            var outcome = await _options.ActionDispatcher.RunAsync(
+                descriptor,
+                action,
+                InvokeTerminalAsync,
+                _options.ActionSnapshot,
+                dispatchCancellation.Token);
+            if (outcome.Kind == ActionOutcomeKind.Completed
+                && terminalCalls != 1)
+            {
+                return new OutOfProcessActionOutcome<TResult>(
+                    ActionOutcomeKind.Failed,
+                    default!,
+                    new ExecutionError(
+                        SidecarCapabilityErrors.HostFailure,
+                        "The typed module action completed without an authenticated terminal exchange."),
+                    null,
+                    null);
+            }
+
+            return outcome;
+        }
+        catch (OperationCanceledException) when (dispatchCancellation.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OutOfProcessCapabilityException exception)
+        {
+            return new OutOfProcessActionOutcome<TResult>(
+                ActionOutcomeKind.Failed,
+                default!,
+                new ExecutionError(exception.Code, exception.Message),
+                null,
+                null);
+        }
+        catch (Exception)
+        {
+            return new OutOfProcessActionOutcome<TResult>(
+                ActionOutcomeKind.Failed,
+                default!,
+                new ExecutionError(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The typed module action dispatcher failed."),
+                null,
+                null);
+        }
+    }
+
+    private async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryExchangeAsync(
         SidecarActionDescriptorIdentity identity,
         SidecarSerializedPayload action,
         HostActionEntryRequestContext hostContext,
