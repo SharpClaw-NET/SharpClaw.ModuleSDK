@@ -1975,6 +1975,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             ParentInvocationId = effectiveContext.ParentInvocationId,
             Depth = effectiveContext.Depth,
             Attempt = effectiveContext.Attempt,
+            HostContextBindingHash = hostContext is null
+                ? null
+                : SidecarCapabilityTransportValidation
+                    .ComputeHostActionEntryContextBindingHash(hostContext),
         };
         authority = authority with
         {
