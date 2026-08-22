@@ -13,6 +13,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private readonly object _sync = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _authenticationNonces = new(StringComparer.Ordinal);
     private TaskCompletionSource<OutOfProcessModuleCapabilityConnection> _ready = CreateReadySource();
+    private TaskCompletionSource _connectionReleased = CreateReleasedSource(completed: true);
     private OutOfProcessModuleCapabilityConnection? _connection;
     private string? _moduleId;
     private string? _graphId;
@@ -262,32 +263,41 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                 "The capability grant is not authorized for this module graph.");
         }
 
-        var session = new SidecarCapabilitySession(
-            binding,
-            authenticate,
-            _ => true,
-            DateTimeOffset.UtcNow);
-        var connection = new OutOfProcessModuleCapabilityConnection(
-            socket,
-            session,
-            controlToken,
-            limits,
-            authorization,
-            RegisterAuthenticationNonce,
-            this,
-            graph.ActionEntries,
-            services);
-        lock (_sync)
+        OutOfProcessModuleCapabilityConnection? connection = null;
+        while (connection is null)
         {
-            if (_connection is not null)
+            Task waitForRelease;
+            lock (_sync)
             {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.Unauthorized,
-                    "The module already has an active capability channel.");
+                if (_connection is not null)
+                {
+                    waitForRelease = _connectionReleased.Task;
+                }
+                else
+                {
+                    var session = new SidecarCapabilitySession(
+                        binding,
+                        authenticate,
+                        _ => true,
+                        DateTimeOffset.UtcNow);
+                    connection = new OutOfProcessModuleCapabilityConnection(
+                        socket,
+                        session,
+                        controlToken,
+                        limits,
+                        authorization,
+                        RegisterAuthenticationNonce,
+                        this,
+                        graph.ActionEntries,
+                        services);
+                    _connectionReleased = CreateReleasedSource(completed: false);
+                    _connection = connection;
+                    _ready.TrySetResult(connection);
+                    break;
+                }
             }
 
-            _connection = connection;
-            _ready.TrySetResult(connection);
+            await waitForRelease.WaitAsync(ct);
         }
 
         try
@@ -310,6 +320,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                 {
                     _connection = null;
                     _ready = CreateReadySource();
+                    _connectionReleased.TrySetResult();
                 }
             }
 
@@ -324,6 +335,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         {
             connection = _connection;
             _connection = null;
+            _connectionReleased.TrySetResult();
             _ready.TrySetException(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityTransport)));
         }
 
@@ -360,6 +372,14 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     private static TaskCompletionSource<OutOfProcessModuleCapabilityConnection> CreateReadySource() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static TaskCompletionSource CreateReleasedSource(bool completed)
+    {
+        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (completed)
+            source.TrySetResult();
+        return source;
+    }
 }
 
 internal sealed record ModuleNestedActionMetadata(
