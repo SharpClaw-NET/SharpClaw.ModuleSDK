@@ -392,6 +392,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly string _controlToken;
     private readonly SidecarPayloadLimits _limits;
     private readonly SidecarHostAuthorization _authorization;
+    private readonly ActionPipelineSnapshot _hostActionSnapshot;
     private readonly Func<string, bool> _registerAuthenticationNonce;
     private readonly OutOfProcessModuleCapabilityTransport _transport;
     private readonly IReadOnlyList<ModuleActionEntryRegistration> _actionEntries;
@@ -427,6 +428,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         _controlToken = controlToken;
         _limits = limits;
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
+        _hostActionSnapshot = new ActionPipelineSnapshot(
+            session.Binding.GraphId,
+            authorization.ActionGrants,
+            authorization.EventGrants);
         _registerAuthenticationNonce = registerAuthenticationNonce
             ?? throw new ArgumentNullException(nameof(registerAuthenticationNonce));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
@@ -1110,7 +1115,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request.Invocation,
                 request.Descriptor,
                 request.Action,
-                request.Snapshot,
+                request.Invocation == SidecarActionInvocationKind.HostEntry
+                    ? _hostActionSnapshot
+                    : request.Snapshot!,
                 effectiveContext.InvocationId,
                 effectiveContext.ParentInvocationId,
                 effectiveContext.Depth,
