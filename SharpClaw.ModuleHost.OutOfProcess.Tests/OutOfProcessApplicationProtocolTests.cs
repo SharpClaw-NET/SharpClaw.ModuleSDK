@@ -20,6 +20,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     private OutOfProcessModuleServer _server = null!;
     private SidecarHostDescriptorCatalog _catalog = null!;
     private string _scopeProbePath = null!;
+    private string _terminalScopeProbePath = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -30,9 +31,13 @@ public sealed class OutOfProcessApplicationProtocolTests
         _moduleDirectory = Path.Combine(root, "application-protocol-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_moduleDirectory);
         _scopeProbePath = Path.Combine(_moduleDirectory, "scoped-endpoint-disposed.txt");
+        _terminalScopeProbePath = Path.Combine(_moduleDirectory, "scoped-terminal-disposed.txt");
         Environment.SetEnvironmentVariable(
             ApplicationSmokeModule.ScopedEndpointProbeEnvironmentVariable,
             _scopeProbePath);
+        Environment.SetEnvironmentVariable(
+            ApplicationSmokeModule.ScopedTerminalProbeEnvironmentVariable,
+            _terminalScopeProbePath);
         var moduleAssemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
         File.Copy(
             typeof(ApplicationSmokeModule).Assembly.Location,
@@ -90,6 +95,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             await server.DisposeAsync();
         Environment.SetEnvironmentVariable(
             ApplicationSmokeModule.ScopedEndpointProbeEnvironmentVariable,
+            null);
+        Environment.SetEnvironmentVariable(
+            ApplicationSmokeModule.ScopedTerminalProbeEnvironmentVariable,
             null);
     }
 
@@ -291,8 +299,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             ActionOutcomeKind.Completed,
             $"Typed action failed with {import.Error?.Code}: {import.Error?.Message}");
         dispatcher.LastSnapshotHash.Should().NotBeNull();
-        import.Result.Value.Should().Be(
-            $"imported:job-replaced:caller=module-agent:snapshot={dispatcher.LastSnapshotHash}");
+        import.Result.Value.Should().StartWith(
+            $"imported:job-replaced:caller=module-agent:snapshot={dispatcher.LastSnapshotHash}:scope=");
+        import.Result.Value.Should().Contain(":state=active");
+        File.ReadAllText(_terminalScopeProbePath).Should().StartWith("disposed:");
         dispatcher.RunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
         storage.InvokeCalls.Should().Be(0);

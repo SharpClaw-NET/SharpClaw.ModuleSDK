@@ -129,6 +129,9 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         _capabilityTransport.LastConnectionFailure
         ?? _capabilityTransport.LastTerminalFailure;
 
+    internal OutOfProcessModuleCapabilityTransport CapabilityTransport =>
+        _capabilityTransport;
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {

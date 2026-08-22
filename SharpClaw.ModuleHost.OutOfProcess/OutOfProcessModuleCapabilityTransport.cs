@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
 
@@ -14,7 +15,10 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     private readonly ConcurrentDictionary<string, DateTimeOffset> _authenticationNonces = new(StringComparer.Ordinal);
     private TaskCompletionSource<OutOfProcessModuleCapabilityConnection> _ready = CreateReadySource();
     private TaskCompletionSource _connectionReleased = CreateReleasedSource(completed: true);
+    private readonly TaskCompletionSource _connectionWaitObserved =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private OutOfProcessModuleCapabilityConnection? _connection;
+    private bool _disposed;
     private string? _moduleId;
     private string? _graphId;
     private SidecarPayloadLimits? _payloadLimits;
@@ -27,6 +31,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     internal Exception? LastConnectionFailure => Volatile.Read(ref _lastConnectionFailure);
     internal Exception? LastTerminalFailure => Volatile.Read(ref _lastTerminalFailure);
+    internal Task ConnectionWaitObserved => _connectionWaitObserved.Task;
 
     internal void RecordTerminalFailure(Exception exception) =>
         Volatile.Write(ref _lastTerminalFailure, exception);
@@ -203,6 +208,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     {
         ArgumentNullException.ThrowIfNull(socket);
         ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        ThrowIfDisposed();
         var limits = _payloadLimits
             ?? throw new InvalidOperationException("The module capability transport is not initialized.");
         var authorization = Volatile.Read(ref _authorization)
@@ -263,14 +269,17 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                 "The capability grant is not authorized for this module graph.");
         }
 
+        ThrowIfDisposed();
         OutOfProcessModuleCapabilityConnection? connection = null;
         while (connection is null)
         {
             Task waitForRelease;
             lock (_sync)
             {
+                ThrowIfDisposedNoLock();
                 if (_connection is not null)
                 {
+                    _connectionWaitObserved.TrySetResult();
                     waitForRelease = _connectionReleased.Task;
                 }
                 else
@@ -333,6 +342,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         OutOfProcessModuleCapabilityConnection? connection;
         lock (_sync)
         {
+            if (_disposed)
+                return;
+            _disposed = true;
             connection = _connection;
             _connection = null;
             _connectionReleased.TrySetResult();
@@ -341,6 +353,21 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
         if (connection is not null)
             await connection.DisposeAsync();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        lock (_sync)
+            ThrowIfDisposedNoLock();
+    }
+
+    private void ThrowIfDisposedNoLock()
+    {
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(
+                nameof(OutOfProcessModuleCapabilityTransport));
+        }
     }
 
     private async ValueTask<OutOfProcessModuleCapabilityConnection> GetConnectionAsync(
@@ -1153,8 +1180,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     request.Cancellation,
                     receipt,
                     effectiveContext.Deadline);
+            await using var invocationScope = _services.CreateAsyncScope();
             var execution = await registration.Invoker.InvokeAsync(
-                _services,
+                invocationScope.ServiceProvider,
                 terminalContext,
                 new OutOfProcessHostActionEntry(_transport),
                 active.Cancellation.Token);

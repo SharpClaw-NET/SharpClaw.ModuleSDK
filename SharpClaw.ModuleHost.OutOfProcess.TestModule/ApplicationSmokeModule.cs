@@ -31,6 +31,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string SelfOwnedEntryCliName = "application.self-owned-entry";
     public const string ScopedEndpointProbeEnvironmentVariable =
         "SHARPCLAW_MODULESDK_SCOPED_ENDPOINT_PROBE";
+    public const string ScopedTerminalProbeEnvironmentVariable =
+        "SHARPCLAW_MODULESDK_SCOPED_TERMINAL_PROBE";
     public const string AgentsJobImportActionHookId = "agents.job.import.authorization";
 
     public static Guid AgentsJobImportTerminalId { get; } =
@@ -154,6 +156,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         module.Actions.Add(OwnedAction);
         module.Actions.Add(AgentsJobImportAction);
         module.Services.AddScoped<ScopedEndpointResource>();
+        module.Services.AddScoped<ScopedTerminalResource>();
         module.Storage.Add(new ModuleStorageContractDescriptor(
             Id,
             "application-store",
@@ -306,7 +309,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class AgentsJobImportTerminal : IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
+    public sealed class AgentsJobImportTerminal(ScopedTerminalResource resource) :
+        IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
     {
         public Guid TerminalId => AgentsJobImportTerminalId;
 
@@ -318,7 +322,31 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 .ComputeSnapshotHash(context.Snapshot);
             return ValueTask.FromResult(
                 new AgentsJobImportResult(
-                    $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}"));
+                    $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}:scope={resource.InstanceId}:state={resource.State}"));
+        }
+    }
+
+    public sealed class ScopedTerminalResource : IDisposable
+    {
+        private static int _nextInstanceId;
+        private int _disposed;
+
+        public ScopedTerminalResource() =>
+            InstanceId = Interlocked.Increment(ref _nextInstanceId);
+
+        public int InstanceId { get; }
+
+        public string State => Volatile.Read(ref _disposed) == 0 ? "active" : "disposed";
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            var path = Environment.GetEnvironmentVariable(
+                ScopedTerminalProbeEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(path))
+                File.WriteAllText(path, $"disposed:{InstanceId}");
         }
     }
 
