@@ -213,9 +213,27 @@ public sealed class OutOfProcessApplicationProtocolTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             DateTimeOffset.UtcNow.AddMinutes(1));
-        var endpoint = await client.InvokeEndpointAsync(
+        var endpointTask = client.InvokeEndpointAsync(
             typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
-            endpointContext);
+            endpointContext).AsTask();
+        try
+        {
+            await endpointTask;
+        }
+        catch
+        {
+            var capabilityFailure = typeof(OutOfProcessModuleServer)
+                .GetProperty(
+                    "CapabilityFailure",
+                    System.Reflection.BindingFlags.Instance
+                        | System.Reflection.BindingFlags.NonPublic)
+                ?.GetValue(_server);
+            TestContext.Progress.WriteLine(
+                $"Sidecar capability failure: {capabilityFailure}");
+            throw;
+        }
+
+        var endpoint = await endpointTask;
 
         endpoint.Succeeded.Should().BeTrue();
         endpoint.Payload.Should().NotBeNull();
