@@ -149,7 +149,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             "host-entry:Completed:cross-sidecar:"
             + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
             + "caller=module-agent|trace=11111111-1111-4111-8111-111111111111|"
-            + "idempotency=22222222-2222-4222-8222-222222222222");
+            + "idempotency=22222222-2222-4222-8222-222222222222|scope=active");
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
         _targetDispatcher.RunCalls.Should().Be(1);

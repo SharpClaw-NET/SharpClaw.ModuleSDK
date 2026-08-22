@@ -816,12 +816,14 @@ public sealed class CrossSidecarModule : ISharpClawModule
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Actions.Add(OwnedAction);
+        module.Services.AddScoped<ApplicationSmokeModule.ScopedTerminalResource>();
         module.AddActionEntry<CrossSidecarAction, CrossSidecarResult, TargetTerminal>(
             OwnedAction,
             TerminalId);
     }
 
-    public sealed class TargetTerminal : IHostActionEntryTerminal<CrossSidecarAction, CrossSidecarResult>
+    public sealed class TargetTerminal(ApplicationSmokeModule.ScopedTerminalResource resource) :
+        IHostActionEntryTerminal<CrossSidecarAction, CrossSidecarResult>
     {
         public Guid TerminalId => CrossSidecarModule.TerminalId;
 
@@ -836,7 +838,7 @@ public sealed class CrossSidecarModule : ISharpClawModule
                         $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
                         + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
                         + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
-                        + $"idempotency={context.IdempotencyKey}")),
+                        + $"idempotency={context.IdempotencyKey}|scope={resource.State}")),
             };
     }
 }

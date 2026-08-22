@@ -1484,10 +1484,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request,
             contribution);
         SidecarTerminalExecutionResult execution;
+        await using var invocationScope = _services.CreateAsyncScope();
         try
         {
             execution = await registration.Invoker.InvokeAsync(
-                _services,
+                invocationScope.ServiceProvider,
                 context,
                 hostEntry,
                 ct);
