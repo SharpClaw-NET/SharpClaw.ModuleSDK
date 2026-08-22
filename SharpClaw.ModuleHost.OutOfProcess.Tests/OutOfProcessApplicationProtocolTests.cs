@@ -423,7 +423,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 DateTimeOffset.UtcNow.AddMinutes(1)));
 
         rejected.Result.Succeeded.Should().BeFalse();
-        rejected.Result.Error?.Code.Should().Be("host_entry_failed");
+        rejected.Result.Error?.Code.Should().Be(SidecarCapabilityErrors.Unauthorized);
         dispatcher.RunCalls.Should().Be(0);
         dispatcher.TerminalCalls.Should().Be(0);
         storage.InvokeCalls.Should().Be(0);
