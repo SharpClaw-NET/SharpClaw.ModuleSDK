@@ -188,7 +188,7 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
                 {
                     ProtocolVersionRange = LifecycleSmokeModule.HostAction.ProtocolVersionRange,
                 },
-                client.Authorization.ActionGrants.Single(item =>
+                client.Authorization.ActionGrants.First(item =>
                     item.ActionKey == LifecycleSmokeModule.HostAction.Key),
                 RequestPrincipal.Anonymous,
                 ExtensionFeatureSet.Empty,
