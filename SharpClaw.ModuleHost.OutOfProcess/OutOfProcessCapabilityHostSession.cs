@@ -208,7 +208,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         try
         {
             async ValueTask<TResult> InvokeTerminalAsync(
-                ActionContext<TAction> _,
+                ActionContext<TAction> dispatcherContext,
                 CancellationToken terminalCancellation)
             {
                 if (Interlocked.Exchange(ref terminalCalls, 1) != 0)
@@ -222,6 +222,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     identity,
                     actionPayload,
                     hostContext,
+                    dispatcherContext,
                     terminalId,
                     terminalCancellation);
                 var terminalOutcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
@@ -284,22 +285,36 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
-    private async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryExchangeAsync(
+    private async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryExchangeAsync<TAction>(
         SidecarActionDescriptorIdentity identity,
-        SidecarSerializedPayload action,
+        SidecarSerializedPayload initiatingAction,
         HostActionEntryRequestContext hostContext,
+        ActionContext<TAction> dispatcherContext,
         Guid terminalId,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(identity);
-        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(initiatingAction);
         ArgumentNullException.ThrowIfNull(hostContext);
+        ArgumentNullException.ThrowIfNull(dispatcherContext);
         if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
             || hostContext.Contribution is null)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The module action entry host context is invalid.");
+        }
+
+        var initiatingLineage = hostContext.Contribution.Lineage;
+        if (!string.Equals(
+                initiatingLineage.PayloadContentHash,
+                initiatingAction.ContentHash,
+                StringComparison.Ordinal)
+            || initiatingLineage.PayloadByteLength != initiatingAction.ByteLength)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The typed module action entry does not preserve its initiating payload authority.");
         }
 
         await WaitForRotationAsync(ct);
@@ -316,10 +331,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             call.CancellationId,
             SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
             deadline);
+        var effectiveAction = CreatePayload(
+            dispatcherContext.Action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
         var request = SidecarActionCapabilityRequest.HostEntry(
             call,
             identity,
-            action,
+            effectiveAction,
             cancellation,
             deadline,
             hostContext,
@@ -329,12 +348,23 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
                 identity.ResultSchemaVersion,
-                identity.DescriptorHash));
+                identity.DescriptorHash))
+        {
+            EffectiveHostEntryContext = CreateEffectiveHostEntryContext(
+                call,
+                identity,
+                effectiveAction,
+                cancellation,
+                deadline,
+                hostContext,
+                dispatcherContext,
+                terminalId),
+        };
         var begin = Session.BeginCall(
             call,
             SidecarCapabilityKind.Action,
-            action,
-            action.ByteLength,
+            effectiveAction,
+            effectiveAction.ByteLength,
             DateTimeOffset.UtcNow);
         if (!begin.Accepted)
         {
@@ -409,6 +439,101 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             linked.Dispose();
             RequestRotationRetry();
         }
+    }
+
+    private SidecarActionEffectiveHostEntryContext CreateEffectiveHostEntryContext<TAction>(
+        SidecarCapabilityCallIdentity call,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload effectiveAction,
+        SidecarCancellationIdentity cancellation,
+        DateTimeOffset deadline,
+        HostActionEntryRequestContext initiatingContext,
+        ActionContext<TAction> dispatcherContext,
+        Guid terminalId)
+    {
+        var receipt = new SidecarTerminalReceipt(
+            Guid.NewGuid().ToString("N"),
+            identity.Key,
+            identity.Version,
+            call.CallId,
+            dispatcherContext.Attempt,
+            $"{Session.Binding.GraphId}:{call.CallId:N}",
+            effectiveAction.ContentHash);
+        var issuedAt = DateTimeOffset.UtcNow;
+        var expiresAt = deadline < Session.Binding.ExpiresAt
+            ? deadline
+            : Session.Binding.ExpiresAt;
+        var authority = new SidecarHostTerminalAuthority(
+            Guid.NewGuid(),
+            call.SessionId,
+            call.RequestId,
+            call.CancellationId,
+            call.CallId,
+            Session.Binding.ModuleId,
+            Session.Binding.GraphId,
+            SidecarActionInvocationKind.HostEntry,
+            identity.Key,
+            identity.Version,
+            identity.DescriptorHash,
+            effectiveAction.TypeIdentity,
+            effectiveAction.SchemaVersion,
+            effectiveAction.ContentHash,
+            effectiveAction.ByteLength,
+            receipt.ReceiptId,
+            receipt.ActionKey,
+            receipt.ActionVersion,
+            receipt.CallId,
+            receipt.Attempt,
+            receipt.IdempotencyScope,
+            receipt.ContentHash,
+            deadline,
+            issuedAt,
+            expiresAt,
+            "pending")
+        {
+            TerminalId = terminalId,
+            SnapshotContentHash = SidecarCapabilityTransportValidation.ComputeSnapshotHash(
+                dispatcherContext.Snapshot),
+            Caller = dispatcherContext.Caller,
+            Features = dispatcherContext.Features,
+            TraceId = dispatcherContext.TraceId,
+            IdempotencyKey = dispatcherContext.IdempotencyKey,
+            InvocationId = dispatcherContext.InvocationId,
+            ParentInvocationId = dispatcherContext.ParentInvocationId,
+            Depth = dispatcherContext.Depth,
+            Attempt = dispatcherContext.Attempt,
+            HostContextBindingHash = SidecarCapabilityTransportValidation
+                .ComputeHostActionEntryContextBindingHash(initiatingContext),
+        };
+        authority = authority with
+        {
+            CanonicalBindingHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority),
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                authority,
+                _controlToken),
+        };
+        var effectiveContext = new SidecarActionTerminalExecutionContext(
+            call,
+            SidecarActionInvocationKind.HostEntry,
+            identity,
+            effectiveAction,
+            dispatcherContext.Snapshot,
+            dispatcherContext.InvocationId,
+            dispatcherContext.ParentInvocationId,
+            dispatcherContext.Depth,
+            dispatcherContext.Attempt,
+            dispatcherContext.Caller,
+            dispatcherContext.Features,
+            dispatcherContext.TraceId,
+            dispatcherContext.IdempotencyKey,
+            cancellation,
+            receipt,
+            deadline);
+        return new SidecarActionEffectiveHostEntryContext(
+            initiatingContext,
+            effectiveContext,
+            authority);
     }
 
     private SidecarCapabilityCallIdentity CreateOutgoingCall(DateTimeOffset deadline)
@@ -1177,7 +1302,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
                 request,
                 _session.Binding,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                ValidateTerminalAuthority);
             if (!validation.Accepted)
             {
                 await SendActionFailureAsync(request, validation.Code, validation.Message, channelCt);

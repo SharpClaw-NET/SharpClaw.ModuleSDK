@@ -197,6 +197,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry()));
 
+        ApplicationSmokeModule.ResetAgentsJobImportObservation();
+        dispatcher.ReplaceInput = value => value is AgentsJobImportAction import
+            ? import with { JobId = "job-replaced" }
+            : value;
+
         var endpointContext = client.IssueHostActionContext(
             HostActionEntryIngress.Endpoint,
             typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
@@ -236,7 +241,11 @@ public sealed class OutOfProcessApplicationProtocolTests
         import.Kind.Should().Be(
             ActionOutcomeKind.Completed,
             $"Typed action failed with {import.Error?.Code}: {import.Error?.Message}");
-        import.Result.Value.Should().Be("imported:job-123:caller=module-agent");
+        import.Result.Value.Should().Be("imported:job-replaced:caller=module-agent");
+        dispatcher.LastSnapshotHash.Should().NotBeNull();
+        ApplicationSmokeModule.LastAgentsJobImportAction.Should().Be("job-replaced");
+        ApplicationSmokeModule.LastAgentsJobImportSnapshotHash.Should().Be(
+            dispatcher.LastSnapshotHash);
         dispatcher.RunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
         storage.InvokeCalls.Should().Be(0);
@@ -1764,6 +1773,10 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         public ActionInterceptionCapabilities? LastSnapshotCapabilities { get; private set; }
 
+        public string? LastSnapshotHash { get; private set; }
+
+        public Func<object, object?>? ReplaceInput { get; set; }
+
         public Func<HostActionEntryRequestContext?>? HostContextFactory { get; set; }
 
         public async ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
@@ -1784,8 +1797,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"The dispatcher received unexpected capabilities for {descriptor.Key}: {grant.Capabilities}.");
 
             LastSnapshotCapabilities = grant.Capabilities;
+            LastSnapshotHash = SidecarCapabilityTransportValidation.ComputeSnapshotHash(snapshot);
             RunCalls++;
             var hostContext = HostContextFactory?.Invoke();
+            var effectiveAction = ReplaceInput?.Invoke(action!) is { } replacement
+                ? (TAction)replacement
+                : action;
             var result = await terminal(
                 new ActionContext<TAction>(
                     hostContext?.InvocationId ?? Guid.NewGuid(),
@@ -1798,7 +1815,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     descriptor.Key,
                     ApplicationSmokeModule.Id,
                     hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
-                    action,
+                    effectiveAction,
                     hostContext?.Features ?? ExtensionFeatureSet.Empty,
                     snapshot),
                 ct);

@@ -41,6 +41,16 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public static ExtensionFeatureSet HostEntryFeatures { get; } =
         ExtensionFeatureSet.Empty;
 
+    public static string? LastAgentsJobImportAction { get; private set; }
+
+    public static string? LastAgentsJobImportSnapshotHash { get; private set; }
+
+    public static void ResetAgentsJobImportObservation()
+    {
+        LastAgentsJobImportAction = null;
+        LastAgentsJobImportSnapshotHash = null;
+    }
+
     public static Guid HostEntryTraceId { get; } =
         new("11111111-1111-4111-8111-111111111111");
 
@@ -272,9 +282,14 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
 
         public ValueTask<AgentsJobImportResult> InvokeAsync(
             ActionContext<AgentsJobImportAction> context,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
+            CancellationToken cancellationToken)
+        {
+            LastAgentsJobImportAction = context.Action.JobId;
+            LastAgentsJobImportSnapshotHash = SidecarCapabilityTransportValidation
+                .ComputeSnapshotHash(context.Snapshot);
+            return ValueTask.FromResult(
                 new AgentsJobImportResult($"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}"));
+        }
     }
 
     public sealed class HostEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler

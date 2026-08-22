@@ -993,7 +993,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
                 request,
                 Binding,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                ValidateTerminalAuthority);
             if (!validation.Accepted)
             {
                 await SendIncomingActionResponseAsync(
@@ -1043,11 +1044,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             if (contribution is null
                 || lineage is null
                 || !HostLineageMatchesDescriptor(lineage, request.Descriptor)
-                || !string.Equals(
-                    lineage.PayloadContentHash,
-                    request.Action.ContentHash,
-                    StringComparison.Ordinal)
-                || lineage.PayloadByteLength != request.Action.ByteLength)
+                || request.EffectiveHostEntryContext is null
+                    && (!string.Equals(
+                        lineage.PayloadContentHash,
+                        request.Action.ContentHash,
+                        StringComparison.Ordinal)
+                        || lineage.PayloadByteLength != request.Action.ByteLength))
             {
                 await SendIncomingActionResponseAsync(
                     CreateIncomingActionFailure(
@@ -1102,6 +1104,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             }
 
             var effectiveContext = request.HostContext!;
+            var effectiveTerminalContext = request.EffectiveHostEntryContext?.EffectiveContext;
             var receipt = new SidecarTerminalReceipt(
                 Guid.NewGuid().ToString("N"),
                 request.Descriptor.Key,
@@ -1110,25 +1113,26 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 effectiveContext.Attempt,
                 effectiveContext.IdempotencyKey.ToString("N"),
                 request.Action.ContentHash);
-            var terminalContext = new SidecarActionTerminalExecutionContext(
-                request.Call,
-                request.Invocation,
-                request.Descriptor,
-                request.Action,
-                request.Invocation == SidecarActionInvocationKind.HostEntry
-                    ? _hostActionSnapshot
-                    : request.Snapshot!,
-                effectiveContext.InvocationId,
-                effectiveContext.ParentInvocationId,
-                effectiveContext.Depth,
-                effectiveContext.Attempt,
-                effectiveContext.Caller,
-                effectiveContext.Features,
-                effectiveContext.TraceId,
-                effectiveContext.IdempotencyKey,
-                request.Cancellation,
-                receipt,
-                effectiveContext.Deadline);
+            var terminalContext = effectiveTerminalContext
+                ?? new SidecarActionTerminalExecutionContext(
+                    request.Call,
+                    request.Invocation,
+                    request.Descriptor,
+                    request.Action,
+                    request.Invocation == SidecarActionInvocationKind.HostEntry
+                        ? _hostActionSnapshot
+                        : request.Snapshot!,
+                    effectiveContext.InvocationId,
+                    effectiveContext.ParentInvocationId,
+                    effectiveContext.Depth,
+                    effectiveContext.Attempt,
+                    effectiveContext.Caller,
+                    effectiveContext.Features,
+                    effectiveContext.TraceId,
+                    effectiveContext.IdempotencyKey,
+                    request.Cancellation,
+                    receipt,
+                    effectiveContext.Deadline);
             var execution = await registration.Invoker.InvokeAsync(
                 _services,
                 terminalContext,
@@ -1825,7 +1829,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
             request,
             Binding,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            ValidateTerminalAuthority);
         ThrowIfRejected(validation);
     }
 
