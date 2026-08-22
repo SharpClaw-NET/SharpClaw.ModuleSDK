@@ -1776,9 +1776,12 @@ public sealed class OutOfProcessApplicationProtocolTests
             var grant = snapshot.ActionGrants.Single(item =>
                 item.ActionKey == descriptor.Key
                 && item.ActionVersion == descriptor.Version);
-            if (grant.Capabilities != ApplicationSmokeModule.HostCapabilities)
+            var expectedCapabilities = descriptor.Key == ApplicationSmokeModule.AgentsJobImportAction.Key
+                ? ActionInterceptionCapabilities.Inspect
+                : ApplicationSmokeModule.HostCapabilities;
+            if (grant.Capabilities != expectedCapabilities)
                 throw new AssertionException(
-                    $"The dispatcher received unexpected capabilities: {grant.Capabilities}.");
+                    $"The dispatcher received unexpected capabilities for {descriptor.Key}: {grant.Capabilities}.");
 
             LastSnapshotCapabilities = grant.Capabilities;
             RunCalls++;
