@@ -1189,7 +1189,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     ActionOutcomeKind.Failed,
                     new ExecutionError(
                         SidecarCapabilityErrors.HostFailure,
-                        $"The module action entry failed: {ex.GetType().Name}: {ex.Message}")),
+                        "The module action entry failed.")),
                     channelCt);
         }
         finally
