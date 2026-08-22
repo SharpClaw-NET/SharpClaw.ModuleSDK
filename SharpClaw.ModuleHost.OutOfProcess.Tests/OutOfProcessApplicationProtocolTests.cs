@@ -371,7 +371,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 Guid.NewGuid(),
                 DateTimeOffset.UtcNow.AddMinutes(1)));
 
-        accepted.Result.Succeeded.Should().BeTrue();
+        accepted.Result.Succeeded.Should().BeTrue(
+            $"CLI error {accepted.Result.Error?.Code}: {accepted.Result.Error?.Message}; "
+            + string.Join(" | ", accepted.Result.Output.Select(item => item.Text)));
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
         storage.InvokeCalls.Should().Be(0);
