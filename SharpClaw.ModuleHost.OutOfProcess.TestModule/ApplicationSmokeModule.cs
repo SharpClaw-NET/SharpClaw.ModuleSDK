@@ -309,20 +309,31 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class AgentsJobImportTerminal(ScopedTerminalResource resource) :
+    public sealed class AgentsJobImportTerminal(
+        ScopedTerminalResource resource,
+        IModuleStorageGateway storage) :
         IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
     {
         public Guid TerminalId => AgentsJobImportTerminalId;
 
-        public ValueTask<AgentsJobImportResult> InvokeAsync(
+        public async ValueTask<AgentsJobImportResult> InvokeAsync(
             ActionContext<AgentsJobImportAction> context,
             CancellationToken cancellationToken)
         {
+            if (string.Equals(context.Action.JobId, "storage", StringComparison.Ordinal))
+            {
+                await storage.InvokeAsync(
+                    Id,
+                    "application-store",
+                    "echo",
+                    JsonSerializer.SerializeToElement(new { value = "terminal" }),
+                    cancellationToken);
+            }
+
             var snapshotHash = SidecarCapabilityTransportValidation
                 .ComputeSnapshotHash(context.Snapshot);
-            return ValueTask.FromResult(
-                new AgentsJobImportResult(
-                    $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}:scope={resource.InstanceId}:state={resource.State}"));
+            return new AgentsJobImportResult(
+                $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}:scope={resource.InstanceId}:state={resource.State}");
         }
     }
 

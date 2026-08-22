@@ -1148,6 +1148,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 return;
             }
 
+            ObserveSequence(request.Call.Sequence);
+
             var cancellation = CreateCallCancellation(request.Deadline, channelCt);
             active = new IncomingAction(cancellation)
             {
