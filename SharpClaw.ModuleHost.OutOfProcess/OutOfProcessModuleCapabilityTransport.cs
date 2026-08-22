@@ -1168,7 +1168,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             if (active is not null && !sessionCompleted)
             {
@@ -1182,8 +1182,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     ActionOutcomeKind.Failed,
                     new ExecutionError(
                         SidecarCapabilityErrors.HostFailure,
-                        "The module action entry failed.")),
-                channelCt);
+                        $"The module action entry failed: {ex.GetType().Name}: {ex.Message}")),
+                    channelCt);
         }
         finally
         {
