@@ -466,7 +466,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class SelfOwnedEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
+    public sealed class SelfOwnedEntryCliHandler(
+        IHostActionEntry hostActionEntry,
+        ScopedTerminalResource resource) : IModuleCliHandler
     {
         public async ValueTask<ModuleCliResult> ExecuteAsync(
             ModuleCliInvocation invocation,
@@ -497,7 +499,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         AgentsJobImportAction,
                         action,
                         invocation.HostActionContext),
-                    new AgentsJobImportTerminal(),
+                    new AgentsJobImportTerminal(resource),
                     ct);
                 return CreateResult(accepted);
             }
