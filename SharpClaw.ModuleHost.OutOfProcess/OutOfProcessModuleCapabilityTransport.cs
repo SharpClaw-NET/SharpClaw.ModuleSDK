@@ -1075,11 +1075,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 return;
             }
 
-            var begin = _session.BeginActionCall(
-                request,
+            var begin = _session.BeginCall(
+                request.Call,
+                SidecarCapabilityKind.Action,
+                request.Action,
                 request.Action.ByteLength,
-                DateTimeOffset.UtcNow,
-                out var hostContext);
+                DateTimeOffset.UtcNow);
             if (!begin.Accepted)
             {
                 AbandonIncomingCall(request.Call.CallId, active);
@@ -1095,7 +1096,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 return;
             }
 
-            var effectiveContext = hostContext ?? request.HostContext;
+            var effectiveContext = request.HostContext!;
             var receipt = new SidecarTerminalReceipt(
                 Guid.NewGuid().ToString("N"),
                 request.Descriptor.Key,
