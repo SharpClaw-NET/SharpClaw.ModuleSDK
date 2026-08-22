@@ -445,6 +445,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
         var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
         descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
         var grants = client.Authorization.ActionGrants
             .Append(new ActionCapabilityGrant(
