@@ -56,11 +56,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 "The host action entry request context does not match the typed host authority.");
         }
 
+        var identity = OutOfProcessActionDescriptorIdentity.Create(request.Descriptor);
+        var terminalBinding = _transport.ResolveActionEntryTerminal(
+            identity,
+            terminal.TerminalId,
+            terminal.GetType());
         var call = _transport.CreateCall(
             SidecarCapabilityKind.Action,
             request.Deadline,
             cancellationToken);
-        var identity = OutOfProcessActionDescriptorIdentity.Create(request.Descriptor);
         var actionPayload = OutOfProcessActionDispatcher.Payload(
             request.Action,
             identity.InputTypeIdentity,
@@ -77,24 +81,28 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             request.Deadline,
             context,
             new SidecarActionTerminalRegistration(
-                _transport.ResolveActionEntryTerminalId(
-                    identity,
-                    terminal.TerminalId,
-                    terminal.GetType()),
+                terminalBinding.TerminalId,
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
                 identity.ResultSchemaVersion,
                 identity.DescriptorHash));
+        Func<
+            SidecarActionTerminalTransportRequest,
+            CancellationToken,
+            ValueTask<SidecarActionTerminalTransportResponse>>? terminalCallback =
+            terminalBinding.IsAuthorized
+                ? (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
+                    terminal,
+                    terminalRequest,
+                    _transport.Binding.SafeFailure,
+                    terminalCancellation,
+                    _transport,
+                    context.Contribution)
+                : null;
         var response = await _transport.InvokeActionAsync(
             sidecarRequest,
-            (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
-                terminal,
-                terminalRequest,
-                _transport.Binding.SafeFailure,
-                terminalCancellation,
-                _transport,
-                context.Contribution),
+            terminalCallback,
             cancellationToken);
         ThrowIfHostEntryFailed(response);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
@@ -183,6 +191,10 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 null,
                 null),
         };
+        var terminalBinding = _transport.ResolveActionEntryTerminal(
+            identity,
+            terminal.TerminalId,
+            terminal.GetType());
 
         var childRequest = SidecarActionCapabilityRequest.HostEntryNested(
             relay.Call,
@@ -195,24 +207,28 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             relay.Call.Deadline,
             relay.Carrier,
             new SidecarActionTerminalRegistration(
-                _transport.ResolveActionEntryTerminalId(
-                    identity,
-                    terminal.TerminalId,
-                    terminal.GetType()),
+                terminalBinding.TerminalId,
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
                 identity.ResultSchemaVersion,
                 identity.DescriptorHash));
+        Func<
+            SidecarActionTerminalTransportRequest,
+            CancellationToken,
+            ValueTask<SidecarActionTerminalTransportResponse>>? terminalCallback =
+            terminalBinding.IsAuthorized
+                ? (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
+                    terminal,
+                    terminalRequest,
+                    _transport.Binding.SafeFailure,
+                    terminalCancellation,
+                    _transport,
+                    contribution)
+                : null;
         var response = await _transport.InvokeActionAsync(
             childRequest,
-            (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
-                terminal,
-                terminalRequest,
-                _transport.Binding.SafeFailure,
-                terminalCancellation,
-                _transport,
-                contribution),
+            terminalCallback,
             cancellationToken);
         ThrowIfHostEntryFailed(response);
         return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);

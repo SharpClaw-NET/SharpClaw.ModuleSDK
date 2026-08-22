@@ -11,6 +11,10 @@ namespace SharpClaw.ModuleHost.OutOfProcess;
 
 internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapabilityTransport, IAsyncDisposable
 {
+    internal readonly record struct ModuleActionEntryTerminalBinding(
+        Guid TerminalId,
+        bool IsAuthorized);
+
     private readonly object _sync = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _authenticationNonces = new(StringComparer.Ordinal);
     private TaskCompletionSource<OutOfProcessModuleCapabilityConnection> _ready = CreateReadySource();
@@ -65,7 +69,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _services = services;
     }
 
-    internal Guid ResolveActionEntryTerminalId(
+    internal ModuleActionEntryTerminalBinding ResolveActionEntryTerminal(
         SidecarActionDescriptorIdentity descriptor,
         Guid terminalId,
         Type terminalType)
@@ -102,17 +106,15 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         }
 
         if (match is null)
-            return terminalId;
+            return new(terminalId, IsAuthorized: true);
 
         if (match.TerminalId != terminalId
             || match.TerminalType != terminalType)
         {
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
-                "The supplied action terminal does not match the compiled module registration.");
+            return new(Guid.NewGuid(), IsAuthorized: false);
         }
 
-        return match.TerminalId;
+        return new(match.TerminalId, IsAuthorized: true);
     }
 
     internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
