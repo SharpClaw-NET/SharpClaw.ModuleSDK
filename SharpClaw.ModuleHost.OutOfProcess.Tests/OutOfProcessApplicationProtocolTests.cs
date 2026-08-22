@@ -233,6 +233,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
+        const string hostGraphId = "host-graph-h";
+        client.Discovery.ContractHash.Should().NotBe(hostGraphId);
+        dispatcher.ExpectedSnapshotContractHash = hostGraphId;
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(ApplicationSmokeModule.HostAction);
         var grants = client.Authorization.ActionGrants
@@ -250,7 +253,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             ["application-store"],
             descriptors,
             new ActionPipelineSnapshot(
-                client.Discovery.ContractHash,
+                hostGraphId,
                 grants,
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry()));
@@ -303,8 +306,94 @@ public sealed class OutOfProcessApplicationProtocolTests
             $"imported:job-replaced:caller=module-agent:snapshot={dispatcher.LastSnapshotHash}:scope=");
         import.Result.Value.Should().Contain(":state=active");
         File.ReadAllText(_terminalScopeProbePath).Should().StartWith("disposed:");
+        dispatcher.LastSnapshotContractHash.Should().Be(hostGraphId);
         dispatcher.RunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task MutatedHostSnapshotIsRejectedByDispatcherAuthorityBeforeTerminal()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher
+        {
+            ExpectedSnapshotContractHash = "host-graph-h",
+        };
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                "mutated-host-graph",
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var result = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            new AgentsJobImportAction("mutated-host"),
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("mutated-host"),
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        result.Kind.Should().NotBe(ActionOutcomeKind.Completed);
+        dispatcher.SnapshotRejectionCalls.Should().Be(1);
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task MutatedSidecarGraphIsRejectedBeforeDispatch()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        var grant = client.CreateCapabilityGrant() with
+        {
+            GraphId = "mutated-sidecar-graph",
+        };
+
+        var act = async () => await client.ConnectCapabilitiesAsync(
+            new OutOfProcessCapabilityHostOptions(
+                storage,
+                dispatcher,
+                grant,
+                ["application-store"],
+                descriptors,
+                new ActionPipelineSnapshot(
+                    "host-graph-h",
+                    client.Authorization.ActionGrants,
+                    client.Authorization.EventGrants),
+                new OutOfProcessHostActionEntryContextRegistry()));
+
+        await act.Should().ThrowAsync<OutOfProcessCapabilityException>();
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
         storage.InvokeCalls.Should().Be(0);
     }
 
@@ -2108,9 +2197,15 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         public int TerminalCalls { get; private set; }
 
+        public int SnapshotRejectionCalls { get; private set; }
+
         public ActionInterceptionCapabilities? LastSnapshotCapabilities { get; private set; }
 
         public string? LastSnapshotHash { get; private set; }
+
+        public string? LastSnapshotContractHash { get; private set; }
+
+        public string? ExpectedSnapshotContractHash { get; set; }
 
         public Func<object, object?>? ReplaceInput { get; set; }
 
@@ -2123,6 +2218,18 @@ public sealed class OutOfProcessApplicationProtocolTests
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {
+            if (ExpectedSnapshotContractHash is not null
+                && !string.Equals(
+                    snapshot.ContractHash,
+                    ExpectedSnapshotContractHash,
+                    StringComparison.Ordinal))
+            {
+                SnapshotRejectionCalls++;
+                throw new AssertionException(
+                    $"The dispatcher received snapshot '{snapshot.ContractHash}', "
+                    + $"expected '{ExpectedSnapshotContractHash}'.");
+            }
+
             var grant = snapshot.ActionGrants.Single(item =>
                 item.ActionKey == descriptor.Key
                 && item.ActionVersion == descriptor.Version);
@@ -2134,6 +2241,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"The dispatcher received unexpected capabilities for {descriptor.Key}: {grant.Capabilities}.");
 
             LastSnapshotCapabilities = grant.Capabilities;
+            LastSnapshotContractHash = snapshot.ContractHash;
             LastSnapshotHash = SidecarCapabilityTransportValidation.ComputeSnapshotHash(snapshot);
             RunCalls++;
             var hostContext = HostContextFactory?.Invoke();

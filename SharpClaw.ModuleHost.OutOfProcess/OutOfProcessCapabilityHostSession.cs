@@ -1303,6 +1303,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             || request.HostContext is null
             || request.Terminal is not { IsWellFormed: true }
             || request.Terminal.DescriptorHash != request.Descriptor.DescriptorHash
+            || !IsApplicationGraphBoundToSession()
             || !_application.ActionEntries.Any(entry =>
                 string.Equals(entry.ModuleId, _session.Binding.ModuleId, StringComparison.Ordinal)
                 && string.Equals(entry.ContractHash, _session.Binding.GraphId, StringComparison.Ordinal)
@@ -1310,14 +1311,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 && OutOfProcessActionDescriptorIdentity.Matches(
                     entry.Descriptor,
                     request.Descriptor)))
-        {
-            return false;
-        }
-
-        if (!string.Equals(
-                _options.ActionSnapshot.ContractHash,
-                _session.Binding.GraphId,
-                StringComparison.Ordinal))
         {
             return false;
         }
@@ -1345,6 +1338,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 StringComparison.Ordinal)
             && lineage.PayloadByteLength == request.Action.ByteLength;
     }
+
+    private bool IsApplicationGraphBoundToSession() =>
+        string.Equals(
+            _application.ModuleId,
+            _session.Binding.ModuleId,
+            StringComparison.Ordinal)
+        && string.Equals(
+            _application.ContractHash,
+            _session.Binding.GraphId,
+            StringComparison.Ordinal);
 
     private SidecarCapabilityCallIdentity CreateExpectedCall(
         SidecarCapabilityCallIdentity call) =>
