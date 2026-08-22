@@ -1189,6 +1189,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 preserveActiveContexts: true,
                 issueCoordinator: ExecuteContextIssuance);
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
+            Interlocked.Exchange(ref _sequence, 0);
             lock (_rotationSync)
             {
                 _rotationAcknowledgement = null;

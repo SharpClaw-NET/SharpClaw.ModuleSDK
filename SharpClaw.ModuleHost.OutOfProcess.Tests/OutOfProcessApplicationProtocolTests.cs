@@ -439,6 +439,83 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task HostSequenceResetsAfterRotationBeforeScopedModuleAction()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        for (var i = 0; i < 2; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                [],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"host-sequence-rotation-{i}"));
+
+            prior.Result.Succeeded.Should().BeTrue(
+                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
+        var action = new AgentsJobImportAction("storage");
+        var result = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            action,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        result.Kind.Should().Be(ActionOutcomeKind.Completed);
+        dispatcher.RunCalls.Should().Be(3);
+        dispatcher.TerminalCalls.Should().Be(3);
+        storage.ListContractsCalls.Should().Be(2);
+        storage.InvokeCalls.Should().Be(3);
+
+        var followUp = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            [],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "host-sequence-after"));
+
+        followUp.Result.Succeeded.Should().BeTrue(
+            $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
+        dispatcher.RunCalls.Should().Be(4);
+        dispatcher.TerminalCalls.Should().Be(4);
+        storage.ListContractsCalls.Should().Be(3);
+        storage.InvokeCalls.Should().Be(4);
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CapabilitySessionRotatesAfterMaximumCalls()
     {
         await using var client = await CreateClientAsync();
