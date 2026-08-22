@@ -41,16 +41,6 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public static ExtensionFeatureSet HostEntryFeatures { get; } =
         ExtensionFeatureSet.Empty;
 
-    public static string? LastAgentsJobImportAction { get; private set; }
-
-    public static string? LastAgentsJobImportSnapshotHash { get; private set; }
-
-    public static void ResetAgentsJobImportObservation()
-    {
-        LastAgentsJobImportAction = null;
-        LastAgentsJobImportSnapshotHash = null;
-    }
-
     public static Guid HostEntryTraceId { get; } =
         new("11111111-1111-4111-8111-111111111111");
 
@@ -284,11 +274,11 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ActionContext<AgentsJobImportAction> context,
             CancellationToken cancellationToken)
         {
-            LastAgentsJobImportAction = context.Action.JobId;
-            LastAgentsJobImportSnapshotHash = SidecarCapabilityTransportValidation
+            var snapshotHash = SidecarCapabilityTransportValidation
                 .ComputeSnapshotHash(context.Snapshot);
             return ValueTask.FromResult(
-                new AgentsJobImportResult($"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}"));
+                new AgentsJobImportResult(
+                    $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}"));
         }
     }
 

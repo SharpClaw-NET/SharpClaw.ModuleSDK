@@ -197,7 +197,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry()));
 
-        ApplicationSmokeModule.ResetAgentsJobImportObservation();
         dispatcher.ReplaceInput = value => value is AgentsJobImportAction import
             ? import with { JobId = "job-replaced" }
             : value;
@@ -241,11 +240,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         import.Kind.Should().Be(
             ActionOutcomeKind.Completed,
             $"Typed action failed with {import.Error?.Code}: {import.Error?.Message}");
-        import.Result.Value.Should().Be("imported:job-replaced:caller=module-agent");
         dispatcher.LastSnapshotHash.Should().NotBeNull();
-        ApplicationSmokeModule.LastAgentsJobImportAction.Should().Be("job-replaced");
-        ApplicationSmokeModule.LastAgentsJobImportSnapshotHash.Should().Be(
-            dispatcher.LastSnapshotHash);
+        import.Result.Value.Should().Be(
+            $"imported:job-replaced:caller=module-agent:snapshot={dispatcher.LastSnapshotHash}");
         dispatcher.RunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
         storage.InvokeCalls.Should().Be(0);
