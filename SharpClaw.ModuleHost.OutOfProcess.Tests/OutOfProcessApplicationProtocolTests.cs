@@ -380,6 +380,78 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(15000)]
+    public async Task ModuleOwnedHostEntryRejectsUnregisteredTerminalImplementationBeforeDispatch()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var rejected = await client.InvokeCliAsync(
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            ["bad-terminal"],
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.SelfOwnedEntryCliName,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("bad-terminal"),
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        rejected.Result.Succeeded.Should().BeFalse();
+        rejected.Result.Error?.Code.Should().Be("host_entry_failed");
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
+
+        var accepted = await client.InvokeCliAsync(
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            ["accepted"],
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.SelfOwnedEntryCliName,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("accepted"),
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        accepted.Result.Succeeded.Should().BeTrue(
+            $"CLI error {accepted.Result.Error?.Code}: {accepted.Result.Error?.Message}; "
+            + string.Join(" | ", accepted.Result.Output.Select(item => item.Text)));
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
+    [Test, CancelAfter(15000)]
     public async Task IncomingHostActionAlignsTheNextModuleStorageSequence()
     {
         await using var client = await CreateClientAsync();

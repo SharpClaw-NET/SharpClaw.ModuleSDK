@@ -489,6 +489,20 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 invocation.Arguments.FirstOrDefault() ?? "cli-job");
             try
             {
+                if (invocation.Arguments.Contains("bad-terminal", StringComparer.Ordinal))
+                {
+                    var rejected = await hostActionEntry.InvokeAsync<
+                        AgentsJobImportAction,
+                        AgentsJobImportResult>(
+                        new HostActionEntryRequest<AgentsJobImportAction, AgentsJobImportResult>(
+                            AgentsJobImportAction,
+                            action,
+                            invocation.HostActionContext),
+                        new BadAgentsJobImportTerminal(),
+                        ct);
+                    return CreateResult(rejected);
+                }
+
                 if (invocation.Arguments.Contains("unauthorized", StringComparer.Ordinal))
                 {
                     var rejected = await hostActionEntry.InvokeAsync<
