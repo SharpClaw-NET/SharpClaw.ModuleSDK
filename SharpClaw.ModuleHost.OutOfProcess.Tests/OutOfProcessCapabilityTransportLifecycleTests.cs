@@ -213,7 +213,7 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
             header => new ContinuationAccepted(
                 header,
                 handleId,
-                SidecarContinuationCommand.Continue,
+                SidecarContinuationCommand.ContinueOriginal,
                 ActionSafePoint.BeforeContinuation,
                 ContinuationState.Claimed));
         var outcome = SidecarMessageHeaderFactory.CreateMeasured(
