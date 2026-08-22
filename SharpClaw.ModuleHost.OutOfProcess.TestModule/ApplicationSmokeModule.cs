@@ -361,19 +361,6 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ValueTask.FromResult(new AgentsJobImportResult("unexpected-terminal"));
     }
 
-    public sealed class CliAgentsJobImportTerminal :
-        IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
-    {
-        public Guid TerminalId => AgentsJobImportTerminalId;
-
-        public ValueTask<AgentsJobImportResult> InvokeAsync(
-            ActionContext<AgentsJobImportAction> context,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
-                new AgentsJobImportResult(
-                    $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}"));
-    }
-
     public sealed class HostEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
     {
         public async ValueTask<ModuleCliResult> ExecuteAsync(
@@ -479,7 +466,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class SelfOwnedEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
+    public sealed class SelfOwnedEntryCliHandler(
+        IHostActionEntry hostActionEntry,
+        AgentsJobImportTerminal registeredTerminal) : IModuleCliHandler
     {
         public async ValueTask<ModuleCliResult> ExecuteAsync(
             ModuleCliInvocation invocation,
@@ -510,7 +499,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         AgentsJobImportAction,
                         action,
                         invocation.HostActionContext),
-                    new CliAgentsJobImportTerminal(),
+                    registeredTerminal,
                     ct);
                 return CreateResult(accepted);
             }

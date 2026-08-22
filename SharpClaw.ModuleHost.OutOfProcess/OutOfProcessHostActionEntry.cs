@@ -77,7 +77,10 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             request.Deadline,
             context,
             new SidecarActionTerminalRegistration(
-                _transport.ResolveModuleActionEntryTerminalId(identity),
+                _transport.ResolveActionEntryTerminalId(
+                    identity,
+                    terminal.GetType(),
+                    terminal.TerminalId),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
@@ -192,7 +195,10 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             relay.Call.Deadline,
             relay.Carrier,
             new SidecarActionTerminalRegistration(
-                _transport.ResolveModuleActionEntryTerminalId(identity),
+                _transport.ResolveActionEntryTerminalId(
+                    identity,
+                    terminal.GetType(),
+                    terminal.TerminalId),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,

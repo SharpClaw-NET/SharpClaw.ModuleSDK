@@ -65,10 +65,17 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _services = services;
     }
 
-    internal Guid ResolveModuleActionEntryTerminalId(
-        SidecarActionDescriptorIdentity descriptor)
+    internal Guid ResolveActionEntryTerminalId(
+        SidecarActionDescriptorIdentity descriptor,
+        Type terminalType,
+        Guid terminalId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(terminalType);
+        if (terminalId == Guid.Empty)
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The action terminal has no identity.");
         var graph = Volatile.Read(ref _graph)
             ?? throw new InvalidOperationException(
                 "The module capability transport has no compiled graph.");
@@ -94,10 +101,13 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             match = entry;
         }
 
-        return match?.TerminalId
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.UnknownAction,
-                "The module graph has no exact action-entry registration for the descriptor.");
+        if (match is null)
+            return terminalId;
+        if (match.TerminalType != terminalType)
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The action terminal type does not match the compiled module registration.");
+        return match.TerminalId;
     }
 
     internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
