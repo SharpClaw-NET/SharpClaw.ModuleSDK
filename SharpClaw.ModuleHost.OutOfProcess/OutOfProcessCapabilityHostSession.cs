@@ -348,7 +348,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 identity.InputSchemaVersion,
                 identity.ResultTypeIdentity,
                 identity.ResultSchemaVersion,
-                identity.DescriptorHash))
+                identity.DescriptorHash)) with
         {
             EffectiveHostEntryContext = CreateEffectiveHostEntryContext(
                 call,
