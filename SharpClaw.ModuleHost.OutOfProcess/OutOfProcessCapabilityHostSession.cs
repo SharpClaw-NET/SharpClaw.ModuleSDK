@@ -305,6 +305,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The module action entry host context is invalid.");
         }
 
+        var effectiveDispatcherContext = BindHostEntryDispatcherContext(
+            identity,
+            hostContext,
+            dispatcherContext);
+
         var initiatingLineage = hostContext.Contribution.Lineage;
         if (!string.Equals(
                 initiatingLineage.PayloadContentHash,
@@ -332,7 +337,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
             deadline);
         var effectiveAction = CreatePayload(
-            dispatcherContext.Action,
+            effectiveDispatcherContext.Action,
             identity.InputTypeIdentity,
             identity.InputSchemaVersion);
         var request = SidecarActionCapabilityRequest.HostEntry(
@@ -357,7 +362,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 cancellation,
                 deadline,
                 hostContext,
-                dispatcherContext,
+                effectiveDispatcherContext,
                 terminalId),
         };
         var begin = Session.BeginCall(
@@ -2067,7 +2072,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             ?? throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
                 "The host action entry request has no initiating host context.");
-        if (context.ActionKey != request.Descriptor.Key)
+        return BindHostEntryDispatcherContext(request.Descriptor, expected, context);
+    }
+
+    private static ActionContext<TAction> BindHostEntryDispatcherContext<TAction>(
+        SidecarActionDescriptorIdentity descriptor,
+        HostActionEntryRequestContext expected,
+        ActionContext<TAction> context)
+    {
+        if (context.ActionKey != descriptor.Key)
         {
             throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
