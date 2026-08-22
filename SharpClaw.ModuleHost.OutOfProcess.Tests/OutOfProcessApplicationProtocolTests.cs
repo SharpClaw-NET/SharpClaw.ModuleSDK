@@ -19,6 +19,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     private string _controlToken = null!;
     private OutOfProcessModuleServer _server = null!;
     private SidecarHostDescriptorCatalog _catalog = null!;
+    private string _scopeProbePath = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -28,6 +29,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "SHARPCLAW_MODULESDK_TEST_ROOT must identify the D: test root.");
         _moduleDirectory = Path.Combine(root, "application-protocol-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_moduleDirectory);
+        _scopeProbePath = Path.Combine(_moduleDirectory, "scoped-endpoint-disposed.txt");
+        Environment.SetEnvironmentVariable(
+            ApplicationSmokeModule.ScopedEndpointProbeEnvironmentVariable,
+            _scopeProbePath);
         var moduleAssemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
         File.Copy(
             typeof(ApplicationSmokeModule).Assembly.Location,
@@ -83,6 +88,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
+        Environment.SetEnvironmentVariable(
+            ApplicationSmokeModule.ScopedEndpointProbeEnvironmentVariable,
+            null);
     }
 
     [Test, CancelAfter(15000)]
@@ -96,9 +104,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
         client.Discovery.Actions.Should().Contain(item =>
             item.ActionKey == ApplicationSmokeModule.OwnedAction.Key);
-        client.Application.Endpoints.Should().ContainSingle(endpoint =>
+        client.Application.Endpoints.Should().Contain(endpoint =>
             endpoint.TypeName == typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName);
-        client.Application.CliCommands.Should().ContainSingle(command =>
+        client.Application.CliCommands.Should().Contain(command =>
             command.Descriptor.Name == ApplicationSmokeModule.CliName);
 
         var storage = new CountingStorageGateway();
@@ -129,6 +137,48 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
         result.Result.Output.Single().Text.Should().Be(
             $"{ApplicationSmokeModule.Id}|{ApplicationSmokeModule.Id}|{client.Discovery.ContractHash}|{ApplicationSmokeModule.CliName}");
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task EndpointActivationUsesOneInvocationScope()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var endpointTypeName = typeof(ApplicationSmokeModule.ScopedEndpoint).FullName!;
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Endpoint,
+            endpointTypeName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("scoped", "endpoint"),
+            new RequestPrincipal("scope-test"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+
+        var response = await client.InvokeEndpointAsync(endpointTypeName, context);
+
+        response.Succeeded.Should().BeTrue();
+        response.Payload.Should().NotBeNull();
+        response.Payload!.Value.GetProperty("state").GetString().Should().Be("active");
+        File.Exists(_scopeProbePath).Should().BeTrue();
+        File.ReadAllText(_scopeProbePath).Should().Be("disposed");
     }
 
     [Test, CancelAfter(15000)]
@@ -245,6 +295,75 @@ public sealed class OutOfProcessApplicationProtocolTests
             $"imported:job-replaced:caller=module-agent:snapshot={dispatcher.LastSnapshotHash}");
         dispatcher.RunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task ModuleOwnedHostEntryUsesApplicationRegistrationAndKeepsSequence()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry()));
+
+        var rejected = await client.InvokeCliAsync(
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            ["unauthorized"],
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.SelfOwnedEntryCliName,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("unauthorized"),
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        rejected.Result.Succeeded.Should().BeFalse();
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
+
+        var accepted = await client.InvokeCliAsync(
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            ["accepted"],
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.SelfOwnedEntryCliName,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("accepted"),
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        accepted.Result.Succeeded.Should().BeTrue();
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
         storage.InvokeCalls.Should().Be(0);
     }
 

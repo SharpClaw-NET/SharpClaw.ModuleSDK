@@ -246,7 +246,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     _controlToken,
                     HostLimits,
                     options,
-                    Authorization);
+                    Authorization,
+                    Application);
                 options.HostActionEntryContexts.Bind(
                     binding,
                     session.IssueHostActionEntryContext,

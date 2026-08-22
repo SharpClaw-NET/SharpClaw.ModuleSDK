@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
@@ -13,6 +14,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly SidecarPayloadLimits _limits;
     private readonly OutOfProcessCapabilityHostOptions _options;
     private readonly SidecarHostAuthorization _authorization;
+    private readonly SidecarApplicationDiscovery _application;
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
@@ -60,13 +62,22 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         string controlToken,
         SidecarPayloadLimits limits,
         OutOfProcessCapabilityHostOptions options,
-        SidecarHostAuthorization authorization)
+        SidecarHostAuthorization authorization,
+        SidecarApplicationDiscovery application)
     {
         _socket = socket;
         _controlToken = controlToken;
         _limits = limits;
         _options = options;
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
+        _application = application ?? throw new ArgumentNullException(nameof(application));
+        if (!string.Equals(application.ModuleId, binding.ModuleId, StringComparison.Ordinal)
+            || !string.Equals(application.ContractHash, binding.GraphId, StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The application discovery does not match the capability binding.");
+        }
         _session = CreateSession(binding, controlToken);
         SendGate = new SemaphoreSlim(1, 1);
         _capabilityQueue = new BoundedExecutionQueue(
@@ -1249,6 +1260,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry
+            && IsModuleOwnedHostActionAuthorized(request))
+        {
+            return true;
+        }
+
         var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
             grant.ActionKey == request.Descriptor.Key
             && grant.ActionVersion == request.Descriptor.Version);
@@ -1275,6 +1292,57 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 request.Snapshot.ContractHash,
                 _options.ActionSnapshot.ContractHash,
                 StringComparison.Ordinal);
+    }
+
+    private bool IsModuleOwnedHostActionAuthorized(
+        SidecarActionCapabilityRequest request)
+    {
+        if (request.NestedCarrier is not null
+            || request.Snapshot is not null
+            || request.HostContext is null
+            || request.Terminal is not { IsWellFormed: true }
+            || request.Terminal.DescriptorHash != request.Descriptor.DescriptorHash
+            || !_application.ActionEntries.Any(entry =>
+                string.Equals(entry.ModuleId, _session.Binding.ModuleId, StringComparison.Ordinal)
+                && string.Equals(entry.ContractHash, _session.Binding.GraphId, StringComparison.Ordinal)
+                && entry.TerminalId == request.Terminal.TerminalId
+                && OutOfProcessActionDescriptorIdentity.Matches(
+                    entry.Descriptor,
+                    request.Descriptor)))
+        {
+            return false;
+        }
+
+        if (!string.Equals(
+                _options.ActionSnapshot.ContractHash,
+                _session.Binding.GraphId,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var lineage = request.HostContext.Contribution?.Lineage;
+        return lineage is not null
+            && lineage.ActionKey == request.Descriptor.Key
+            && lineage.ActionVersion == request.Descriptor.Version
+            && string.Equals(
+                lineage.DescriptorHash,
+                request.Descriptor.DescriptorHash,
+                StringComparison.Ordinal)
+            && string.Equals(
+                lineage.InputTypeIdentity,
+                request.Descriptor.InputTypeIdentity,
+                StringComparison.Ordinal)
+            && lineage.InputSchemaVersion == request.Descriptor.InputSchemaVersion
+            && string.Equals(
+                lineage.InputSchemaHash,
+                request.Descriptor.InputSchemaHash,
+                StringComparison.Ordinal)
+            && string.Equals(
+                lineage.PayloadContentHash,
+                request.Action.ContentHash,
+                StringComparison.Ordinal)
+            && lineage.PayloadByteLength == request.Action.ByteLength;
     }
 
     private SidecarCapabilityCallIdentity CreateExpectedCall(
@@ -1319,6 +1387,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             if (!IsHostActionAuthorized(request))
             {
+                CompleteRejectedActionCall(request);
                 await SendActionFailureAsync(
                     request,
                     SidecarCapabilityErrors.Unauthorized,
@@ -1441,6 +1510,38 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
+    }
+
+    private void CompleteRejectedActionCall(SidecarActionCapabilityRequest request)
+    {
+        var contractRequest = request.HostContext is null
+            ? request
+            : request with
+            {
+                HostContext = OutOfProcessHostActionEntryContextRegistry
+                    .WithoutPayloadBinding(request.HostContext),
+            };
+        var begin = Session.BeginActionCall(
+            contractRequest,
+            request.Action.ByteLength,
+            DateTimeOffset.UtcNow,
+            out _);
+        if (!begin.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                begin.Message ?? "The rejected action call could not enter the capability session.");
+        }
+
+        var completion = Session.CompleteCall(request.Call.CallId, 0);
+        if (!completion.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                completion.Code ?? SidecarCapabilityErrors.HostFailure,
+                completion.Message ?? "The rejected action call could not leave the capability session.");
+        }
+
+        RequestRotationRetry();
     }
 
     private async Task HandleNestedTerminalRequestAsync(

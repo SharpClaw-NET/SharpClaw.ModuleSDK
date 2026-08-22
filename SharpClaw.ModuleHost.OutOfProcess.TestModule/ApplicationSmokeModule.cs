@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.ModuleSDK;
 
@@ -27,6 +28,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string HostEntryCliName = "application.host-entry";
     public const string NestedHostEntryCliName = "application.host-entry-nested";
     public const string HostEntryToolName = "application.host-entry-tool";
+    public const string SelfOwnedEntryCliName = "application.self-owned-entry";
+    public const string ScopedEndpointProbeEnvironmentVariable =
+        "SHARPCLAW_MODULESDK_SCOPED_ENDPOINT_PROBE";
     public const string AgentsJobImportActionHookId = "agents.job.import.authorization";
 
     public static Guid AgentsJobImportTerminalId { get; } =
@@ -149,6 +153,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     {
         module.Actions.Add(OwnedAction);
         module.Actions.Add(AgentsJobImportAction);
+        module.Services.AddScoped<ScopedEndpointResource>();
         module.Storage.Add(new ModuleStorageContractDescriptor(
             Id,
             "application-store",
@@ -183,6 +188,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
         application.Endpoints.Add<ApplicationEndpoint>();
+        application.Endpoints.Add<ScopedEndpoint>();
         application.Cli.Add<ApplicationCliHandler>(new ModuleCliCommandDescriptor(
             CliName,
             ["app-inspect"],
@@ -207,6 +213,12 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             "Exercises nested host-owned action entries.",
             new JsonSchemaReference("application.host-entry.nested.input", 1, "application-input"),
             new JsonSchemaReference("application.host-entry.nested.result", 1, "application-result")));
+        application.Cli.Add<SelfOwnedEntryCliHandler>(new ModuleCliCommandDescriptor(
+            SelfOwnedEntryCliName,
+            ["app-self-owned-entry"],
+            "Exercises a module-owned action entry through the authenticated host boundary.",
+            new JsonSchemaReference("application.self-owned-entry.input", 1, "application-input"),
+            new JsonSchemaReference("application.self-owned-entry.result", 1, "application-result")));
     }
 
     public sealed class AuthorizationHook : IActionInterceptor<ApplicationSmokeAction, ApplicationSmokeResult>
@@ -266,6 +278,34 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
+    public sealed class ScopedEndpoint(ScopedEndpointResource resource) : IModuleEndpointHandler
+    {
+        public ValueTask<ModuleEndpointResult> InvokeAsync(
+            HostEndpointInvocation invocation,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(ModuleEndpointResult.Success(
+                JsonSerializer.SerializeToElement(new { state = resource.State })));
+    }
+
+    public sealed class ScopedEndpointResource : IDisposable
+    {
+        private int _disposed;
+
+        public string State => Volatile.Read(ref _disposed) == 0 ? "active" : "disposed";
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            var path = Environment.GetEnvironmentVariable(
+                ScopedEndpointProbeEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(path))
+                File.WriteAllText(path, State);
+        }
+    }
+
     public sealed class AgentsJobImportTerminal : IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
     {
         public Guid TerminalId => AgentsJobImportTerminalId;
@@ -280,6 +320,17 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 new AgentsJobImportResult(
                     $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}"));
         }
+    }
+
+    public sealed class BadAgentsJobImportTerminal :
+        IHostActionEntryTerminal<AgentsJobImportAction, AgentsJobImportResult>
+    {
+        public Guid TerminalId { get; } = new("55555555-5555-4555-8555-555555555555");
+
+        public ValueTask<AgentsJobImportResult> InvokeAsync(
+            ActionContext<AgentsJobImportAction> context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new AgentsJobImportResult("unexpected-terminal"));
     }
 
     public sealed class HostEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
@@ -385,6 +436,60 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     new ExecutionError("host_entry_failed", ex.Message));
             }
         }
+    }
+
+    public sealed class SelfOwnedEntryCliHandler(IHostActionEntry hostActionEntry) : IModuleCliHandler
+    {
+        public async ValueTask<ModuleCliResult> ExecuteAsync(
+            ModuleCliInvocation invocation,
+            CancellationToken ct)
+        {
+            var action = new AgentsJobImportAction(
+                invocation.Arguments.FirstOrDefault() ?? "cli-job");
+            try
+            {
+                if (invocation.Arguments.Contains("unauthorized", StringComparer.Ordinal))
+                {
+                    var rejected = await hostActionEntry.InvokeAsync<
+                        AgentsJobImportAction,
+                        AgentsJobImportResult>(
+                        new HostActionEntryRequest<AgentsJobImportAction, AgentsJobImportResult>(
+                            AgentsJobImportAction,
+                            action,
+                            invocation.HostActionContext),
+                        new BadAgentsJobImportTerminal(),
+                        ct);
+                    return CreateResult(rejected);
+                }
+
+                var accepted = await hostActionEntry.InvokeAsync<
+                    AgentsJobImportAction,
+                    AgentsJobImportResult>(
+                    new HostActionEntryRequest<AgentsJobImportAction, AgentsJobImportResult>(
+                        AgentsJobImportAction,
+                        action,
+                        invocation.HostActionContext),
+                    new AgentsJobImportTerminal(),
+                    ct);
+                return CreateResult(accepted);
+            }
+            catch (Exception ex)
+            {
+                return new ModuleCliResult(
+                    false,
+                    [new ModuleCliOutput("stderr", $"{ex.GetType().FullName}: {ex.Message}")],
+                    new ExecutionError("host_entry_failed", ex.Message));
+            }
+        }
+
+        private static ModuleCliResult CreateResult(
+            IActionOutcome<AgentsJobImportResult> outcome) =>
+            new(
+                outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred,
+                [new ModuleCliOutput(
+                    "stdout",
+                    $"self-owned:{outcome.Kind}:{outcome.Result?.Value}")],
+                outcome.Error);
     }
 
     public sealed class HostEntryToolHandler(IHostActionEntry hostActionEntry) : IToolHandler

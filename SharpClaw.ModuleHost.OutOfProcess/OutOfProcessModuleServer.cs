@@ -505,11 +505,12 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             });
         }
 
+        await using var scope = _runtime.Services.CreateAsyncScope();
         IModuleEndpointHandler handler;
         try
         {
             handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                    _runtime.Services,
+                    scope.ServiceProvider,
                     endpointType) as IModuleEndpointHandler
                 ?? throw new InvalidOperationException(
                     $"Endpoint '{request.Endpoint}' does not implement "
@@ -532,7 +533,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         {
             result = await handler.InvokeAsync(
                 request,
-                _runtime.Services.GetRequiredService<IHostActionEntry>(),
+                scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
                 linked.Token);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
