@@ -67,11 +67,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     internal Guid ResolveActionEntryTerminalId(
         SidecarActionDescriptorIdentity descriptor,
-        Type terminalType,
         Guid terminalId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        ArgumentNullException.ThrowIfNull(terminalType);
         if (terminalId == Guid.Empty)
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
@@ -103,10 +101,6 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
         if (match is null)
             return terminalId;
-        if (match.TerminalType != terminalType)
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.SpoofedIdentity,
-                "The action terminal type does not match the compiled module registration.");
         return match.TerminalId;
     }
 

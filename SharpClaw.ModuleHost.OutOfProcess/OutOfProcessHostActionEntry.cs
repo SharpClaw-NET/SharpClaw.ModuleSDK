@@ -79,7 +79,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             new SidecarActionTerminalRegistration(
                 _transport.ResolveActionEntryTerminalId(
                     identity,
-                    terminal.GetType(),
                     terminal.TerminalId),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
@@ -197,7 +196,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             new SidecarActionTerminalRegistration(
                 _transport.ResolveActionEntryTerminalId(
                     identity,
-                    terminal.GetType(),
                     terminal.TerminalId),
                 identity.InputTypeIdentity,
                 identity.InputSchemaVersion,
