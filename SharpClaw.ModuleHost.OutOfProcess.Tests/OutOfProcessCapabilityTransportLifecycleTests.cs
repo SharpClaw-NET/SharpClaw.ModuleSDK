@@ -122,7 +122,7 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
     {
         var catalog = new SidecarHostDescriptorCatalog(
             [HostDescriptor()],
-            ["lifecycle-store"],
+            [],
             OutOfProcessModuleHostProtocol.Version,
             new SidecarPayloadLimits());
         return await OutOfProcessModuleClient.CreateAuthorizedAsync(
@@ -137,7 +137,7 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
             new NoOpStorageGateway(),
             new NoOpActionDispatcher(),
             client.CreateCapabilityGrant(),
-            [],
+            ["lifecycle-store"],
             new OutOfProcessActionDescriptorCatalog(),
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
