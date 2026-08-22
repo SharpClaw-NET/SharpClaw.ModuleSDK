@@ -385,11 +385,12 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         linked.CancelAfter(hostActionContext.Deadline - now);
+        await using var scope = _runtime.Services.CreateAsyncScope();
         ModuleCliResult result;
         try
         {
             var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                _runtime.Services,
+                scope.ServiceProvider,
                 contribution.HandlerType) as IModuleCliHandler
                 ?? throw new InvalidOperationException(
                     $"CLI handler '{contribution.HandlerType.FullName}' has an invalid contract.");
