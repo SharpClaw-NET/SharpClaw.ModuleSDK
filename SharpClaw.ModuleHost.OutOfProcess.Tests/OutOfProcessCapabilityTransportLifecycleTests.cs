@@ -112,8 +112,11 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
         var start = CreateStart(second);
         var result = await second.InvokeActionAsync(
             start.Start,
-            (_, _) => ValueTask.FromResult(
-                CreateContinuation(start.HandleId, start.Start.Header.Deadline)));
+            (request, _) => ValueTask.FromResult(
+                CreateContinuation(
+                    start.HandleId,
+                    start.Start.Header.Deadline,
+                    request.Header.Sequence + 1)));
 
         result.Completion.Kind.Should().Be(ActionOutcomeKind.Completed);
     }
@@ -202,12 +205,15 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
     }
 
     private static (ContinuationAccepted Accepted, ContinuationOutcome Outcome)
-        CreateContinuation(Guid handleId, DateTimeOffset deadline)
+        CreateContinuation(
+            Guid handleId,
+            DateTimeOffset deadline,
+            long acceptedSequence)
     {
         var limits = new SidecarPayloadLimits();
         var accepted = SidecarMessageHeaderFactory.CreateMeasured(
             OutOfProcessModuleHostProtocol.Version,
-            2,
+            acceptedSequence,
             deadline,
             limits.ProtocolMessageBytes,
             header => new ContinuationAccepted(
@@ -218,7 +224,7 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
                 ContinuationState.Claimed));
         var outcome = SidecarMessageHeaderFactory.CreateMeasured(
             OutOfProcessModuleHostProtocol.Version,
-            3,
+            acceptedSequence + 1,
             accepted.Header.Deadline,
             limits.ActionResultBytes,
             header => new ContinuationOutcome(
