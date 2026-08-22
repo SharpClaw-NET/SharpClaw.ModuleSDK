@@ -65,6 +65,41 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             _services = services;
     }
 
+    internal Guid ResolveModuleActionEntryTerminalId(
+        SidecarActionDescriptorIdentity descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        var graph = Volatile.Read(ref _graph)
+            ?? throw new InvalidOperationException(
+                "The module capability transport has no compiled graph.");
+        var moduleId = Volatile.Read(ref _moduleId)
+            ?? throw new InvalidOperationException(
+                "The module capability transport is not initialized.");
+        ModuleActionEntryRegistration? match = null;
+        foreach (var entry in graph.ActionEntries)
+        {
+            if (!string.Equals(entry.OwnerModuleId, moduleId, StringComparison.Ordinal)
+                || !OutOfProcessActionDescriptorIdentity.Matches(entry.Descriptor, descriptor))
+            {
+                continue;
+            }
+
+            if (match is not null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.UnknownAction,
+                    "The module graph contains ambiguous action-entry registrations.");
+            }
+
+            match = entry;
+        }
+
+        return match?.TerminalId
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The module graph has no exact action-entry registration for the descriptor.");
+    }
+
     internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
         SharpClawActionKey actionKey,
         int actionVersion)
