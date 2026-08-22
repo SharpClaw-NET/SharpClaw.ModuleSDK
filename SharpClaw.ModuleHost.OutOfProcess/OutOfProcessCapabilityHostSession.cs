@@ -1521,11 +1521,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 HostContext = OutOfProcessHostActionEntryContextRegistry
                     .WithoutPayloadBinding(request.HostContext),
             };
-        var begin = Session.BeginActionCall(
-            contractRequest,
-            request.Action.ByteLength,
-            DateTimeOffset.UtcNow,
-            out _);
+        var begin = contractRequest.HostContext is { } hostContext
+            ? Session.BeginCall(
+                contractRequest.Call,
+                SidecarCapabilityKind.Action,
+                contractRequest.Action,
+                contractRequest.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                hostContext)
+            : Session.BeginActionCall(
+                contractRequest,
+                request.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                out _);
         if (!begin.Accepted)
         {
             throw new OutOfProcessCapabilityException(
