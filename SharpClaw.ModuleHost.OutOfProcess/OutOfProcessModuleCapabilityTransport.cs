@@ -723,8 +723,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 SidecarCapabilityKind.Action,
                 request.Action,
                 request.Action.ByteLength,
-                DateTimeOffset.UtcNow,
-                request.HostContext);
+                DateTimeOffset.UtcNow);
         ThrowIfRejected(begin);
         ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
