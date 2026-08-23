@@ -378,11 +378,25 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                 }
                 else
                 {
+                    var authenticateHostTerminalAuthority =
+                        new Func<SidecarHostTerminalAuthority, string, bool>(
+                            (authority, canonicalBindingHash) =>
+                                string.Equals(
+                                    authority.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                                        authority,
+                                        controlToken),
+                                    authority.Proof,
+                                    StringComparison.Ordinal));
                     var session = new SidecarCapabilitySession(
                         binding,
                         authenticate,
                         _ => true,
-                        DateTimeOffset.UtcNow);
+                        DateTimeOffset.UtcNow,
+                        authenticateHostTerminalAuthority);
                     connection = new OutOfProcessModuleCapabilityConnection(
                         socket,
                         session,
