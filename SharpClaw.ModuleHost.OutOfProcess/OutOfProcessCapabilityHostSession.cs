@@ -810,7 +810,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             + $"reservedNested={TemporaryFieldCount(type, "_reservedNestedCalls")}; "
             + $"nestedIds={TemporaryFieldCount(type, "_nestedCarrierIds")}; "
             + $"entryCarriers={TemporaryFieldCount(type, "_activeEntryCarriers")}; "
-            + $"budgetReservations={TemporaryFieldCount(type, "_entryBudgetReservations")}";
+            + $"budgetReservations={TemporaryFieldCount(type, "_entryBudgetReservations")}; "
+            + $"nestedDetails={TemporaryMapDetails(type, "_nestedCarrierStates")}; "
+            + $"reservedDetails={TemporaryMapDetails(type, "_reservedNestedCalls")}";
     }
 
     private int TemporaryFieldCount(Type type, string fieldName)
@@ -819,6 +821,34 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             .GetField(fieldName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
             ?.GetValue(Session);
         return TemporaryCount(value);
+    }
+
+    private string TemporaryMapDetails(Type type, string fieldName)
+    {
+        var value = type
+            .GetField(fieldName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(Session);
+        if (value is not System.Collections.IEnumerable entries)
+            return string.Empty;
+
+        var details = new System.Collections.Generic.List<string>();
+        foreach (var entry in entries)
+        {
+            var key = entry?.GetType().GetProperty("Key")?.GetValue(entry);
+            var item = entry?.GetType().GetProperty("Value")?.GetValue(entry);
+            var carrier = item?.GetType().GetProperty("Carrier")?.GetValue(item);
+            var parentCall = item?.GetType().GetProperty("ParentCall")?.GetValue(item);
+            var call = item?.GetType().GetProperty("Call")?.GetValue(item);
+            var context = item?.GetType().GetProperty("Context")?.GetValue(item);
+            var callId = call?.GetType().GetProperty("CallId")?.GetValue(call);
+            var parentCallId = parentCall?.GetType().GetProperty("CallId")?.GetValue(parentCall);
+            var carrierId = carrier?.GetType().GetProperty("CarrierId")?.GetValue(carrier);
+            var contextId = context?.GetType().GetProperty("CapabilityId")?.GetValue(context);
+            details.Add(
+                $"{key}:carrier={carrierId};parentCall={parentCallId};call={callId};context={contextId}");
+        }
+
+        return string.Join('|', details);
     }
 
     private static int TemporaryCount(object? value)
