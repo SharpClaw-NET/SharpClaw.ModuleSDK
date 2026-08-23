@@ -215,9 +215,45 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         else
             dispatchCancellation.CancelAfter(remaining);
 
+        await WaitForRotationAsync(dispatchCancellation.Token);
+        var call = CreateOutgoingCall(hostContext.Deadline);
+        var cancellation = new SidecarCancellationIdentity(
+            call.CancellationId,
+            SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
+            hostContext.Deadline);
+        var begin = Session.BeginCall(
+            call,
+            SidecarCapabilityKind.Action,
+            actionPayload,
+            actionPayload.ByteLength,
+            DateTimeOffset.UtcNow,
+            hostContext);
+        if (!begin.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                begin.Message ?? "The capability session rejected the module action entry.");
+        }
+
         var terminalCalls = 0;
+        var sessionTerminalCallCount = 0;
         try
         {
+            var authority = CreateExternalActionDispatchAuthority(
+                identity,
+                call,
+                action,
+                actionPayload,
+                new SidecarActionTerminalRegistration(
+                    terminalId,
+                    identity.InputTypeIdentity,
+                    identity.InputSchemaVersion,
+                    identity.ResultTypeIdentity,
+                    identity.ResultSchemaVersion,
+                    identity.DescriptorHash),
+                hostContext,
+                cancellation,
+                SidecarActionInvocationKind.HostEntry);
             async ValueTask<TResult> InvokeTerminalAsync(
                 ActionContext<TAction> dispatcherContext,
                 CancellationToken terminalCancellation)
@@ -230,12 +266,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 }
 
                 var response = await InvokeModuleActionEntryExchangeAsync(
+                    call,
+                    cancellation,
                     identity,
                     actionPayload,
                     hostContext,
                     dispatcherContext,
                     terminalId,
                     terminalCancellation);
+                sessionTerminalCallCount = response.Outcome.TerminalCallCount;
                 var terminalOutcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
                 if (terminalOutcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
                     return terminalOutcome.Result;
@@ -249,11 +288,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         ?? "The module action entry failed.");
             }
 
-            var outcome = await _options.ActionDispatcher.RunAsync(
+            var outcome = await _options.ActionDispatcher.RunExternalAsync(
                 descriptor,
                 action,
                 InvokeTerminalAsync,
                 _options.ActionSnapshot,
+                authority,
                 dispatchCancellation.Token);
             if (outcome.Kind == ActionOutcomeKind.Completed
                 && terminalCalls != 1)
@@ -294,9 +334,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 null,
                 null);
         }
+        finally
+        {
+            CompleteSessionCall(call.CallId, sessionTerminalCallCount);
+            RequestRotationRetry();
+        }
     }
 
     private async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryExchangeAsync<TAction>(
+        SidecarCapabilityCallIdentity call,
+        SidecarCancellationIdentity cancellation,
         SidecarActionDescriptorIdentity identity,
         SidecarSerializedPayload initiatingAction,
         HostActionEntryRequestContext hostContext,
@@ -333,7 +380,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The typed module action entry does not preserve its initiating payload authority.");
         }
 
-        await WaitForRotationAsync(ct);
         var deadline = hostContext.Deadline;
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _disconnect.Token);
         var remaining = deadline - DateTimeOffset.UtcNow;
@@ -342,11 +388,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         else
             linked.CancelAfter(remaining);
 
-        var call = CreateOutgoingCall(deadline);
-        var cancellation = new SidecarCancellationIdentity(
-            call.CancellationId,
-            SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
-            deadline);
         var effectiveAction = CreatePayload(
             effectiveDispatcherContext.Action,
             identity.InputTypeIdentity,
@@ -376,27 +417,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 effectiveDispatcherContext,
                 terminalId),
         };
-        var begin = Session.BeginCall(
-            call,
-            SidecarCapabilityKind.Action,
-            effectiveAction,
-            effectiveAction.ByteLength,
-            DateTimeOffset.UtcNow);
-        if (!begin.Accepted)
-        {
-            linked.Dispose();
-            throw new OutOfProcessCapabilityException(
-                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
-                begin.Message ?? "The capability session rejected the module action entry.");
-        }
-
         var pending = new PendingOutgoingAction(linked)
         {
             Request = request,
         };
         if (!_outgoingActions.TryAdd(call.CallId, pending))
         {
-            CompleteSessionCall(call.CallId, 0);
             linked.Dispose();
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Replay,
@@ -426,16 +452,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         ?? "The module action entry response was rejected.");
             }
 
-            var completion = CompleteSessionCall(
-                call.CallId,
-                response.Outcome.TerminalCallCount);
-            if (!completion)
-            {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.HostFailure,
-                    "The module action entry call could not be completed.");
-            }
-
             return response;
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
@@ -446,7 +462,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 deadline,
                 linked.Token,
                 ct);
-            CompleteSessionCall(call.CallId, 0);
             throw;
         }
         finally
