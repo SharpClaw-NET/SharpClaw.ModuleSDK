@@ -610,7 +610,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var result = session.CompleteCall(callId, effectiveTerminalCallCount);
         if (result.Accepted
             && Interlocked.Increment(ref _completedCallsForBinding)
-                >= session.Binding.ConcurrencyLimits.MaximumCallsPerRequest)
+                >= Math.Max(session.Binding.ConcurrencyLimits.MaximumCallsPerRequest - 2, 1))
         {
             lock (_rotationSync)
             {

@@ -362,7 +362,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             CompleteSessionCall(call.CallId, sessionTerminalCallCount);
-            RequestRotationRetry();
         }
     }
 
@@ -740,11 +739,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             lock (_rotationSync)
             {
                 var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                var callsForRotation =
+                    Volatile.Read(ref _completedCallsForBinding) + _calls.Count;
                 if (_rotationReady is null
                     && (_rotationTask is null || _rotationTask.IsCompleted)
-                    && _options.HostActionEntryContexts.HasPendingContexts
-                    && Volatile.Read(ref _completedCallsForBinding)
-                        >= Math.Max(maximumCalls - 2, 1))
+                    && callsForRotation >= Math.Max(maximumCalls - 2, 1))
                 {
                     _rotationReady = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1143,14 +1142,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         var session = Session;
         var result = session.CompleteCall(callId, terminalCallCount);
-        if (result.Accepted
-            && Interlocked.Increment(ref _completedCallsForBinding)
-                >= session.Binding.ConcurrencyLimits.MaximumCallsPerRequest)
+        if (result.Accepted)
         {
-            lock (_rotationSync)
+            var callsForRotation = Interlocked.Increment(ref _completedCallsForBinding);
+            if (callsForRotation
+                >= Math.Max(session.Binding.ConcurrencyLimits.MaximumCallsPerRequest - 2, 1))
             {
-                _rotationReady ??= new TaskCompletionSource(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (_rotationSync)
+                {
+                    _rotationReady ??= new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                }
             }
         }
 

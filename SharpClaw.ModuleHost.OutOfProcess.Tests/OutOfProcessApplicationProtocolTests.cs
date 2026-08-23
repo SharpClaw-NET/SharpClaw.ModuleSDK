@@ -840,7 +840,11 @@ public sealed class OutOfProcessApplicationProtocolTests
         var dispatcher = new CountingActionDispatcher();
         var descriptors = new OutOfProcessActionDescriptorCatalog();
         descriptors.Add(ApplicationSmokeModule.HostAction);
-        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+        var rotationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new OutOfProcessCapabilityHostOptions(
             storage,
             dispatcher,
             client.CreateCapabilityGrant(),
@@ -851,7 +855,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry(),
-            new KernelExternalAuthoritySessionRegistry()));
+            new KernelExternalAuthoritySessionRegistry())
+        {
+            BeforeRotationStartAsync = async () =>
+            {
+                rotationStarted.TrySetResult();
+                await rotationRelease.Task;
+            },
+        };
+        await client.ConnectCapabilitiesAsync(options);
 
         var cli = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
@@ -863,7 +875,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", cli.Result.Output.Select(item => item.Text)));
         storage.InvokeCalls.Should().Be(5);
 
-        var endpoint = await client.InvokeEndpointAsync(
+        var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
             typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
             client.IssueHostActionContext(
                 HostActionEntryIngress.Endpoint,
@@ -875,7 +887,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ApplicationSmokeModule.HostEntryFeatures,
                 Guid.NewGuid(),
                 Guid.NewGuid(),
-                DateTimeOffset.UtcNow.AddMinutes(1)));
+                DateTimeOffset.UtcNow.AddMinutes(1))));
+        await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        endpointTask.IsCompleted.Should().BeFalse();
+        rotationRelease.TrySetResult();
+        var endpoint = await endpointTask;
 
         endpoint.Succeeded.Should().BeTrue(
             $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
@@ -940,6 +956,11 @@ public sealed class OutOfProcessApplicationProtocolTests
         };
         await client.ConnectCapabilitiesAsync(options);
 
+        var context = usePublicRegistry
+            ? IssueHostEntryContextThroughRegistry(client, grantExpiresAt)
+            : IssueHostEntryContext(client, grantExpiresAt);
+        hostContext = context;
+
         const int maximumCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest;
         const int priorCalls = maximumCalls - 2;
         for (var i = 0; i < priorCalls; i++)
@@ -956,19 +977,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}");
         }
 
-        var contextTask = Task.Run(() => usePublicRegistry
-            ? IssueHostEntryContextThroughRegistry(client, grantExpiresAt)
-            : IssueHostEntryContext(client, grantExpiresAt));
-        await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        (await Task.WhenAny(contextTask, Task.Delay(250))).Should().NotBe(contextTask);
-
-        rotationRelease.TrySetResult();
-        var context = await contextTask.WaitAsync(TimeSpan.FromSeconds(5));
-        hostContext = context;
-        var hostEntry = await client.InvokeCliAsync(
+        var hostEntryTask = Task.Run(() => client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
             [],
-            context);
+            context).AsTask());
+        await rotationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        hostEntryTask.IsCompleted.Should().BeFalse();
+
+        rotationRelease.TrySetResult();
+        var hostEntry = await hostEntryTask;
 
         hostEntry.Result.Succeeded.Should().BeTrue(
             $"CLI error {hostEntry.Result.Error?.Code}: {hostEntry.Result.Error?.Message}; "
