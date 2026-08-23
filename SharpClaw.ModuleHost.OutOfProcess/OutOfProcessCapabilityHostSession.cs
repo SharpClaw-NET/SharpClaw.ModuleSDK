@@ -751,6 +751,45 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
+    private void WaitForNestedHostActionCallsToFinish(
+        Guid callId,
+        HostActionEntryRequestContext context,
+        CancellationToken ct)
+    {
+        var lineage = new HashSet<Guid> { context.InvocationId };
+        while (true)
+        {
+            Task changed;
+            lock (_calls)
+            {
+                var hasDescendant = false;
+                foreach (var pair in _calls)
+                {
+                    if (pair.Key == callId)
+                        continue;
+
+                    var candidate = pair.Value.ActionRequest?.HostContext
+                        ?? pair.Value.HostContext;
+                    if (candidate?.ParentInvocationId is not { } parent
+                        || !lineage.Contains(parent))
+                    {
+                        continue;
+                    }
+
+                    hasDescendant = true;
+                    lineage.Add(candidate.InvocationId);
+                }
+
+                if (!hasDescendant)
+                    return;
+
+                changed = _callChange.Task;
+            }
+
+            changed.Wait(ct);
+        }
+    }
+
     private void WaitForRotationAfterCarrier()
     {
         try
@@ -1738,6 +1777,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 return;
             }
 
+            if (request.HostContext is not null)
+            {
+                WaitForNestedHostActionCallsToFinish(
+                    request.Call.CallId,
+                    active.HostContext ?? request.HostContext,
+                    channelCt);
+            }
+
             var completion = CompleteCall(
                 request.Call.CallId,
                 response.Outcome.TerminalCallCount);
@@ -1778,6 +1825,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 : 0;
             if (active is not null)
             {
+                if (active.HostContext is not null)
+                {
+                    WaitForNestedHostActionCallsToFinish(
+                        request.Call.CallId,
+                        active.HostContext,
+                        channelCt);
+                }
+
                 CompleteCall(request.Call.CallId, terminalCallCount);
                 await FinishCallAsync(request.Call.CallId, active, channelCt);
                 active = null;
@@ -1801,6 +1856,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 : 0;
             if (active is not null)
             {
+                if (active.HostContext is not null)
+                {
+                    WaitForNestedHostActionCallsToFinish(
+                        request.Call.CallId,
+                        active.HostContext,
+                        channelCt);
+                }
+
                 CompleteCall(request.Call.CallId, terminalCallCount);
                 await FinishCallAsync(request.Call.CallId, active, channelCt);
                 active = null;
@@ -1824,6 +1887,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         CancellationToken channelCt)
     {
         ArgumentNullException.ThrowIfNull(active);
+        if (active.HostContext is not null)
+        {
+            WaitForNestedHostActionCallsToFinish(
+                callId,
+                active.HostContext,
+                channelCt);
+        }
+
         if (CompleteCall(callId, terminalCallCount))
         {
             await FinishCallAsync(callId, active, channelCt);
