@@ -1138,7 +1138,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         removed.Cancellation.Dispose();
         try
         {
-            await StartRotationIfReadyAsync(channelCt);
+            if (removed.HostContext is null)
+                await StartRotationIfReadyAsync(channelCt);
         }
         finally
         {
@@ -1647,6 +1648,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     channelCt);
                 return;
             }
+
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
+            active = null;
 
             await OutOfProcessCapabilityWire.SendAsync(
                 _socket,
