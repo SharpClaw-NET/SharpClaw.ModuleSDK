@@ -40,6 +40,7 @@ internal static class OutOfProcessHandlerSession
         ISidecarProtocolMessage terminal;
         try
         {
+            using var carrierScope = runtime.PushActiveCarrier(start.HostActionContext.CapabilityId);
             var invocation = new ToolInvocation(
                 start.InvocationId,
                 null,

@@ -982,7 +982,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         await WaitForRotationAsync(
             channelCt,
-            request.HostContext?.CapabilityId);
+            request.HostContext?.CapabilityId,
+            allowAnyActiveCarrier: request.NestedCarrier is not null);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleActionRequestAsync(request, ct),
                 channelCt,
@@ -1005,7 +1006,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         await WaitForRotationAsync(
             channelCt,
-            ActiveCarrierIdFor(request.Call.CallId));
+            ActiveCarrierIdFor(request.Call.CallId),
+            allowAnyActiveCarrier: true);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleStorageRequestAsync(request, ct),
                 channelCt,
@@ -1167,12 +1169,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private async Task WaitForRotationAsync(
         CancellationToken ct,
-        Guid? activeCarrierId = null)
+        Guid? activeCarrierId = null,
+        bool allowAnyActiveCarrier = false)
     {
         Task? rotation;
         lock (_rotationSync)
         {
-            if (activeCarrierId is not null
+            if (allowAnyActiveCarrier
+                && _options.HostActionEntryContexts.HasActiveContexts
+                || activeCarrierId is not null
                 && _options.HostActionEntryContexts.IsActive(activeCarrierId.Value))
             {
                 return;

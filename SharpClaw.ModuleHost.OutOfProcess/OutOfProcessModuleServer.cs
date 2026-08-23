@@ -385,6 +385,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         linked.CancelAfter(hostActionContext.Deadline - now);
+        using var carrierScope = _runtime.PushActiveCarrier(hostActionContext.CapabilityId);
         await using var scope = _runtime.Services.CreateAsyncScope();
         ModuleCliResult result;
         try
@@ -510,6 +511,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         }
 
         await using var scope = _runtime.Services.CreateAsyncScope();
+        using var carrierScope = _runtime.PushActiveCarrier(hostActionContext.CapabilityId);
         IModuleEndpointHandler handler;
         try
         {

@@ -16,6 +16,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         bool IsAuthorized);
 
     private readonly object _sync = new();
+    private readonly AsyncLocal<Guid?> _activeCarrierId = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _authenticationNonces = new(StringComparer.Ordinal);
     private TaskCompletionSource<OutOfProcessModuleCapabilityConnection> _ready = CreateReadySource();
     private TaskCompletionSource _connectionReleased = CreateReleasedSource(completed: true);
@@ -36,6 +37,31 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     internal Exception? LastConnectionFailure => Volatile.Read(ref _lastConnectionFailure);
     internal Exception? LastTerminalFailure => Volatile.Read(ref _lastTerminalFailure);
     internal Task ConnectionWaitObserved => _connectionWaitObserved.Task;
+
+    internal Guid? ActiveCarrierId => _activeCarrierId.Value;
+
+    internal IDisposable PushActiveCarrier(Guid capabilityId)
+    {
+        if (capabilityId == Guid.Empty)
+            throw new ArgumentException("The active carrier identifier is required.", nameof(capabilityId));
+
+        var previous = _activeCarrierId.Value;
+        _activeCarrierId.Value = capabilityId;
+        return new ActiveCarrierScope(_activeCarrierId, previous);
+    }
+
+    private sealed class ActiveCarrierScope(
+        AsyncLocal<Guid?> carrier,
+        Guid? previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                carrier.Value = previous;
+        }
+    }
 
     internal void RecordTerminalFailure(Exception exception) =>
         Volatile.Write(ref _lastTerminalFailure, exception);
@@ -239,8 +265,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     internal SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
         DateTimeOffset deadline,
-        CancellationToken ct = default) =>
-        GetRequiredConnection().CreateCall(capability, deadline, ct);
+        CancellationToken ct = default,
+        Guid? activeCarrierId = null) =>
+        GetRequiredConnection().CreateCall(capability, deadline, ct, activeCarrierId);
 
     internal ValueTask<SidecarActionCapabilityResponse> InvokeActionAsync(
         SidecarActionCapabilityRequest request,
@@ -555,9 +582,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     public SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
         DateTimeOffset deadline,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? activeCarrierId = null)
     {
-        WaitForRebindIfReady(ct);
+        WaitForRebindIfReady(ct, activeCarrierId ?? _transport.ActiveCarrierId);
         var sequence = Interlocked.Increment(ref _sequence);
         var callId = Guid.NewGuid();
         return new SidecarCapabilityCallIdentity(
@@ -584,8 +612,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
     }
 
-    private void WaitForRebindIfReady(CancellationToken ct)
+    private void WaitForRebindIfReady(
+        CancellationToken ct,
+        Guid? activeCarrierId)
     {
+        if (activeCarrierId is not null)
+            return;
+
         Task? rebind;
         lock (_rotationSync)
             rebind = _rebindReady?.Task;

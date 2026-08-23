@@ -64,7 +64,8 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
         var call = _transport.CreateCall(
             SidecarCapabilityKind.Action,
             request.Deadline,
-            cancellationToken);
+            cancellationToken,
+            context.CapabilityId);
         var actionPayload = OutOfProcessActionDispatcher.Payload(
             request.Action,
             identity.InputTypeIdentity,

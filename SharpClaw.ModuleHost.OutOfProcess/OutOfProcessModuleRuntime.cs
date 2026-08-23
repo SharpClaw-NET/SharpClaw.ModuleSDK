@@ -47,6 +47,9 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     public IServiceProvider Services => _services
         ?? throw new ObjectDisposedException(nameof(OutOfProcessModuleRuntime));
 
+    internal IDisposable PushActiveCarrier(Guid capabilityId) =>
+        _capabilityTransport.PushActiveCarrier(capabilityId);
+
     public static Task<OutOfProcessModuleRuntime> LoadAsync(
         string moduleDirectory,
         CancellationToken ct = default) =>
