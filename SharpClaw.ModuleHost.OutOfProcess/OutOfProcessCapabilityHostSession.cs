@@ -631,7 +631,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The host action context has no ingress contribution.");
         }
         HostActionEntryCarrierAuthority? authority = null;
-        Task? rotation = null;
         _rotationGate.Wait(_disconnect.Token);
         try
         {
@@ -665,20 +664,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         ?? "The host action entry carrier was rejected.");
             }
 
-            lock (_rotationSync)
-            {
-                var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
-                if (_rotationReady is null
-                    && (_rotationTask is null || _rotationTask.IsCompleted)
-                    && Volatile.Read(ref _completedCallsForBinding)
-                        >= Math.Max(maximumCalls - 2, 1))
-                {
-                    _rotationReady = new TaskCompletionSource(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                }
-
-                rotation = _rotationTask ?? _rotationReady?.Task;
-            }
             RequestRotationRetry();
         }
         catch
@@ -690,12 +675,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             _rotationGate.Release();
-        }
-
-        if (rotation is not null)
-        {
-            RequestRotationRetry();
-            rotation.GetAwaiter().GetResult();
         }
 
         return authority!;
