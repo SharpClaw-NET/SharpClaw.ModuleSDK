@@ -1669,7 +1669,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 ? 1
                 : 0;
             if (active is not null)
+            {
                 CompleteCall(request.Call.CallId, terminalCallCount);
+                await FinishCallAsync(request.Call.CallId, active, channelCt);
+                active = null;
+            }
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.Cancelled,
@@ -1688,7 +1692,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 ? 1
                 : 0;
             if (active is not null)
+            {
                 CompleteCall(request.Call.CallId, terminalCallCount);
+                await FinishCallAsync(request.Call.CallId, active, channelCt);
+                active = null;
+            }
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.HostFailure,
