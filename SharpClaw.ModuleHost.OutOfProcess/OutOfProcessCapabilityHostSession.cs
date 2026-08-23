@@ -18,6 +18,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
+    private TaskCompletionSource _callChange = CreateSignal();
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _capabilityQueue;
     private readonly object _rotationSync = new();
@@ -45,6 +46,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         public int Completed;
 
         public int CompletionAccepted;
+
+        public int Finished;
     }
 
     private sealed class PendingOutgoingAction(CancellationTokenSource cancellation)
@@ -698,16 +701,25 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         ArgumentNullException.ThrowIfNull(authority);
         try
         {
-            var validation = Session.CompleteHostActionEntryCarrier(
-                authority,
-                completion,
-                DateTimeOffset.UtcNow);
-            if (!validation.Accepted)
+            _rotationGate.Wait(_disconnect.Token);
+            try
             {
-                throw new OutOfProcessCapabilityException(
-                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
-                    validation.Message
-                        ?? "The host action entry carrier completion was rejected.");
+                WaitForHostActionCallsToFinish(_disconnect.Token);
+                var validation = Session.CompleteHostActionEntryCarrier(
+                    authority,
+                    completion,
+                    DateTimeOffset.UtcNow);
+                if (!validation.Accepted)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                        validation.Message
+                            ?? "The host action entry carrier completion was rejected.");
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
             }
         }
         finally
@@ -715,6 +727,27 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
             ArmRotationAfterCarrier();
             WaitForRotationAfterCarrier();
+        }
+    }
+
+    private void WaitForHostActionCallsToFinish(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task changed;
+            lock (_calls)
+            {
+                if (!_calls.Values.Any(active =>
+                        active.ActionRequest?.HostContext is not null
+                        || active.HostContext is not null))
+                {
+                    return;
+                }
+
+                changed = _callChange.Task;
+            }
+
+            changed.Wait(ct);
         }
     }
 
@@ -1081,7 +1114,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             ActionRequest = actionRequest,
         };
-        if (!_calls.TryAdd(call.CallId, active))
+        var added = false;
+        lock (_calls)
+        {
+            added = _calls.TryAdd(call.CallId, active);
+        }
+
+        if (!added)
         {
             cancellation.Dispose();
             throw new OutOfProcessCapabilityException(
@@ -1094,7 +1133,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private void AbandonCall(Guid callId, ActiveCall active)
     {
-        if (_calls.TryRemove(callId, out var removed))
+        var removedCall = false;
+        ActiveCall? removed = null;
+        lock (_calls)
+        {
+            removedCall = _calls.TryRemove(callId, out removed);
+            if (removedCall)
+                SignalCallChange();
+        }
+
+        if (removedCall && removed is not null)
             removed.Cancellation.Dispose();
         else
             active.Cancellation.Dispose();
@@ -1129,8 +1177,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         ActiveCall? active,
         CancellationToken channelCt)
     {
-        if (active is null || !_calls.TryRemove(callId, out var removed))
+        if (active is null || Interlocked.Exchange(ref active.Finished, 1) != 0)
             return;
+
+        if (!_calls.TryGetValue(callId, out var removed)
+            || !ReferenceEquals(active, removed))
+        {
+            return;
+        }
+
         if (Interlocked.Exchange(ref removed.Completed, 1) == 0
             || Volatile.Read(ref removed.CompletionAccepted) == 0)
         {
@@ -1138,6 +1193,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
         removed.Cancellation.Dispose();
+        lock (_calls)
+        {
+            if (_calls.TryRemove(callId, out _))
+                SignalCallChange();
+        }
         if (removed.HostContext is null)
         {
             try
@@ -1149,6 +1209,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 RequestRotationRetry();
             }
         }
+    }
+
+    private void SignalCallChange()
+    {
+        _callChange.TrySetResult();
+        _callChange = CreateSignal();
     }
 
     private bool CompleteSessionCall(Guid callId, int terminalCallCount)
@@ -1598,7 +1664,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 return;
             }
 
-            active = RegisterCall(request.Call, channelCt, request);
+            _rotationGate.Wait(channelCt);
+            try
+            {
+                active = RegisterCall(request.Call, channelCt, request);
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
             var contractRequest = request.HostContext is null
                 ? request
                 : request with
@@ -2042,7 +2116,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             var requestPayload = request.RequestPayload;
             var requestFramePayload = requestPayload ?? EmptyPayload();
-            active = RegisterCall(request.Call, channelCt);
+            _rotationGate.Wait(channelCt);
+            try
+            {
+                active = RegisterCall(request.Call, channelCt);
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
             var begin = Session.BeginCall(
                 request.Call,
                 SidecarCapabilityKind.Storage,
