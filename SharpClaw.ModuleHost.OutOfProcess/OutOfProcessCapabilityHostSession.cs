@@ -188,6 +188,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         && (_rotationTask is null || _rotationTask.IsCompleted))
                         return issue();
 
+                    var callsForBinding =
+                        Volatile.Read(ref _completedCallsForBinding) + _calls.Count;
+                    if (_options.HostActionEntryContexts.HasPendingContexts
+                        && callsForBinding
+                            < Math.Max(maximumCalls - 2, 1))
+                    {
+                        return issue();
+                    }
+
                     rotation = _rotationTask ?? _rotationReady?.Task;
                 }
             }
@@ -240,7 +249,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         else
             dispatchCancellation.CancelAfter(remaining);
 
-        await WaitForRotationAsync(dispatchCancellation.Token);
+        await WaitForRotationAsync(
+            dispatchCancellation.Token,
+            hostContext.CapabilityId);
         var call = CreateOutgoingCall(hostContext.Deadline);
         var cancellation = new SidecarCancellationIdentity(
             call.CancellationId,
@@ -1150,11 +1161,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         return result.Accepted;
     }
 
-    private async Task WaitForRotationAsync(CancellationToken ct)
+    private async Task WaitForRotationAsync(
+        CancellationToken ct,
+        Guid? activeCarrierId = null)
     {
         Task? rotation;
         lock (_rotationSync)
+        {
+            if (activeCarrierId is not null
+                && _options.HostActionEntryContexts.IsActive(activeCarrierId.Value))
+            {
+                return;
+            }
+
             rotation = _rotationReady?.Task;
+        }
         if (rotation is not null)
             await rotation.WaitAsync(ct);
     }

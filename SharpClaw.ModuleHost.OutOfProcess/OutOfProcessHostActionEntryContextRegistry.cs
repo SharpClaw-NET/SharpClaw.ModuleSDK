@@ -223,6 +223,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 
     internal bool HasActiveContexts => !_active.IsEmpty;
 
+    internal bool IsActive(Guid capabilityId) => _active.ContainsKey(capabilityId);
+
     internal DateTimeOffset? NextPendingContextExpiration()
     {
         DateTimeOffset? next = null;
