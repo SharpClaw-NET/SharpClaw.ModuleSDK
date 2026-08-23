@@ -8,6 +8,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 {
     private readonly ConcurrentDictionary<Guid, IssuedContext> _issued = new();
     private readonly ConcurrentDictionary<Guid, IssuedContext> _active = new();
+    private readonly ConcurrentDictionary<Guid, byte> _consumed = new();
     private SidecarCapabilitySessionBinding? _binding;
     private Func<HostActionEntryContextRequest, HostActionEntryRequestContext>? _issuer;
     private Func<Func<HostActionEntryRequestContext>, HostActionEntryRequestContext>? _issueCoordinator;
@@ -200,7 +201,18 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         ArgumentNullException.ThrowIfNull(issuer);
         _issued.Clear();
         if (!preserveActiveContexts)
+        {
             _active.Clear();
+            _consumed.Clear();
+        }
+        else
+        {
+            foreach (var capabilityId in _consumed.Keys)
+            {
+                if (!_active.ContainsKey(capabilityId))
+                    _consumed.TryRemove(capabilityId, out _);
+            }
+        }
         Volatile.Write(ref _issuer, issuer);
         Volatile.Write(ref _binding, binding);
         Volatile.Write(ref _issueCoordinator, issueCoordinator);
@@ -214,6 +226,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 
         _issued.Clear();
         _active.Clear();
+        _consumed.Clear();
         Volatile.Write(ref _issuer, null);
         Volatile.Write(ref _binding, null);
         Volatile.Write(ref _issueCoordinator, null);
@@ -251,7 +264,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         foreach (var pair in _active)
         {
             if (pair.Value.Context.ExpiresAt <= now)
+            {
                 _active.TryRemove(pair.Key, out _);
+                _consumed.TryRemove(pair.Key, out _);
+            }
         }
     }
 
@@ -271,13 +287,17 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     {
         ArgumentNullException.ThrowIfNull(context);
         if (_active.TryRemove(context.CapabilityId, out var issued))
+        {
+            _consumed.TryRemove(context.CapabilityId, out _);
             _issued.TryAdd(context.CapabilityId, issued);
+        }
     }
 
     internal void CompleteCarrier(Guid capabilityId)
     {
         _issued.TryRemove(capabilityId, out _);
         _active.TryRemove(capabilityId, out _);
+        _consumed.TryRemove(capabilityId, out _);
     }
 
     internal static bool MatchesCaller(
@@ -326,7 +346,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     {
         ArgumentNullException.ThrowIfNull(request);
         var context = request.Context;
-        if (!_active.TryRemove(context.CapabilityId, out var issued))
+        if (!_active.TryGetValue(context.CapabilityId, out var issued)
+            || !_consumed.TryAdd(context.CapabilityId, 0))
             return false;
 
         var binding = Volatile.Read(ref _binding);

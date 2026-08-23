@@ -1489,12 +1489,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 throw new OutOfProcessCapabilityException(
                     rotation.Code ?? SidecarCapabilityErrors.Unauthorized,
-                    (rotation.Message
-                        ?? "The capability session rejected binding rotation.")
-                    + $" localCalls={_calls.Count};"
-                    + $" outgoingCalls={_outgoingCapabilityCalls.Count};"
-                    + $" activeContexts={_options.HostActionEntryContexts.HasActiveContexts};"
-                    + $" pendingContexts={_options.HostActionEntryContexts.HasPendingContexts}");
+                    rotation.Message
+                        ?? "The capability session rejected binding rotation.");
             }
             RegisterExternalAuthoritySession();
             _options.HostActionEntryContexts.Bind(
