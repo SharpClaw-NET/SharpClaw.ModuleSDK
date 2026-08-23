@@ -791,12 +791,34 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 var value = entry?.GetType().GetProperty("Value")?.GetValue(entry);
                 var entryCapabilityId = value?.GetType().GetProperty("CapabilityId")?.GetValue(value);
                 if (entryCapabilityId is Guid id && id == capabilityId)
-                    matches.Add(key?.ToString() ?? "unknown");
+                {
+                    var invocationId = value?.GetType().GetProperty("InvocationId")?.GetValue(value);
+                    var parentInvocationId = value?.GetType().GetProperty("ParentInvocationId")?.GetValue(value);
+                    var depth = value?.GetType().GetProperty("Depth")?.GetValue(value);
+                    var attempt = value?.GetType().GetProperty("Attempt")?.GetValue(value);
+                    matches.Add(
+                        $"{key}:invocation={invocationId};parent={parentInvocationId};depth={depth};attempt={attempt}");
+                }
             }
         }
 
         return $"contractCalls={TemporaryCount(calls)}; contractEntries={TemporaryCount(callEntries)}; "
-            + $"matchingEntries={string.Join(',', matches)}";
+            + $"matchingEntries={string.Join(',', matches)}; "
+            + $"rootStates={TemporaryFieldCount(type, "_rootHostActionEntryStates")}; "
+            + $"nestedStates={TemporaryFieldCount(type, "_nestedCarrierStates")}; "
+            + $"nestedParents={TemporaryFieldCount(type, "_nestedCarrierParents")}; "
+            + $"reservedNested={TemporaryFieldCount(type, "_reservedNestedCalls")}; "
+            + $"nestedIds={TemporaryFieldCount(type, "_nestedCarrierIds")}; "
+            + $"entryCarriers={TemporaryFieldCount(type, "_activeEntryCarriers")}; "
+            + $"budgetReservations={TemporaryFieldCount(type, "_entryBudgetReservations")}";
+    }
+
+    private int TemporaryFieldCount(Type type, string fieldName)
+    {
+        var value = type
+            .GetField(fieldName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(Session);
+        return TemporaryCount(value);
     }
 
     private static int TemporaryCount(object? value)
