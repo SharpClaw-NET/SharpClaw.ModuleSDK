@@ -1163,7 +1163,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             static (context, _) => ValueTask.FromResult(
                 new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
         var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
-        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+        var options = new OutOfProcessCapabilityHostOptions(
             storage,
             dispatcher,
             client.CreateCapabilityGrant(grantExpiresAt),
@@ -1174,7 +1174,30 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry(),
-            new KernelExternalAuthoritySessionRegistry()));
+            new KernelExternalAuthoritySessionRegistry())
+        {
+            BeforeRotationStartAsync = () =>
+            {
+                var hostSession = client.CapabilitySession;
+                var hostCalls = (System.Collections.ICollection)
+                    typeof(OutOfProcessCapabilityHostSession)
+                        .GetField("_calls", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .GetValue(hostSession)!;
+                var session = typeof(OutOfProcessCapabilityHostSession)
+                    .GetField("_session", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(hostSession)!;
+                var contractCalls = (System.Collections.ICollection)
+                    session.GetType()
+                        .GetField("_calls", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .GetValue(session)!;
+                TestContext.Progress.WriteLine(
+                    $"rotation-diagnostic hostCalls={hostCalls.Count}; contractCalls={contractCalls.Count}; "
+                    + $"activeContexts={options.HostActionEntryContexts.HasActiveContexts}; "
+                    + $"pendingContexts={options.HostActionEntryContexts.HasPendingContexts}");
+                return ValueTask.CompletedTask;
+            },
+        };
+        await client.ConnectCapabilitiesAsync(options);
 
         var pendingContext = IssueHostEntryContext(
             client,
