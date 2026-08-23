@@ -740,9 +740,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             Task changed;
             lock (_calls)
             {
-                if (!_calls.Values.Any(active =>
-                        active.ActionRequest?.HostContext is not null
-                        || active.HostContext is not null))
+                if (_calls.IsEmpty)
                 {
                     return;
                 }
