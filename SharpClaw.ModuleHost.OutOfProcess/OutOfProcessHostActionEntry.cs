@@ -168,6 +168,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                     ?? "The host did not issue a nested host action carrier.");
         }
 
+        var authority = relayResponse.NestedCarrierAuthority
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested relay response has no authenticated host authority.");
+        var peerCall = relay.PeerCall
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested relay response has no receiving-session call identity.");
+
         var identity = relay.Carrier.Descriptor;
         if (identity.Key != request.ActionKey
             || identity.Version != request.ActionVersion
@@ -178,6 +187,20 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
                 "The nested relay descriptor does not match the exact typed module hook.");
+        }
+
+        var import = _transport.ImportNestedHostActionEntryRelay(
+            relay,
+            nestedRequest,
+            authority,
+            _parentTerminalRequest.Call,
+            now,
+            out var importedCarrier);
+        if (!import.Accepted || importedCarrier is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                import.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                import.Message ?? "The nested relay was rejected by the receiving capability session.");
         }
 
         var contribution = _parentContribution with
@@ -198,15 +221,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             terminal.GetType());
 
         var childRequest = SidecarActionCapabilityRequest.HostEntryNested(
-            relay.Call,
+            peerCall,
             identity,
             action,
             new SidecarCancellationIdentity(
-                relay.Call.CancellationId,
+                peerCall.CancellationId,
                 SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
-                relay.Call.Deadline),
-            relay.Call.Deadline,
-            relay.Carrier,
+                peerCall.Deadline),
+            peerCall.Deadline,
+            importedCarrier,
             new SidecarActionTerminalRegistration(
                 terminalBinding.TerminalId,
                 identity.InputTypeIdentity,

@@ -2018,11 +2018,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             active.HostContext,
             out var resolvedDescriptor,
             out var resolvedContribution);
-        var issue = Session.IssueNestedHostActionEntryRelay(
+        var issue = Session.IssueNestedHostActionEntryPeerRelay(
             request.Call,
             resolvedNestedRequest,
             resolvedDescriptor,
             resolvedContribution,
+            Session,
             DateTimeOffset.UtcNow,
             out var relay);
         var outcomeKind = issue.Accepted && relay is not null

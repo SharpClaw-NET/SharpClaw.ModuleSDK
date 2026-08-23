@@ -143,6 +143,21 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         return new(match.TerminalId, IsAuthorized: true);
     }
 
+    internal SidecarCapabilityValidationResult ImportNestedHostActionEntryRelay(
+        SidecarNestedHostActionEntryRelay relay,
+        SidecarNestedHostActionEntryRequest request,
+        SidecarHostTerminalAuthority authority,
+        SidecarCapabilityCallIdentity parentCall,
+        DateTimeOffset now,
+        out SidecarNestedHostActionEntryCarrier? importedCarrier) =>
+        GetRequiredConnection().ImportNestedHostActionEntryRelay(
+            relay,
+            request,
+            authority,
+            parentCall,
+            now,
+            out importedCarrier);
+
     internal ModuleNestedActionMetadata ResolveNestedActionMetadata<TAction, TResult>(
         SharpClawActionKey actionKey,
         int actionVersion)
@@ -576,6 +591,21 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     public SidecarCapabilitySessionBinding Binding =>
         Volatile.Read(ref _session).Binding;
+
+    internal SidecarCapabilityValidationResult ImportNestedHostActionEntryRelay(
+        SidecarNestedHostActionEntryRelay relay,
+        SidecarNestedHostActionEntryRequest request,
+        SidecarHostTerminalAuthority authority,
+        SidecarCapabilityCallIdentity parentCall,
+        DateTimeOffset now,
+        out SidecarNestedHostActionEntryCarrier? importedCarrier) =>
+        _session.ImportNestedHostActionEntryRelay(
+            relay,
+            request,
+            authority,
+            parentCall,
+            now,
+            out importedCarrier);
 
     internal Exception? RunFailure => Volatile.Read(ref _runFailure);
 
