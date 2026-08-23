@@ -749,7 +749,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
             ArmRotationAfterCarrier();
-            WaitForRotationAfterCarrier();
+            RequestRotationRetry();
         }
     }
 
@@ -808,18 +808,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             }
 
             changed.Wait(ct);
-        }
-    }
-
-    private void WaitForRotationAfterCarrier()
-    {
-        try
-        {
-            StartRotationIfReadyAsync(_disconnect.Token).GetAwaiter().GetResult();
-        }
-        finally
-        {
-            RequestRotationRetry();
         }
     }
 
@@ -1260,16 +1248,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             if (_calls.TryRemove(callId, out _))
                 SignalCallChange();
         }
-        if (removed.HostContext is null)
+        try
         {
-            try
-            {
-                await StartRotationIfReadyAsync(channelCt);
-            }
-            finally
-            {
-                RequestRotationRetry();
-            }
+            await StartRotationIfReadyAsync(channelCt);
+        }
+        finally
+        {
+            RequestRotationRetry();
         }
     }
 
