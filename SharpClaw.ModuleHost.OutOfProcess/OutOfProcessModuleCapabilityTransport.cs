@@ -1317,7 +1317,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 {
                     Call = peerCall,
                     HostContext = importedHostContext,
-                    EffectiveHostEntryContext = null,
                 };
             }
 
