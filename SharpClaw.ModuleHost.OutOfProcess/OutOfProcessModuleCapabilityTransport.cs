@@ -1268,12 +1268,63 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 return;
             }
 
-            var begin = _session.BeginCall(
-                request.Call,
-                SidecarCapabilityKind.Action,
-                request.Action,
-                request.Action.ByteLength,
-                DateTimeOffset.UtcNow);
+            var sessionRequest = request;
+            if (request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.NestedCarrier is null
+                && request.CrossSidecarCarrier is null
+                && request.HostContext is not null
+                && request.EffectiveHostEntryContext is { } effectiveHostEntry)
+            {
+                var peerCall = request.Call with
+                {
+                    SessionId = _session.Binding.SessionId,
+                    RequestId = _session.Binding.RequestId,
+                    CancellationId = _session.Binding.CancellationId,
+                    ModuleId = _session.Binding.ModuleId,
+                    GraphId = _session.Binding.GraphId,
+                };
+                var rootRelay = new SidecarHostActionEntryRootRelay(
+                    request.Call,
+                    peerCall,
+                    request.HostContext,
+                    request.Descriptor,
+                    request.Action,
+                    request.Terminal!,
+                    effectiveHostEntry.EffectiveContext.Snapshot,
+                    effectiveHostEntry.Authority,
+                    _session.BindingGeneration,
+                    request.HostContext.CapabilityId);
+                var import = _session.ImportHostActionEntryPeerRootRelay(
+                    rootRelay,
+                    DateTimeOffset.UtcNow,
+                    out var importedHostContext);
+                if (!import.Accepted || importedHostContext is null)
+                {
+                    AbandonIncomingCall(request.Call.CallId, active);
+                    active = null;
+                    await SendIncomingActionResponseAsync(
+                        CreateIncomingActionFailure(
+                            request,
+                            ActionOutcomeKind.Failed,
+                            new ExecutionError(
+                                import.Code ?? SidecarCapabilityErrors.Unauthorized,
+                                import.Message ?? "The receiving root HostEntry relay was rejected.")),
+                        channelCt);
+                    return;
+                }
+
+                sessionRequest = request with
+                {
+                    Call = peerCall,
+                    HostContext = importedHostContext,
+                };
+            }
+
+            var begin = _session.BeginActionCall(
+                sessionRequest,
+                sessionRequest.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                out var sessionHostContext);
             if (!begin.Accepted)
             {
                 AbandonIncomingCall(request.Call.CallId, active);
@@ -1288,8 +1339,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     channelCt);
                 return;
             }
+            active.Request = sessionRequest;
 
-            var effectiveContext = request.HostContext!;
+            var effectiveContext = sessionHostContext ?? request.HostContext!;
             var effectiveTerminalContext = request.EffectiveHostEntryContext?.EffectiveContext;
             var receipt = new SidecarTerminalReceipt(
                 Guid.NewGuid().ToString("N"),
