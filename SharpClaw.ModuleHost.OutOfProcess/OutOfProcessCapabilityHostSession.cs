@@ -1606,6 +1606,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             if (!_options.ActionDescriptors.TryGet(request.Descriptor, out var registration))
             {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    0,
+                    channelCt);
+                active = null;
                 await SendActionFailureAsync(
                     request,
                     SidecarCapabilityErrors.UnknownAction,
@@ -1626,6 +1632,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _session);
             if (!responseValidation.Accepted)
             {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    response.Outcome.TerminalCallCount,
+                    channelCt);
+                active = null;
                 await SendActionFailureAsync(
                     request,
                     responseValidation.Code,
@@ -1641,6 +1653,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 response.Outcome.TerminalCallCount);
             if (!completion)
             {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    response.Outcome.TerminalCallCount,
+                    channelCt);
+                active = null;
                 await SendActionFailureAsync(
                     request,
                     SidecarCapabilityErrors.HostFailure,
@@ -1707,6 +1725,32 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
+    }
+
+    private async ValueTask CompleteCallBeforeActionFailureAsync(
+        Guid callId,
+        ActiveCall active,
+        int terminalCallCount,
+        CancellationToken channelCt)
+    {
+        ArgumentNullException.ThrowIfNull(active);
+        if (CompleteCall(callId, terminalCallCount))
+        {
+            await FinishCallAsync(callId, active, channelCt);
+            return;
+        }
+
+        var recordedTerminalCallCount = Session.TryGetTerminalReceipt(callId, out _)
+            ? 1
+            : 0;
+        if (!CompleteCall(callId, recordedTerminalCallCount))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.HostFailure,
+                "The host capability call could not be completed before its failure response.");
+        }
+
+        await FinishCallAsync(callId, active, channelCt);
     }
 
     private void CompleteRejectedActionCall(SidecarActionCapabilityRequest request)
