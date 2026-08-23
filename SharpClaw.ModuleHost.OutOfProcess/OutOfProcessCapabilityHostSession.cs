@@ -983,7 +983,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         await WaitForRotationAsync(
             channelCt,
             request.HostContext?.CapabilityId,
-            allowAnyActiveCarrier: request.NestedCarrier is not null);
+            allowAnyActiveCarrier: request.NestedCarrier is not null,
+            allowPendingCarrier: request.NestedCarrier is null
+                && request.HostContext is not null);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleActionRequestAsync(request, ct),
                 channelCt,
@@ -1171,12 +1173,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private async Task WaitForRotationAsync(
         CancellationToken ct,
         Guid? activeCarrierId = null,
-        bool allowAnyActiveCarrier = false)
+        bool allowAnyActiveCarrier = false,
+        bool allowPendingCarrier = false)
     {
         Task? rotation;
         lock (_rotationSync)
         {
-            if (HasActiveHostActionReservation(activeCarrierId, allowAnyActiveCarrier))
+            if (HasActiveHostActionReservation(
+                    activeCarrierId,
+                    allowAnyActiveCarrier,
+                    allowPendingCarrier))
             {
                 return;
             }
@@ -1189,12 +1195,20 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private bool HasActiveHostActionReservation(
         Guid? activeCarrierId,
-        bool allowAnyActiveCarrier)
+        bool allowAnyActiveCarrier,
+        bool allowPendingCarrier)
     {
         if (activeCarrierId is not null
             && (_options.HostActionEntryContexts.IsActive(activeCarrierId.Value)
                 || _calls.Values.Any(active =>
                     active.HostContext?.CapabilityId == activeCarrierId.Value)))
+        {
+            return true;
+        }
+
+        if (allowPendingCarrier
+            && activeCarrierId is not null
+            && _options.HostActionEntryContexts.IsPending(activeCarrierId.Value))
         {
             return true;
         }
