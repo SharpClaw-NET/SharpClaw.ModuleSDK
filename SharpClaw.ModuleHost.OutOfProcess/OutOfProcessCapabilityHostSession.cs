@@ -17,6 +17,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly SidecarApplicationDiscovery _application;
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
+    private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
     private TaskCompletionSource _callChange = CreateSignal();
     private readonly CancellationTokenSource _disconnect = new();
@@ -192,7 +193,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         return issue();
 
                     var callsForBinding =
-                        Volatile.Read(ref _completedCallsForBinding) + _calls.Count;
+                        Volatile.Read(ref _completedCallsForBinding)
+                        + _calls.Count
+                        + _outgoingCapabilityCalls.Count;
                     if (_options.HostActionEntryContexts.HasPendingContexts
                         && callsForBinding
                             < Math.Max(maximumCalls - 2, 1))
@@ -260,18 +263,33 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             call.CancellationId,
             SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
             hostContext.Deadline);
-        var begin = Session.BeginCall(
-            call,
-            SidecarCapabilityKind.Action,
-            actionPayload,
-            actionPayload.ByteLength,
-            DateTimeOffset.UtcNow,
-            hostContext);
-        if (!begin.Accepted)
+        _rotationGate.Wait(dispatchCancellation.Token);
+        try
         {
-            throw new OutOfProcessCapabilityException(
-                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
-                begin.Message ?? "The capability session rejected the module action entry.");
+            var begin = Session.BeginCall(
+                call,
+                SidecarCapabilityKind.Action,
+                actionPayload,
+                actionPayload.ByteLength,
+                DateTimeOffset.UtcNow,
+                hostContext);
+            if (!begin.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    begin.Message ?? "The capability session rejected the module action entry.");
+            }
+
+            if (!_outgoingCapabilityCalls.TryAdd(call.CallId, 0))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The capability call identifier was reused.");
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
         }
 
         var terminalCalls = 0;
@@ -376,6 +394,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             CompleteSessionCall(call.CallId, sessionTerminalCallCount);
+            _outgoingCapabilityCalls.TryRemove(call.CallId, out _);
+            SignalCallChange();
         }
     }
 
@@ -740,7 +760,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             Task changed;
             lock (_calls)
             {
-                if (_calls.IsEmpty)
+                if (_calls.IsEmpty && _outgoingCapabilityCalls.IsEmpty)
                 {
                     return;
                 }
@@ -815,7 +835,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
                 var callsForRotation =
-                    Volatile.Read(ref _completedCallsForBinding) + _calls.Count;
+                    Volatile.Read(ref _completedCallsForBinding)
+                        + _calls.Count
+                        + _outgoingCapabilityCalls.Count;
                 if (_rotationReady is null
                     && (_rotationTask is null || _rotationTask.IsCompleted)
                     && callsForRotation >= Math.Max(maximumCalls - 3, 1))
@@ -1345,7 +1367,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             lock (_rotationSync)
             {
                 if (_rotationReady is null
-                    || !_calls.IsEmpty)
+                    || !_calls.IsEmpty
+                    || !_outgoingCapabilityCalls.IsEmpty)
                     return null;
                 if (_options.HostActionEntryContexts.HasActiveContexts)
                     return null;
@@ -1364,7 +1387,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             lock (_rotationSync)
             {
-                if (_rotationReady is null || !_calls.IsEmpty)
+                if (_rotationReady is null
+                    || !_calls.IsEmpty
+                    || !_outgoingCapabilityCalls.IsEmpty)
                     return null;
                 if (_rotationTask is null || _rotationTask.IsCompleted)
                     _rotationTask = RotateBindingAsync(ready, ct);
