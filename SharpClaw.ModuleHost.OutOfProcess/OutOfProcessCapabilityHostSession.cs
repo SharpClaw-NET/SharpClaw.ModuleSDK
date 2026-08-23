@@ -1712,18 +1712,33 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 _rotationGate.Release();
             }
-            var contractRequest = request.HostContext is null
-                ? request
-                : request with
-                {
-                    HostContext = OutOfProcessHostActionEntryContextRegistry
-                        .WithoutPayloadBinding(request.HostContext),
-                };
-            var begin = Session.BeginActionCall(
-                contractRequest,
-                request.Action.ByteLength,
-                DateTimeOffset.UtcNow,
-                out var hostContext);
+            SidecarCapabilityValidationResult begin;
+            HostActionEntryRequestContext? hostContext;
+            if (request.NestedCarrier is not null)
+            {
+                begin = Session.BeginNestedHostActionEntryCall(
+                    request.NestedCarrier,
+                    request.Call,
+                    request.Action,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out hostContext);
+            }
+            else
+            {
+                var contractRequest = request.HostContext is null
+                    ? request
+                    : request with
+                    {
+                        HostContext = OutOfProcessHostActionEntryContextRegistry
+                            .WithoutPayloadBinding(request.HostContext),
+                    };
+                begin = Session.BeginActionCall(
+                    contractRequest,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out hostContext);
+            }
             active.HostContext = hostContext;
             if (!begin.Accepted)
             {
