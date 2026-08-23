@@ -755,7 +755,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     Volatile.Read(ref _completedCallsForBinding) + _calls.Count;
                 if (_rotationReady is null
                     && (_rotationTask is null || _rotationTask.IsCompleted)
-                    && callsForRotation >= Math.Max(maximumCalls - 2, 1))
+                    && callsForRotation >= Math.Max(maximumCalls - 3, 1))
                 {
                     _rotationReady = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
