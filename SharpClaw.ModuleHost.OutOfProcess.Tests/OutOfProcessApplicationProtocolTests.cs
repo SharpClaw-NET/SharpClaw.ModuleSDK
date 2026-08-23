@@ -1203,7 +1203,9 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         nested.Result.Succeeded.Should().BeTrue(
             $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
-            + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
+            + string.Join(" | ", nested.Result.Output.Select(item => item.Text))
+            + $"; hostFailure={client.CapabilitySession.LastHandledFailure}; "
+            + $"moduleFailure={_server.CapabilityFailure}");
         nested.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
 
