@@ -1138,14 +1138,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
         removed.Cancellation.Dispose();
-        try
+        if (removed.HostContext is null)
         {
-            if (removed.HostContext is null)
+            try
+            {
                 await StartRotationIfReadyAsync(channelCt);
-        }
-        finally
-        {
-            RequestRotationRetry();
+            }
+            finally
+            {
+                RequestRotationRetry();
+            }
         }
     }
 
