@@ -1174,8 +1174,21 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var sessionCompleted = false;
         try
         {
+            var receivingRootRelay = request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.NestedCarrier is null
+                && request.CrossSidecarCarrier is null
+                && request.HostContext is not null
+                && request.EffectiveHostEntryContext is not null;
+            var validationRequest = receivingRootRelay
+                ? request with
+                {
+                    HostContext = OutOfProcessHostActionEntryContextRegistry
+                        .WithoutPayloadBinding(request.HostContext!),
+                    EffectiveHostEntryContext = null,
+                }
+                : request;
             var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
-                request,
+                validationRequest,
                 Binding,
                 DateTimeOffset.UtcNow,
                 ValidateTerminalAuthority);
