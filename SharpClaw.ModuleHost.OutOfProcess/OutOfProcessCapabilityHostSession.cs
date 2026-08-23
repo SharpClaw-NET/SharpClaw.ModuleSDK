@@ -734,10 +734,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     DateTimeOffset.UtcNow);
                 if (!validation.Accepted)
                 {
-                    throw new OutOfProcessCapabilityException(
-                        validation.Code ?? SidecarCapabilityErrors.Unauthorized,
-                        validation.Message
-                            ?? "The host action entry carrier completion was rejected.");
+                throw new OutOfProcessCapabilityException(
+                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                        (validation.Message
+                            ?? "The host action entry carrier completion was rejected.")
+                        + $" state={TemporarySessionState(authority.CapabilityId)}");
                 }
             }
             finally
@@ -770,6 +771,44 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             changed.Wait(ct);
         }
+    }
+
+    private string TemporarySessionState(Guid capabilityId)
+    {
+        var type = Session.GetType();
+        var callEntries = type
+            .GetField("_callEntryContexts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(Session);
+        var calls = type
+            .GetField("_calls", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(Session);
+        var matches = new System.Collections.Generic.List<string>();
+        if (callEntries is System.Collections.IEnumerable entries)
+        {
+            foreach (var entry in entries)
+            {
+                var key = entry?.GetType().GetProperty("Key")?.GetValue(entry);
+                var value = entry?.GetType().GetProperty("Value")?.GetValue(entry);
+                var entryCapabilityId = value?.GetType().GetProperty("CapabilityId")?.GetValue(value);
+                if (entryCapabilityId is Guid id && id == capabilityId)
+                    matches.Add(key?.ToString() ?? "unknown");
+            }
+        }
+
+        return $"contractCalls={TemporaryCount(calls)}; contractEntries={TemporaryCount(callEntries)}; "
+            + $"matchingEntries={string.Join(',', matches)}";
+    }
+
+    private static int TemporaryCount(object? value)
+    {
+        if (value is System.Collections.ICollection collection)
+            return collection.Count;
+        if (value is not System.Collections.IEnumerable enumerable)
+            return -1;
+        var count = 0;
+        foreach (var _ in enumerable)
+            count++;
+        return count;
     }
 
     private void WaitForNestedHostActionCallsToFinish(
