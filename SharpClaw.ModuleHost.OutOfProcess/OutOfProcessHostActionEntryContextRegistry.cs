@@ -324,32 +324,24 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
     {
         ArgumentNullException.ThrowIfNull(request);
         var context = request.Context;
-        if (!_active.TryGetValue(context.CapabilityId, out var issued))
+        if (!_active.TryRemove(context.CapabilityId, out var issued))
             return false;
 
         var binding = Volatile.Read(ref _binding);
         var lineageMatches = HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
             context.Contribution?.Lineage,
             request.Descriptor);
-        if (binding is null
-            || !context.IsWellFormed(now)
-            || issued.RequestId != context.RequestId
-            || issued.CancellationId != context.CancellationId
-            || !HostActionEntryAuthorityValidator.SameContext(issued.Context, context)
-            || context.Contribution is null
-            || !lineageMatches)
-        {
-            return false;
-        }
-
-        return Interlocked.CompareExchange(ref issued.Consumed, 1, 0) == 0;
+        return binding is not null
+            && context.IsWellFormed(now)
+            && issued.RequestId == context.RequestId
+            && issued.CancellationId == context.CancellationId
+            && HostActionEntryAuthorityValidator.SameContext(issued.Context, context)
+            && context.Contribution is not null
+            && lineageMatches;
     }
 
     private sealed record IssuedContext(
         Guid RequestId,
         Guid CancellationId,
-        HostActionEntryRequestContext Context)
-    {
-        public int Consumed;
-    }
+        HostActionEntryRequestContext Context);
 }

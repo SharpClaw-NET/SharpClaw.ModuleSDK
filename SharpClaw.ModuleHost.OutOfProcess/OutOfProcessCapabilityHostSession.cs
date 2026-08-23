@@ -1175,10 +1175,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         Task? rotation;
         lock (_rotationSync)
         {
-            if (allowAnyActiveCarrier
-                && _options.HostActionEntryContexts.HasActiveContexts
-                || activeCarrierId is not null
-                && _options.HostActionEntryContexts.IsActive(activeCarrierId.Value))
+            if (HasActiveHostActionReservation(activeCarrierId, allowAnyActiveCarrier))
             {
                 return;
             }
@@ -1187,6 +1184,23 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         if (rotation is not null)
             await rotation.WaitAsync(ct);
+    }
+
+    private bool HasActiveHostActionReservation(
+        Guid? activeCarrierId,
+        bool allowAnyActiveCarrier)
+    {
+        if (activeCarrierId is not null
+            && (_options.HostActionEntryContexts.IsActive(activeCarrierId.Value)
+                || _calls.Values.Any(active =>
+                    active.HostContext?.CapabilityId == activeCarrierId.Value)))
+        {
+            return true;
+        }
+
+        return allowAnyActiveCarrier
+            && (_options.HostActionEntryContexts.HasActiveContexts
+                || _calls.Values.Any(active => active.HostContext is not null));
     }
 
     private Guid? ActiveCarrierIdFor(Guid callId) =>
