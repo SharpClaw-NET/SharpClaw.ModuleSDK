@@ -239,7 +239,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         SidecarActionTerminalTransportResponse? terminalResponse = null;
         try
         {
-            var outcome = await _options.ActionDispatcher.RunAsync(
+            var externalAuthority = CreateExternalActionDispatchAuthority(
+                identity,
+                request.Call,
+                action,
+                request.EffectiveAction,
+                terminal,
+                hostContext,
+                request.Cancellation,
+                request.Invocation);
+            var outcome = await _options.ActionDispatcher.RunExternalAsync(
                 descriptor,
                 action,
                 async (dispatcherContext, terminalCancellation) =>
@@ -273,6 +282,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     return Deserialize<TResult>(terminalResponse.Execution.Result);
                 },
                 _options.ActionSnapshot,
+                externalAuthority,
                 cancellationToken);
 
             return new OutOfProcessCrossSidecarDispatchResult(

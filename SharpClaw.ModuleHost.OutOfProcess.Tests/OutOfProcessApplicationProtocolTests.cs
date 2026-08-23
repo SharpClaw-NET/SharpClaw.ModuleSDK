@@ -308,6 +308,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         File.ReadAllText(_terminalScopeProbePath).Should().StartWith("disposed:");
         dispatcher.LastSnapshotContractHash.Should().Be(hostGraphId);
         dispatcher.RunCalls.Should().Be(2);
+        dispatcher.ExternalRunCalls.Should().Be(2);
         dispatcher.TerminalCalls.Should().Be(2);
         storage.InvokeCalls.Should().Be(0);
     }
@@ -2195,6 +2196,8 @@ public sealed class OutOfProcessApplicationProtocolTests
     {
         public int RunCalls { get; private set; }
 
+        public int ExternalRunCalls { get; private set; }
+
         public int TerminalCalls { get; private set; }
 
         public int SnapshotRejectionCalls { get; private set; }
@@ -2268,6 +2271,18 @@ public sealed class OutOfProcessApplicationProtocolTests
             return new CountingActionOutcome<TResult>(result);
         }
 
+        public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct)
+        {
+            ExternalRunCalls++;
+            return RunAsync(descriptor, action, terminal, snapshot, ct);
+        }
+
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -2277,6 +2292,18 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             var outcome = await RunAsync(descriptor, action, terminal, snapshot, ct);
             return outcome.Result;
+        }
+
+        public ValueTask<TResult> RunExternalRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct)
+        {
+            ExternalRunCalls++;
+            return RunRequiredAsync(descriptor, action, terminal, snapshot, ct);
         }
     }
 

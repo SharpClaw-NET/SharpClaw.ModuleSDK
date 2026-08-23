@@ -465,7 +465,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         DateTimeOffset deadline,
         HostActionEntryRequestContext initiatingContext,
         ActionContext<TAction> dispatcherContext,
-        Guid terminalId)
+        Guid terminalId,
+        SidecarActionInvocationKind invocation = SidecarActionInvocationKind.HostEntry)
     {
         var receipt = new SidecarTerminalReceipt(
             Guid.NewGuid().ToString("N"),
@@ -487,7 +488,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             call.CallId,
             Session.Binding.ModuleId,
             Session.Binding.GraphId,
-            SidecarActionInvocationKind.HostEntry,
+            invocation,
             identity.Key,
             identity.Version,
             identity.DescriptorHash,
@@ -531,7 +532,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         };
         var effectiveContext = new SidecarActionTerminalExecutionContext(
             call,
-            SidecarActionInvocationKind.HostEntry,
+            invocation,
             identity,
             effectiveAction,
             dispatcherContext.Snapshot,
@@ -1903,7 +1904,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 }
 
                 var nestedContext = active.HostContext;
-                var nestedOutcome = await _options.ActionDispatcher.RunAsync(
+                var nestedAuthority = CreateExternalActionDispatchAuthority(
+                    identity,
+                    request.Call,
+                    action,
+                    request.Action,
+                    request.Terminal
+                        ?? throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.UnknownAction,
+                            "The nested host action request has no terminal registration."),
+                    nestedContext,
+                    request.Cancellation,
+                    request.Invocation);
+                var nestedOutcome = await _options.ActionDispatcher.RunExternalAsync(
                     descriptor,
                     action,
                     (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
@@ -1913,6 +1926,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         nestedContext,
                         terminalCancellation),
                     _options.ActionSnapshot,
+                    nestedAuthority,
                     ct);
                 return new OutOfProcessActionDispatchResult(
                     nestedOutcome.Kind,
@@ -1980,7 +1994,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     authorityValidation.Message ?? "The host action entry authority was rejected.");
             }
 
-            var hostOutcome = await _options.ActionDispatcher.RunAsync(
+            var hostAuthority = CreateExternalActionDispatchAuthority(
+                identity,
+                request.Call,
+                action,
+                request.Action,
+                request.Terminal,
+                context,
+                request.Cancellation,
+                request.Invocation);
+            var hostOutcome = await _options.ActionDispatcher.RunExternalAsync(
                 descriptor,
                 action,
                     (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
@@ -1990,6 +2013,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         request.HostContext,
                         terminalCancellation),
                 _options.ActionSnapshot,
+                hostAuthority,
                 ct);
             return new OutOfProcessActionDispatchResult(
                 hostOutcome.Kind,
@@ -2024,6 +2048,51 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     ? 1
                     : 0
                 : 0);
+    }
+
+    private SidecarExternalActionDispatchAuthority CreateExternalActionDispatchAuthority<TAction>(
+        SidecarActionDescriptorIdentity identity,
+        SidecarCapabilityCallIdentity call,
+        TAction action,
+        SidecarSerializedPayload actionPayload,
+        SidecarActionTerminalRegistration terminal,
+        HostActionEntryRequestContext hostContext,
+        SidecarCancellationIdentity cancellation,
+        SidecarActionInvocationKind invocation)
+    {
+        var dispatcherContext = new ActionContext<TAction>(
+            hostContext.InvocationId,
+            hostContext.ParentInvocationId,
+            hostContext.TraceId,
+            hostContext.IdempotencyKey,
+            hostContext.Depth,
+            hostContext.Attempt,
+            hostContext.Deadline,
+            identity.Key,
+            _session.Binding.ModuleId,
+            hostContext.Caller,
+            action,
+            hostContext.Features,
+            _options.ActionSnapshot);
+        var effectiveHostEntry = CreateEffectiveHostEntryContext(
+            call,
+            identity,
+            actionPayload,
+            cancellation,
+            hostContext.Deadline,
+            hostContext,
+            dispatcherContext,
+            terminal.TerminalId,
+            invocation);
+        return new SidecarExternalActionDispatchAuthority(
+            _session.Binding.ModuleId,
+            _session.Binding.GraphId,
+            call,
+            identity,
+            actionPayload,
+            terminal,
+            hostContext,
+            effectiveHostEntry);
     }
 
     private async ValueTask<TResult> InvokeTerminalAsync<TAction, TResult>(

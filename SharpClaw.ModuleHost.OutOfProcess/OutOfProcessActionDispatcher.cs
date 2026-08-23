@@ -55,6 +55,17 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
         return CreateOutcome<TResult>(response);
     }
 
+    public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+        ActionPipelineSnapshot snapshot,
+        SidecarExternalActionDispatchAuthority authority,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<IActionOutcome<TResult>>(
+            new NotSupportedException(
+                "External action dispatch is host-owned and cannot start from a module sidecar."));
+
     public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
@@ -75,6 +86,17 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
         throw new InvalidOperationException(
             outcome.Error?.Message ?? "The sidecar action did not complete.");
     }
+
+    public ValueTask<TResult> RunExternalRequiredAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+        ActionPipelineSnapshot snapshot,
+        SidecarExternalActionDispatchAuthority authority,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<TResult>(
+            new NotSupportedException(
+                "External action dispatch is host-owned and cannot start from a module sidecar."));
 
     private static async ValueTask<SidecarActionTerminalTransportResponse> ExecuteTerminalAsync<TAction, TResult>(
         Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,

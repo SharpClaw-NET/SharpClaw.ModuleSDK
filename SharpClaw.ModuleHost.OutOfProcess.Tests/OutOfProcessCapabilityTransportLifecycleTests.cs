@@ -284,6 +284,15 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
             ValueTask.FromException<IActionOutcome<TResult>>(
                 new InvalidOperationException("The lifecycle test dispatcher must not execute."));
 
+        public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot actionSnapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken cancellationToken) =>
+            RunAsync(descriptor, action, terminal, actionSnapshot, cancellationToken);
+
         public ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -292,6 +301,15 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
             CancellationToken cancellationToken) =>
             ValueTask.FromException<TResult>(
                 new InvalidOperationException("The lifecycle test dispatcher must not execute."));
+
+        public ValueTask<TResult> RunExternalRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot actionSnapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken cancellationToken) =>
+            RunRequiredAsync(descriptor, action, terminal, actionSnapshot, cancellationToken);
     }
 
     private sealed class NoOpStorageGateway : IModuleStorageGateway

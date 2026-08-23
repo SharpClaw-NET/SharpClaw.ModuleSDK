@@ -481,6 +481,15 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                     snapshot),
                 ct));
 
+        public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            RunAsync(descriptor, action, terminal, snapshot, ct);
+
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
@@ -503,6 +512,15 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                     ExtensionFeatureSet.Empty,
                     snapshot),
                 ct);
+
+        public ValueTask<TResult> RunExternalRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            RunRequiredAsync(descriptor, action, terminal, snapshot, ct);
     }
 
     private sealed class EmptyActionOutcome<TResult>(TResult result) : IActionOutcome<TResult>
