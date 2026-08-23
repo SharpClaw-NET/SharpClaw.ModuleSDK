@@ -980,7 +980,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
-        await WaitForRotationAsync(channelCt);
+        await WaitForRotationAsync(
+            channelCt,
+            request.HostContext?.CapabilityId);
         if (_capabilityQueue.TrySchedule(
                 ct => HandleActionRequestAsync(request, ct),
                 channelCt,
@@ -1001,7 +1003,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarStorageCapabilityRequest request,
         CancellationToken channelCt)
     {
-        await WaitForRotationAsync(channelCt);
+        await WaitForRotationAsync(
+            channelCt,
+            ActiveCarrierIdFor(request.Call.CallId));
         if (_capabilityQueue.TrySchedule(
                 ct => HandleStorageRequestAsync(request, ct),
                 channelCt,
@@ -1179,6 +1183,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         if (rotation is not null)
             await rotation.WaitAsync(ct);
     }
+
+    private Guid? ActiveCarrierIdFor(Guid callId) =>
+        _calls.TryGetValue(callId, out var active)
+            ? active.HostContext?.CapabilityId
+            : null;
 
     private async ValueTask<DateTimeOffset?> StartRotationIfReadyAsync(CancellationToken ct)
     {
