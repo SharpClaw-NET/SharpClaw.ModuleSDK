@@ -724,6 +724,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
             ArmRotationAfterCarrier();
+            WaitForRotationAfterCarrier();
+        }
+    }
+
+    private void WaitForRotationAfterCarrier()
+    {
+        try
+        {
+            StartRotationIfReadyAsync(_disconnect.Token).GetAwaiter().GetResult();
+        }
+        finally
+        {
             RequestRotationRetry();
         }
     }
@@ -1183,6 +1195,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 if (_rotationReady is null
                     || !_calls.IsEmpty)
+                    return null;
+                if (_options.HostActionEntryContexts.HasActiveContexts)
                     return null;
                 var nextPendingExpiration = _options.HostActionEntryContexts
                     .NextPendingContextExpiration();

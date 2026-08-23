@@ -865,10 +865,15 @@ public sealed class OutOfProcessApplicationProtocolTests
         };
         await client.ConnectCapabilitiesAsync(options);
 
-        var cli = await client.InvokeCliAsync(
+        var cliTask = client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
             ["storage-heavy"],
-            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "permission-policy-list"));
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "permission-policy-list"))
+            .AsTask();
+        await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cliTask.IsCompleted.Should().BeFalse();
+        rotationRelease.TrySetResult();
+        var cli = await cliTask;
 
         cli.Result.Succeeded.Should().BeTrue(
             $"CLI error {cli.Result.Error?.Code}: {cli.Result.Error?.Message}; "

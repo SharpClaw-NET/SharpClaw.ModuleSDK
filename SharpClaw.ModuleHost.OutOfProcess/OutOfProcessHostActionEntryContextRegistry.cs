@@ -221,6 +221,8 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
 
     internal bool HasPendingContexts => !_issued.IsEmpty;
 
+    internal bool HasActiveContexts => !_active.IsEmpty;
+
     internal DateTimeOffset? NextPendingContextExpiration()
     {
         DateTimeOffset? next = null;
