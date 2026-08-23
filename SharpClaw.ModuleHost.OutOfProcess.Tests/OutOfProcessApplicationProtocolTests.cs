@@ -832,6 +832,72 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.TerminalCalls.Should().Be(3);
     }
 
+    [Test, CancelAfter(30000)]
+    public async Task StorageHeavyCliThenEndpointRotatesBeforeTheNextWorkflow()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var cli = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["storage-heavy"],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "permission-policy-list"));
+
+        cli.Result.Succeeded.Should().BeTrue(
+            $"CLI error {cli.Result.Error?.Code}: {cli.Result.Error?.Message}; "
+            + string.Join(" | ", cli.Result.Output.Select(item => item.Text)));
+        storage.InvokeCalls.Should().Be(5);
+
+        var endpoint = await client.InvokeEndpointAsync(
+            typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Endpoint,
+                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.HostAction,
+                new ApplicationSmokeAction("storage-heavy", "endpoint"),
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        endpoint.Succeeded.Should().BeTrue(
+            $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
+        endpoint.Payload.Should().NotBeNull();
+        endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
+        endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
+            ActionOutcomeKind.Completed.ToString());
+        endpoint.Payload.Value.GetProperty("value").GetString().Should().Be("entry-terminal:endpoint");
+        storage.InvokeCalls.Should().Be(8);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+
+        var followUp = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "permission-after-endpoint"));
+
+        followUp.Result.Succeeded.Should().BeTrue(
+            $"Follow-up CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(9);
+    }
+
     [TestCase(false)]
     [TestCase(true)]
     [CancelAfter(30000)]

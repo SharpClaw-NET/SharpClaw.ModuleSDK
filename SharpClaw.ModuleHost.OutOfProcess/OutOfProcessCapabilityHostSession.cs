@@ -724,7 +724,36 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
+            ArmRotationAfterCarrier();
             RequestRotationRetry();
+        }
+    }
+
+    private void ArmRotationAfterCarrier()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _disconnect.IsCancellationRequested)
+            return;
+
+        _rotationGate.Wait(CancellationToken.None);
+        try
+        {
+            lock (_rotationSync)
+            {
+                var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                if (_rotationReady is null
+                    && (_rotationTask is null || _rotationTask.IsCompleted)
+                    && _options.HostActionEntryContexts.HasPendingContexts
+                    && Volatile.Read(ref _completedCallsForBinding)
+                        >= Math.Max(maximumCalls - 2, 1))
+                {
+                    _rotationReady = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
         }
     }
 

@@ -191,6 +191,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
         application.Endpoints.Add<ApplicationEndpoint>();
+        application.Endpoints.Add<StorageHeavyEndpoint>();
         application.Endpoints.Add<ScopedEndpoint>();
         application.Cli.Add<ApplicationCliHandler>(new ModuleCliCommandDescriptor(
             CliName,
@@ -275,6 +276,40 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             return ModuleEndpointResult.Success(
                 JsonSerializer.SerializeToElement(new
                 {
+                    outcome = outcome.Kind.ToString(),
+                    value = outcome.Result?.Value,
+                }));
+        }
+    }
+
+    public sealed class StorageHeavyEndpoint(IModuleStorageGateway storage) : IModuleEndpointHandler
+    {
+        public async ValueTask<ModuleEndpointResult> InvokeAsync(
+            HostEndpointInvocation invocation,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken)
+        {
+            foreach (var value in new[] { "policy", "role", "set" })
+            {
+                await storage.InvokeAsync(
+                    Id,
+                    "application-store",
+                    "echo",
+                    JsonSerializer.SerializeToElement(new { value }),
+                    cancellationToken);
+            }
+
+            var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
+                new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
+                    HostAction,
+                    new ApplicationSmokeAction("storage-heavy", "endpoint"),
+                    invocation.HostActionContext),
+                new HostActionTerminal(),
+                cancellationToken);
+            return ModuleEndpointResult.Success(
+                JsonSerializer.SerializeToElement(new
+                {
+                    storageReads = 3,
                     outcome = outcome.Kind.ToString(),
                     value = outcome.Result?.Value,
                 }));
@@ -600,7 +635,27 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         true,
                         [new ModuleCliOutput(
                             "stdout",
-                            $"storage:{singleStorageResult.GetRawText()}")]);
+                        $"storage:{singleStorageResult.GetRawText()}")]);
+                }
+
+                if (string.Equals(
+                        invocation.Arguments.FirstOrDefault(),
+                        "storage-heavy",
+                        StringComparison.Ordinal))
+                {
+                    for (var i = 0; i < 5; i++)
+                    {
+                        await storage.InvokeAsync(
+                            module.Identity.Id,
+                            "application-store",
+                            "echo",
+                            JsonSerializer.SerializeToElement(new { value = $"heavy-{i}" }),
+                            ct);
+                    }
+
+                    return new ModuleCliResult(
+                        true,
+                        [new ModuleCliOutput("stdout", "storage-heavy:5")]);
                 }
 
                 var contracts = storage.ListContracts();
