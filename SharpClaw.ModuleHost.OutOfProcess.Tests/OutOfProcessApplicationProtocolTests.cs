@@ -1196,10 +1196,22 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
 
         hostContext = pendingContext;
-        var nested = await client.InvokeCliAsync(
-            ApplicationSmokeModule.NestedHostEntryCliName,
-            ["nested"],
-            hostContext);
+        SidecarCliExecutionResponse nested;
+        try
+        {
+            nested = await client.InvokeCliAsync(
+                ApplicationSmokeModule.NestedHostEntryCliName,
+                ["nested"],
+                hostContext);
+        }
+        catch (Exception ex)
+        {
+            throw new AssertionException(
+                $"Nested invocation failed: {ex}; "
+                + $"hostFailure={client.CapabilitySession.LastHandledFailure}; "
+                + $"moduleFailure={_server.CapabilityFailure}",
+                ex);
+        }
 
         nested.Result.Succeeded.Should().BeTrue(
             $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
