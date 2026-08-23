@@ -696,12 +696,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         ValidateActionRequest(request);
         using var deadline = CreateCallCancellation(request.Deadline, ct);
         var callCancellation = deadline.Token;
-        var begin = _session.BeginCall(
-            request.Call,
-            SidecarCapabilityKind.Action,
-            request.Action,
-            request.Action.ByteLength,
-            DateTimeOffset.UtcNow);
+        var begin = request.NestedCarrier is { } nestedCarrier
+            ? _session.BeginNestedHostActionEntryCall(
+                nestedCarrier,
+                request.Call,
+                request.Action,
+                request.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                out _)
+            : _session.BeginCall(
+                request.Call,
+                SidecarCapabilityKind.Action,
+                request.Action,
+                request.Action.ByteLength,
+                DateTimeOffset.UtcNow);
         ThrowIfRejected(begin);
         ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
