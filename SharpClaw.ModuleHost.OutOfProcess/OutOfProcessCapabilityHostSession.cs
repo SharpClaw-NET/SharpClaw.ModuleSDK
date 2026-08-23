@@ -29,6 +29,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private int _completedCallsForBinding;
     private long _sequence;
     private readonly SemaphoreSlim _rotationGate = new(1, 1);
+    private ExternalAuthorityRegistration? _externalAuthorityRegistration;
     private Exception? _runFailure;
     private Exception? _lastHandledFailure;
     private int _disposed;
@@ -56,6 +57,29 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         public SidecarActionCapabilityRequest? Request { get; set; }
     }
 
+    private sealed class ExternalAuthorityRegistration(
+        IDisposable registration,
+        DateTimeOffset expiresAt,
+        CancellationTokenSource expiryCancellation) : IDisposable
+    {
+        private int _disposed;
+
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+
+        public CancellationToken ExpiryToken => expiryCancellation.Token;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            expiryCancellation.Cancel();
+            registration.Dispose();
+        }
+
+        public void DisposeExpiryCancellation() => expiryCancellation.Dispose();
+    }
+
     public OutOfProcessCapabilityHostSession(
         WebSocket socket,
         SidecarCapabilitySessionBinding binding,
@@ -79,6 +103,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The application discovery does not match the capability binding.");
         }
         _session = CreateSession(binding, controlToken);
+        RegisterExternalAuthoritySession();
         SendGate = new SemaphoreSlim(1, 1);
         _capabilityQueue = new BoundedExecutionQueue(
             Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
@@ -710,7 +735,67 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             binding,
             authority => OutOfProcessCapabilitySecurity.Authenticate(authority, controlToken),
             _ => true,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                        authority,
+                        controlToken),
+                    authority.Proof,
+                    StringComparison.Ordinal));
+
+    private void RegisterExternalAuthoritySession()
+    {
+        var binding = Session.Binding;
+        var registration = new ExternalAuthorityRegistration(
+            _options.ExternalAuthorityRegistry.Register(Session),
+            binding.ExpiresAt,
+            new CancellationTokenSource());
+        var previous = Interlocked.Exchange(ref _externalAuthorityRegistration, registration);
+        previous?.Dispose();
+        _ = ExpireExternalAuthorityRegistrationAsync(registration);
+    }
+
+    private void DisposeExternalAuthorityRegistration()
+    {
+        var registration = Interlocked.Exchange(ref _externalAuthorityRegistration, null);
+        registration?.Dispose();
+    }
+
+    private async Task ExpireExternalAuthorityRegistrationAsync(
+        ExternalAuthorityRegistration registration)
+    {
+        try
+        {
+            var delay = registration.ExpiresAt - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, registration.ExpiryToken);
+
+            if (registration.ExpiryToken.IsCancellationRequested)
+                return;
+
+            if (ReferenceEquals(
+                    Interlocked.CompareExchange(
+                        ref _externalAuthorityRegistration,
+                        null,
+                        registration),
+                    registration))
+            {
+                registration.Dispose();
+            }
+        }
+        catch (OperationCanceledException) when (registration.ExpiryToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            registration.DisposeExpiryCancellation();
+        }
+    }
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -780,6 +865,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             var binding = Session.Binding;
             _options.HostActionEntryContexts.Invalidate(binding);
+            DisposeExternalAuthorityRegistration();
             Session.Disconnect();
             lock (_rotationSync)
             {
@@ -817,6 +903,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         _disconnect.Cancel();
         var binding = Session.Binding;
         _options.HostActionEntryContexts.Invalidate(binding);
+        DisposeExternalAuthorityRegistration();
         Session.Disconnect();
         lock (_rotationSync)
         {
@@ -1199,6 +1286,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     rotation.Message
                         ?? "The capability session rejected binding rotation.");
             }
+            RegisterExternalAuthoritySession();
             _options.HostActionEntryContexts.Bind(
                 nextBinding,
                 IssueHostActionEntryContext,
@@ -1293,8 +1381,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             return false;
 
         if (authorizationGrant.Capabilities != snapshotGrant.Capabilities
-            || authorizationGrant.SensitiveApproved != snapshotGrant.SensitiveApproved
             || authorizationGrant.AcceptUnknownSchemas != snapshotGrant.AcceptUnknownSchemas)
+        {
+            return false;
+        }
+
+        if (authorizationGrant.SensitiveApproved && !snapshotGrant.SensitiveApproved)
             return false;
 
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)

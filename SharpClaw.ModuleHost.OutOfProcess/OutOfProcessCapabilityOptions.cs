@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Core.Kernel;
 using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
@@ -323,6 +324,7 @@ public sealed class OutOfProcessCapabilityHostOptions
         OutOfProcessActionDescriptorCatalog actionDescriptors,
         ActionPipelineSnapshot actionSnapshot,
         OutOfProcessHostActionEntryContextRegistry hostActionEntryContexts,
+        KernelExternalAuthoritySessionRegistry externalAuthorityRegistry,
         OutOfProcessCrossSidecarActionEntryCatalog? crossSidecarActionEntries = null)
     {
         StorageGateway = storageGateway
@@ -336,6 +338,8 @@ public sealed class OutOfProcessCapabilityHostOptions
             ?? throw new ArgumentNullException(nameof(actionSnapshot));
         HostActionEntryContexts = hostActionEntryContexts
             ?? throw new ArgumentNullException(nameof(hostActionEntryContexts));
+        ExternalAuthorityRegistry = externalAuthorityRegistry
+            ?? throw new ArgumentNullException(nameof(externalAuthorityRegistry));
         CrossSidecarActionEntries = crossSidecarActionEntries;
         ArgumentNullException.ThrowIfNull(ownedStorageNames);
         OwnedStorageNames = new HashSet<string>(
@@ -367,6 +371,8 @@ public sealed class OutOfProcessCapabilityHostOptions
 
     /// <summary>Gets the one-use host context registry for ingress carriers.</summary>
     public OutOfProcessHostActionEntryContextRegistry HostActionEntryContexts { get; }
+
+    internal KernelExternalAuthoritySessionRegistry ExternalAuthorityRegistry { get; }
 
     /// <summary>Gets the host-owned target action-entry catalog.</summary>
     public OutOfProcessCrossSidecarActionEntryCatalog? CrossSidecarActionEntries { get; }

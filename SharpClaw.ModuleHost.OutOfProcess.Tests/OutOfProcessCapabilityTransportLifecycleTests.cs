@@ -4,6 +4,7 @@ using System.Text;
 using FluentAssertions;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Core.Kernel;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -146,7 +147,8 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry());
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry());
 
     private static (HookInvokeStart Start, Guid HandleId) CreateStart(
         OutOfProcessModuleClient client) =>

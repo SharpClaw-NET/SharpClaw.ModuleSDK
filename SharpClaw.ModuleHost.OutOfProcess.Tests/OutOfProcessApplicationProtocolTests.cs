@@ -4,8 +4,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Core.Kernel;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -131,7 +133,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.CliName,
@@ -145,6 +148,106 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
         result.Result.Output.Single().Text.Should().Be(
             $"{ApplicationSmokeModule.Id}|{ApplicationSmokeModule.Id}|{client.Discovery.ContractHash}|{ApplicationSmokeModule.CliName}");
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task RealCoreDispatcherExecutesExternalEndpointAndTypedEntryThroughSessionVerifier()
+    {
+        await using var client = await CreateClientAsync();
+        var registry = new KernelExternalAuthoritySessionRegistry();
+        var graph = BuildRealCoreHostGraph();
+        graph.ActionSnapshot.ContractHash.Should().NotBe(client.Discovery.ContractHash);
+
+        var storage = new CountingStorageGateway();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var dispatcher = CreateRealCoreDispatcher(graph, registry);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            graph.ActionSnapshot,
+            new OutOfProcessHostActionEntryContextRegistry(),
+            registry));
+
+        var endpoint = await client.InvokeEndpointAsync(
+            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Endpoint,
+                typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.HostAction,
+                new ApplicationSmokeAction("endpoint", "action"),
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        endpoint.Succeeded.Should().BeTrue();
+        endpoint.Payload.Should().NotBeNull();
+        endpoint.Payload!.Value.GetProperty("outcome").GetString().Should().Be(
+            ActionOutcomeKind.Completed.ToString());
+        endpoint.Payload.Value.GetProperty("value").GetString().Should().Be("entry-terminal:action");
+
+        var action = new AgentsJobImportAction("real-core");
+        var typed = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            action,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        typed.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"Typed external dispatch failed with {typed.Error?.Code}: {typed.Error?.Message}");
+        typed.Result.Value.Should().StartWith("imported:real-core:");
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task RealCoreDispatcherExecutesNestedHostEntryThroughSessionVerifier()
+    {
+        await using var client = await CreateClientAsync();
+        var registry = new KernelExternalAuthoritySessionRegistry();
+        var graph = BuildRealCoreHostGraph();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        var dispatcher = CreateRealCoreDispatcher(graph, registry);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new CountingStorageGateway(),
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            graph.ActionSnapshot,
+            new OutOfProcessHostActionEntryContextRegistry(),
+            registry));
+
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.NestedHostEntryCliName,
+            ["nested"],
+            IssueHostEntryContext(
+                client,
+                ApplicationSmokeModule.NestedHostEntryCliName,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                "nested-root"));
+
+        result.Result.Succeeded.Should().BeTrue(
+            $"Nested CLI failed with {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+        result.Result.Output.Single().Text.Should().Be(
+            "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
     }
 
     [Test, CancelAfter(15000)]
@@ -165,7 +268,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var endpointTypeName = typeof(ApplicationSmokeModule.ScopedEndpoint).FullName!;
         var context = client.IssueHostActionContext(
@@ -207,7 +311,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var result = await client.InvokeCliAsync(
             ApplicationSmokeModule.CapabilityCliName,
@@ -256,7 +361,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 hostGraphId,
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         dispatcher.ReplaceInput = value => value is AgentsJobImportAction import
             ? import with { JobId = "job-replaced" }
@@ -342,7 +448,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "mutated-host-graph",
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var result = await client.InvokeModuleActionEntryAsync(
             ApplicationSmokeModule.AgentsJobImportAction,
@@ -390,7 +497,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "host-graph-h",
                     client.Authorization.ActionGrants,
                     client.Authorization.EventGrants),
-                new OutOfProcessHostActionEntryContextRegistry()));
+                new OutOfProcessHostActionEntryContextRegistry(),
+                new KernelExternalAuthoritySessionRegistry()));
 
         await act.Should().ThrowAsync<OutOfProcessCapabilityException>();
         dispatcher.RunCalls.Should().Be(0);
@@ -424,7 +532,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var rejected = await client.InvokeCliAsync(
             ApplicationSmokeModule.SelfOwnedEntryCliName,
@@ -495,7 +604,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var rejected = await client.InvokeCliAsync(
             ApplicationSmokeModule.SelfOwnedEntryCliName,
@@ -567,7 +677,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var action = new AgentsJobImportAction("storage");
         var result = await client.InvokeModuleActionEntryAsync(
@@ -627,7 +738,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 grants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         for (var i = 0; i < 2; i++)
         {
@@ -696,7 +808,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         for (var i = 0; i < 3; i++)
         {
@@ -750,7 +863,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry())
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry())
         {
             BeforeRotationStartAsync = async () =>
             {
@@ -836,7 +950,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry());
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry());
         await client.ConnectCapabilitiesAsync(options);
 
         var pendingContext = IssueHostEntryContextThroughRegistry(
@@ -927,7 +1042,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         hostContext = IssueHostEntryContext(client, grantExpiresAt);
         var result = await client.InvokeCliAsync(
@@ -969,7 +1085,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var pendingContext = IssueHostEntryContext(
             client,
@@ -1056,7 +1173,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var pendingContext = IssueHostEntryContext(
             client,
@@ -1131,7 +1249,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry())
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry())
         {
             BeforeRotationStartAsync = async () =>
             {
@@ -1258,7 +1377,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         hostContext = IssueHostEntryContext(
             client,
@@ -1301,7 +1421,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 1;
         for (var i = 0; i < priorCalls; i++)
@@ -1464,7 +1585,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var definition = client.Discovery.ToolHandlers.Single(item =>
             item.ToolName == ApplicationSmokeModule.HostEntryToolName);
@@ -1541,7 +1663,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var definition = client.Discovery.ToolHandlers.Single(item =>
             item.ToolName == ApplicationSmokeModule.HostEntryToolName);
@@ -1609,7 +1732,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         var rejected = await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
@@ -1641,7 +1765,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
 
         using var cancellation = new CancellationTokenSource();
         var pending = client.InvokeCliAsync(
@@ -2091,6 +2216,92 @@ public sealed class OutOfProcessApplicationProtocolTests
                     : null,
                 Continuation: null));
         return (accepted, outcome);
+    }
+
+    private static KernelGraph BuildRealCoreHostGraph()
+    {
+        var builder = new KernelGraphBuilder(false);
+        builder.Add(ApplicationSmokeModule.HostAction, "host-runtime");
+        using var services = new ServiceCollection().BuildServiceProvider();
+        return builder.Compile(
+            services,
+            new KernelGraphCompileOptions
+            {
+                SupportedActionCapabilities = ApplicationSmokeModule.HostCapabilities,
+                ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
+                {
+                    [ApplicationSmokeModule.HostAction.Key.Value] = ApplicationSmokeModule.HostCapabilities,
+                },
+                ActionModuleCapabilityGrants = new Dictionary<
+                    string,
+                    IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
+                {
+                    ["host-runtime"] = new Dictionary<string, ActionInterceptionCapabilities>
+                    {
+                        [ApplicationSmokeModule.HostAction.Key.Value] = ApplicationSmokeModule.HostCapabilities,
+                    },
+                    [ApplicationSmokeModule.Id] = new Dictionary<string, ActionInterceptionCapabilities>
+                    {
+                        [ApplicationSmokeModule.HostAction.Key.Value] =
+                            ApplicationSmokeModule.HostAction.Capabilities,
+                        [ApplicationSmokeModule.AgentsJobImportAction.Key.Value] =
+                            ApplicationSmokeModule.AgentsJobImportAction.Capabilities,
+                    },
+                },
+            });
+    }
+
+    private static KernelActionDispatcher CreateRealCoreDispatcher(
+        KernelGraph graph,
+        KernelExternalAuthoritySessionRegistry registry)
+    {
+        var hostContext = new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            "real-core-host",
+            HostActionEntryIngress.Cli,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            RequestPrincipal.Anonymous,
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        return new KernelActionDispatcher(
+            graph,
+            new KernelActionExecutionContext(
+                RequestPrincipal.Anonymous,
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                hostContext),
+            new InMemoryContinuationHost(),
+            new NoOpCommittedEventWriter(),
+            new IdentityResultSnapshotter(),
+            new NoOpRepeatEvidenceAuthority(),
+            registry);
+    }
+
+    private sealed class NoOpCommittedEventWriter : ICommittedEventWriter
+    {
+        public ValueTask PublishAsync<TEvent>(
+            EventDescriptor<TEvent> descriptor,
+            TEvent value,
+            CancellationToken ct) => ValueTask.CompletedTask;
+    }
+
+    private sealed class IdentityResultSnapshotter : IKernelActionResultSnapshotter
+    {
+        public TResult Snapshot<TResult>(TResult result) => result;
+    }
+
+    private sealed class NoOpRepeatEvidenceAuthority : IKernelActionRepeatEvidenceAuthority
+    {
+        public ValueTask<KernelActionRepeatEvidence?> AuthorizeAsync(
+            KernelActionRepeatEvidenceRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The real Core test graph has no repeat actions.");
     }
 
     private static async Task<Uri> FindFreeAddressAsync()

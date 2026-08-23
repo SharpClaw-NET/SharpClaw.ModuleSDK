@@ -6,6 +6,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Core.Kernel;
 using SharpClaw.ModuleHost.InProcess;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
@@ -287,7 +288,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                 client.Discovery.ContractHash,
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
-            new OutOfProcessHostActionEntryContextRegistry()));
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
         return client;
     }
 

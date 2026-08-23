@@ -3,8 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Core.Kernel;
 using SharpClaw.ModuleHost.OutOfProcess.TestModule;
 using SharpClaw.ModuleSDK;
 
@@ -156,6 +158,62 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         _targetDispatcher.RunCalls.Should().Be(1);
         _targetDispatcher.ExternalRunCalls.Should().Be(1);
         _targetDispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task RealCoreDispatcherExecutesCrossSidecarTargetThroughRegisteredSession()
+    {
+        var (targetServer, targetAddress, targetToken) =
+            await StartStandaloneServerAsync(
+                "real-core-cross-target",
+                CrossSidecarModule.Id,
+                typeof(CrossSidecarModule));
+        await using var server = targetServer;
+        var targetCatalog = new SidecarHostDescriptorCatalog(
+            [],
+            [],
+            OutOfProcessModuleHostProtocol.Version,
+            new SidecarPayloadLimits());
+        await using var targetClient = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            targetAddress,
+            targetToken,
+            targetCatalog);
+        var registry = new KernelExternalAuthoritySessionRegistry();
+        var graph = BuildRealCoreCrossTargetGraph();
+        var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
+        targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        var targetDispatcher = CreateRealCoreDispatcher(graph, registry);
+        await targetClient.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new EmptyStorageGateway(),
+            targetDispatcher,
+            targetClient.CreateCapabilityGrant(),
+            ["unused"],
+            targetDescriptors,
+            graph.ActionSnapshot,
+            new OutOfProcessHostActionEntryContextRegistry(),
+            registry));
+
+        var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
+        await using (sourceClient)
+        {
+            var result = await InvokeSourceAsync(
+                sourceClient,
+                sourceDispatcher,
+                "cross-sidecar");
+
+            result.Result.Succeeded.Should().BeTrue(
+                $"Real Core cross-sidecar failed with "
+                + $"{result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+                + string.Join(" | ", result.Result.Output.Select(item => item.Text))
+                + $"; targetFailure={targetClient.CapabilitySession.RunFailure}"
+                + $"; targetHandledFailure={targetClient.CapabilitySession.LastHandledFailure}"
+                + $"; targetServerFailure={server.CapabilityFailure}");
+            result.Result.Output.Single().Text.Should().Contain(
+                "host-entry:Completed:cross-sidecar:"
+                + "cross_sidecar_target_module|target|action|depth=1|parent=True|"
+                + "caller=module-agent|");
+            result.Result.Output.Single().Text.Should().EndWith("|scope=active");
+        }
     }
 
     [Test, CancelAfter(30000)]
@@ -402,6 +460,50 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         return server;
     }
 
+    private async Task<(
+        OutOfProcessModuleServer Server,
+        Uri Address,
+        string Token)> StartStandaloneServerAsync(
+        string name,
+        string moduleId,
+        Type moduleType)
+    {
+        var directory = Path.Combine(_root, name + "-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var assemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
+        var displayName = moduleType == typeof(ApplicationSmokeModule)
+            ? "Application Smoke"
+            : "Cross Sidecar Target";
+        var toolPrefix = moduleType == typeof(ApplicationSmokeModule)
+            ? "appsmoke"
+            : "cross-target";
+        File.Copy(
+            typeof(ApplicationSmokeModule).Assembly.Location,
+            Path.Combine(directory, assemblyName),
+            overwrite: true);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "module.json"),
+            $$"""
+            {
+              "id": "{{moduleId}}",
+              "displayName": "{{displayName}}",
+              "version": "0.5.0-beta.15",
+              "toolPrefix": "{{toolPrefix}}",
+              "entryAssembly": "{{assemblyName}}",
+              "runtime": "dotnet",
+              "hostMode": "sidecar",
+              "moduleType": "{{moduleType.FullName}}",
+              "requestedHooks": []
+            }
+            """,
+            Encoding.UTF8);
+        var address = await FindFreeAddressAsync();
+        var token = name + "-token-" + Guid.NewGuid().ToString("N");
+        var server = await OutOfProcessModuleServer.CreateAsync(directory, address, token);
+        await server.StartAsync();
+        return (server, address, token);
+    }
+
     private static OutOfProcessCapabilityHostOptions CreateOptions(
         OutOfProcessModuleClient client,
         CountingActionDispatcher dispatcher,
@@ -418,7 +520,90 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 client.Authorization.ActionGrants,
                 client.Authorization.EventGrants),
             new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry(),
             targetEntries);
+
+    private static KernelGraph BuildRealCoreCrossTargetGraph()
+    {
+        var builder = new KernelGraphBuilder(false);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        return builder.Compile(
+            services,
+            new KernelGraphCompileOptions
+            {
+                SupportedActionCapabilities = CrossSidecarModule.OwnedAction.Capabilities,
+                ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
+                {
+                    [CrossSidecarModule.OwnedAction.Key.Value] =
+                        CrossSidecarModule.OwnedAction.Capabilities,
+                },
+                ActionModuleCapabilityGrants = new Dictionary<
+                    string,
+                    IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
+                {
+                    [CrossSidecarModule.Id] = new Dictionary<
+                        string,
+                        ActionInterceptionCapabilities>
+                    {
+                        [CrossSidecarModule.OwnedAction.Key.Value] =
+                            CrossSidecarModule.OwnedAction.Capabilities,
+                    },
+                },
+            });
+    }
+
+    private static KernelActionDispatcher CreateRealCoreDispatcher(
+        KernelGraph graph,
+        KernelExternalAuthoritySessionRegistry registry)
+    {
+        var hostContext = new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            "real-core-cross-target",
+            HostActionEntryIngress.Cli,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            RequestPrincipal.Anonymous,
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        return new KernelActionDispatcher(
+            graph,
+            new KernelActionExecutionContext(
+                RequestPrincipal.Anonymous,
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                hostContext),
+            new InMemoryContinuationHost(),
+            new NoOpCommittedEventWriter(),
+            new IdentityResultSnapshotter(),
+            new NoOpRepeatEvidenceAuthority(),
+            registry);
+    }
+
+    private sealed class NoOpCommittedEventWriter : ICommittedEventWriter
+    {
+        public ValueTask PublishAsync<TEvent>(
+            EventDescriptor<TEvent> descriptor,
+            TEvent value,
+            CancellationToken ct) => ValueTask.CompletedTask;
+    }
+
+    private sealed class IdentityResultSnapshotter : IKernelActionResultSnapshotter
+    {
+        public TResult Snapshot<TResult>(TResult result) => result;
+    }
+
+    private sealed class NoOpRepeatEvidenceAuthority : IKernelActionRepeatEvidenceAuthority
+    {
+        public ValueTask<KernelActionRepeatEvidence?> AuthorizeAsync(
+            KernelActionRepeatEvidenceRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The real Core cross-sidecar graph has no repeat actions.");
+    }
 
     private static SidecarHostActionDescriptor ToDescriptor(
         ActionDescriptor<ApplicationSmokeAction, ApplicationSmokeResult> descriptor) =>
