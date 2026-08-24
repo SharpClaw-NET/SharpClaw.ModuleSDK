@@ -69,6 +69,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             request.Deadline,
             cancellationToken,
             context.CapabilityId);
+        var transportContext = context with
+        {
+            RequestId = call.RequestId,
+            CancellationId = call.CancellationId,
+        };
         var actionPayload = OutOfProcessActionDispatcher.Payload(
             request.Action,
             identity.InputTypeIdentity,
@@ -83,7 +88,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             actionPayload,
             cancellation,
             request.Deadline,
-            context,
+            transportContext,
             new SidecarActionTerminalRegistration(
                 terminalBinding.TerminalId,
                 identity.InputTypeIdentity,
@@ -102,7 +107,7 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                     _transport.Binding.SafeFailure,
                     terminalCancellation,
                     _transport,
-                    context.Contribution)
+                    transportContext.Contribution)
                 : null;
         var response = await _transport.InvokeActionAsync(
             sidecarRequest,

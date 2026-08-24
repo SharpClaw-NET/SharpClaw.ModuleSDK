@@ -207,6 +207,19 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         }
         else
         {
+            foreach (var pair in _active.ToArray())
+            {
+                var context = pair.Value.Context with
+                {
+                    RequestId = binding.RequestId,
+                    CancellationId = binding.CancellationId,
+                };
+                _active[pair.Key] = new IssuedContext(
+                    binding.RequestId,
+                    binding.CancellationId,
+                    context);
+            }
+
             foreach (var capabilityId in _consumed.Keys)
             {
                 if (!_active.ContainsKey(capabilityId))
