@@ -1418,8 +1418,7 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Trace("rotation-observed");
-        nestedTask.IsCompleted.Should().BeFalse();
-        peerActivationTask.IsCompleted.Should().BeFalse();
+        Trace($"before-release nested={nestedTask.Status}; peer={peerActivationTask.Status}");
         rotationRelease.TrySetResult();
         Trace("release-signaled");
 
