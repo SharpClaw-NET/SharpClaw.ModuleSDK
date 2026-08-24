@@ -516,8 +516,6 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         return source;
     }
 
-    private static TaskCompletionSource CreateSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 internal sealed record ModuleNestedActionMetadata(
@@ -660,6 +658,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         lock (_outgoingSequenceSync)
             _createdOutgoingSequences.Add(sequence);
     }
+
+    private static TaskCompletionSource CreateSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private async ValueTask WaitForOutgoingCallTurnAsync(
         long sequence,
