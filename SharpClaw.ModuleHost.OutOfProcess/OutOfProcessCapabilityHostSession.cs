@@ -178,32 +178,40 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 lock (_rotationSync)
                 {
-                    var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
-                    if (_rotationReady is null
-                        && (_rotationTask is null || _rotationTask.IsCompleted)
-                        && Volatile.Read(ref _completedCallsForBinding)
-                            >= Math.Max(maximumCalls - 2, 1))
+                    if (_rotationTask is { IsCompleted: false })
                     {
-                        _rotationReady = new TaskCompletionSource(
-                            TaskCreationOptions.RunContinuationsAsynchronously);
+                        rotation = _rotationTask;
                     }
 
-                    if (_rotationReady is null
-                        && (_rotationTask is null || _rotationTask.IsCompleted))
-                        return issue();
-
-                    var callsForBinding =
-                        Volatile.Read(ref _completedCallsForBinding)
-                        + _calls.Count
-                        + _outgoingCapabilityCalls.Count;
-                    if (_options.HostActionEntryContexts.HasPendingContexts
-                        && callsForBinding
-                            < Math.Max(maximumCalls - 2, 1))
+                    if (rotation is null)
                     {
-                        return issue();
-                    }
+                        var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                        if (_rotationReady is null
+                            && (_rotationTask is null || _rotationTask.IsCompleted)
+                            && Volatile.Read(ref _completedCallsForBinding)
+                                >= Math.Max(maximumCalls - 2, 1))
+                        {
+                            _rotationReady = new TaskCompletionSource(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                        }
 
-                    rotation = _rotationTask ?? _rotationReady?.Task;
+                        if (_rotationReady is null
+                            && (_rotationTask is null || _rotationTask.IsCompleted))
+                            return issue();
+
+                        var callsForBinding =
+                            Volatile.Read(ref _completedCallsForBinding)
+                            + _calls.Count
+                            + _outgoingCapabilityCalls.Count;
+                        if (_options.HostActionEntryContexts.HasPendingContexts
+                            && callsForBinding
+                                < Math.Max(maximumCalls - 2, 1))
+                        {
+                            return issue();
+                        }
+
+                        rotation = _rotationTask ?? _rotationReady?.Task;
+                    }
                 }
             }
             finally
@@ -668,6 +676,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The host action context has no ingress contribution.");
         }
         HostActionEntryCarrierAuthority? authority = null;
+        WaitForRotationAsync(
+                _disconnect.Token,
+                context.CapabilityId,
+                allowPendingCarrier: true)
+            .GetAwaiter()
+            .GetResult();
         _rotationGate.Wait(_disconnect.Token);
         try
         {
@@ -717,17 +731,23 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         return authority!;
     }
 
-    internal void CompleteHostActionEntryCarrier(
+    internal async ValueTask CompleteHostActionEntryCarrierAsync(
         HostActionEntryCarrierAuthority authority,
         HostActionEntryCarrierCompletionKind completion)
     {
         ArgumentNullException.ThrowIfNull(authority);
+        var completionAccepted = false;
         try
         {
-            _rotationGate.Wait(_disconnect.Token);
+            await WaitForRotationAsync(
+                _disconnect.Token,
+                authority.CapabilityId,
+                allowAnyActiveCarrier: true,
+                allowPendingCarrier: true);
+            await _rotationGate.WaitAsync(_disconnect.Token);
             try
             {
-                WaitForHostActionCallsToFinish(_disconnect.Token);
+                await WaitForHostActionCallsToFinishAsync(_disconnect.Token);
                 var validation = Session.CompleteHostActionEntryCarrier(
                     authority,
                     completion,
@@ -740,6 +760,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                             ?? "The host action entry carrier completion was rejected.")
                         + $" state={TemporarySessionState(authority.CapabilityId)}");
                 }
+
+                completionAccepted = true;
             }
             finally
             {
@@ -752,9 +774,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             ArmRotationAfterCarrier();
             RequestRotationRetry();
         }
+
+        if (completionAccepted && !_disconnect.IsCancellationRequested)
+            await StartRotationIfReadyAsync(_disconnect.Token);
     }
 
-    private void WaitForHostActionCallsToFinish(CancellationToken ct)
+    private async Task WaitForHostActionCallsToFinishAsync(CancellationToken ct)
     {
         while (true)
         {
@@ -769,7 +794,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 changed = _callChange.Task;
             }
 
-            changed.Wait(ct);
+            await changed.WaitAsync(ct);
         }
     }
 
@@ -1385,15 +1410,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         Task? rotation;
         lock (_rotationSync)
         {
-            if (HasActiveHostActionReservation(
-                    activeCarrierId,
-                    allowAnyActiveCarrier,
-                    allowPendingCarrier))
+            var hasReservation = HasActiveHostActionReservation(
+                activeCarrierId,
+                allowAnyActiveCarrier,
+                allowPendingCarrier);
+            if (hasReservation
+                && (_rotationTask is null || _rotationTask.IsCompleted))
             {
                 return;
             }
 
-            rotation = _rotationReady?.Task;
+            rotation = _rotationTask ?? _rotationReady?.Task;
         }
         if (rotation is not null)
             await rotation.WaitAsync(ct);
@@ -1438,48 +1465,53 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         await _rotationGate.WaitAsync(ct);
         try
         {
-            Func<Task>? beforeRotationStart;
-            TaskCompletionSource ready;
             lock (_rotationSync)
             {
-                if (_rotationReady is null
-                    || !_calls.IsEmpty
-                    || !_outgoingCapabilityCalls.IsEmpty)
-                    return null;
-                if (_options.HostActionEntryContexts.HasActiveContexts)
-                    return null;
-                var nextPendingExpiration = _options.HostActionEntryContexts
-                    .NextPendingContextExpiration();
-                if (nextPendingExpiration is not null)
-                    return nextPendingExpiration;
+                if (_rotationTask is { IsCompleted: false })
+                {
+                    rotation = _rotationTask;
+                }
 
-                ready = _rotationReady;
-                beforeRotationStart = _options.BeforeRotationStartAsync;
-                _options.BeforeRotationStartAsync = null;
+                if (rotation is null)
+                {
+                    if (_rotationReady is null
+                        || !_calls.IsEmpty
+                        || !_outgoingCapabilityCalls.IsEmpty)
+                        return null;
+                    if (_options.HostActionEntryContexts.HasActiveContexts)
+                        return null;
+                    var nextPendingExpiration = _options.HostActionEntryContexts
+                        .NextPendingContextExpiration();
+                    if (nextPendingExpiration is not null)
+                        return nextPendingExpiration;
+
+                    var ready = _rotationReady;
+                    var beforeRotationStart = _options.BeforeRotationStartAsync;
+                    _options.BeforeRotationStartAsync = null;
+                    _rotationTask = RunRotationAsync(ready, beforeRotationStart, ct);
+                    rotation = _rotationTask;
+                }
             }
-
-            if (beforeRotationStart is not null)
-                await beforeRotationStart();
-
-            lock (_rotationSync)
-            {
-                if (_rotationReady is null
-                    || !_calls.IsEmpty
-                    || !_outgoingCapabilityCalls.IsEmpty)
-                    return null;
-                if (_rotationTask is null || _rotationTask.IsCompleted)
-                    _rotationTask = RotateBindingAsync(ready, ct);
-                rotation = _rotationTask;
-            }
-
-            if (rotation is not null)
-                await rotation;
-            return null;
         }
         finally
         {
             _rotationGate.Release();
         }
+
+        if (rotation is not null)
+            await rotation;
+        return null;
+    }
+
+    private async Task RunRotationAsync(
+        TaskCompletionSource ready,
+        Func<Task>? beforeRotationStart,
+        CancellationToken ct)
+    {
+        if (beforeRotationStart is not null)
+            await beforeRotationStart();
+
+        await RotateBindingAsync(ready, ct);
     }
 
     internal void RequestRotationRetry()

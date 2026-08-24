@@ -427,7 +427,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
         finally
         {
-            CapabilitySession.CompleteHostActionEntryCarrier(
+            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
                 carrierAuthority,
                 completion);
         }
@@ -513,7 +513,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
         finally
         {
-            CapabilitySession.CompleteHostActionEntryCarrier(
+            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
                 carrierAuthority,
                 completion);
         }
@@ -593,7 +593,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
         finally
         {
-            CapabilitySession.CompleteHostActionEntryCarrier(
+            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
                 carrierAuthority,
                 completion);
         }
@@ -798,7 +798,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         finally
         {
             socket?.Dispose();
-            CapabilitySession.CompleteHostActionEntryCarrier(
+            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
                 carrierAuthority,
                 completion);
         }
