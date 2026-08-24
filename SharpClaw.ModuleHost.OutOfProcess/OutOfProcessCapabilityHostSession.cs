@@ -805,7 +805,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             Task changed;
             lock (_calls)
             {
-                if (_calls.IsEmpty && _outgoingCapabilityCalls.IsEmpty)
+                if (_calls.IsEmpty
+                    && _outgoingCapabilityCalls.IsEmpty
+                    && _terminals.IsEmpty)
                 {
                     return;
                 }
@@ -1495,7 +1497,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 {
                     if (_rotationReady is null
                         || !_calls.IsEmpty
-                        || !_outgoingCapabilityCalls.IsEmpty)
+                        || !_outgoingCapabilityCalls.IsEmpty
+                        || !_terminals.IsEmpty)
                         return null;
                     if (_options.HostActionEntryContexts.HasActiveContexts)
                         return null;
@@ -2968,7 +2971,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         finally
         {
-            _terminals.TryRemove(request.Call.CallId, out _);
+            if (_terminals.TryRemove(request.Call.CallId, out _))
+            {
+                SignalCallChange();
+                RequestRotationRetry();
+            }
         }
     }
 
