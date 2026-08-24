@@ -2302,7 +2302,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         WriteRotationDiagnostic(
             $"nested-relay issue={issue.Accepted}; parentSequence={request.Call.Sequence}; "
             + $"peerSequence={relay?.PeerCall?.Sequence}; peerCall={relay?.PeerCall?.CallId}; "
-            + $"nestedCall={relay?.Call.CallId}; hostBindingGeneration={Session.BindingGeneration}");
+            + $"nestedCall={relay?.Call.CallId}; code={issue.Code}; message={issue.Message}; "
+            + $"hostBindingGeneration={Session.BindingGeneration}");
         var outcomeKind = issue.Accepted && relay is not null
             ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
             : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;
