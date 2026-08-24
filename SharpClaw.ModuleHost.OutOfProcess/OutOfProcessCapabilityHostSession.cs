@@ -20,6 +20,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
     private readonly ConcurrentDictionary<Guid, byte> _pendingActionRequests = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
+    private readonly object _terminalSequenceSync = new();
+    private readonly SortedSet<long> _pendingTerminalSequences = new();
+    private TaskCompletionSource _terminalSequenceChanged = CreateSignal();
     private TaskCompletionSource _callChange = CreateSignal();
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _capabilityQueue;
@@ -1201,36 +1204,47 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
-        await _rotationGate.WaitAsync(channelCt);
+        var terminalSequenceRegistered = RegisterTerminalSequence(request);
+        var scheduled = false;
         try
         {
-            if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+            await _rotationGate.WaitAsync(channelCt);
+            try
             {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.Replay,
-                    "The incoming action request identifier was reused.");
+                if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Replay,
+                        "The incoming action request identifier was reused.");
+                }
             }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            if (_capabilityQueue.TrySchedule(
+                    ct => HandleActionRequestAsync(request, ct),
+                    channelCt,
+                    out var completion))
+            {
+                scheduled = true;
+                _ = ObserveQueueCompletionAsync(completion);
+                return;
+            }
+
+            RemovePendingActionRequest(request.Call.CallId);
+            await SendActionFailureAsync(
+                request,
+                SidecarCapabilityErrors.ModuleBusy,
+                "The host capability execution queue is full.",
+                channelCt);
         }
         finally
         {
-            _rotationGate.Release();
+            if (terminalSequenceRegistered && !scheduled)
+                CompleteTerminalSequence(request.Call.Sequence);
         }
-
-        if (_capabilityQueue.TrySchedule(
-                ct => HandleActionRequestAsync(request, ct),
-                channelCt,
-                out var completion))
-        {
-            _ = ObserveQueueCompletionAsync(completion);
-            return;
-        }
-
-        RemovePendingActionRequest(request.Call.CallId);
-        await SendActionFailureAsync(
-            request,
-            SidecarCapabilityErrors.ModuleBusy,
-            "The host capability execution queue is full.",
-            channelCt);
     }
 
     private async Task ScheduleStorageRequestAsync(
@@ -1410,6 +1424,53 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         _callChange.TrySetResult();
         _callChange = CreateSignal();
+    }
+
+    private bool RegisterTerminalSequence(SidecarActionCapabilityRequest request)
+    {
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry
+            || request.HostContext is null)
+        {
+            return false;
+        }
+
+        lock (_terminalSequenceSync)
+            _pendingTerminalSequences.Add(request.Call.Sequence);
+        return true;
+    }
+
+    private async ValueTask WaitForTerminalSequenceAsync(
+        long sequence,
+        CancellationToken ct)
+    {
+        while (true)
+        {
+            Task changed;
+            lock (_terminalSequenceSync)
+            {
+                if (_pendingTerminalSequences.Count == 0
+                    || _pendingTerminalSequences.Min == sequence)
+                {
+                    return;
+                }
+
+                changed = _terminalSequenceChanged.Task;
+            }
+
+            await changed.WaitAsync(ct);
+        }
+    }
+
+    private void CompleteTerminalSequence(long sequence)
+    {
+        lock (_terminalSequenceSync)
+        {
+            if (!_pendingTerminalSequences.Remove(sequence))
+                return;
+
+            _terminalSequenceChanged.TrySetResult();
+            _terminalSequenceChanged = CreateSignal();
+        }
     }
 
     private bool CompleteSessionCall(Guid callId, int terminalCallCount)
@@ -2061,6 +2122,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
             RemovePendingActionRequest(request.Call.CallId);
+            CompleteTerminalSequence(request.Call.Sequence);
         }
     }
 
@@ -2806,45 +2868,58 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     : request.Deadline),
             TerminalId = request.Terminal?.TerminalId ?? Guid.Empty,
         };
-        var terminalResponse = await SendTerminalAsync(terminalRequest, ct);
-        var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
-            terminalRequest,
-            terminalResponse,
-            _session.Binding);
-        if (!responseValidation.Accepted)
-        {
-            throw new OutOfProcessCapabilityException(
-                responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                responseValidation.Message ?? "The terminal response was rejected.");
-        }
+        var terminalSequenceRegistered = request.Invocation == SidecarActionInvocationKind.HostEntry
+            && request.HostContext is not null;
+        if (terminalSequenceRegistered)
+            await WaitForTerminalSequenceAsync(request.Call.Sequence, ct);
 
-        if (!Session.TryGetTerminalReceipt(request.Call.CallId, out _))
+        try
         {
-            var record = _session.RecordTerminal(
-                request.Call.CallId,
-                authority.AuthorityId,
-                receipt);
-            if (!record.Accepted)
+            var terminalResponse = await SendTerminalAsync(terminalRequest, ct);
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+                terminalRequest,
+                terminalResponse,
+                _session.Binding);
+            if (!responseValidation.Accepted)
             {
                 throw new OutOfProcessCapabilityException(
-                    record.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                    record.Message ?? "The terminal receipt was rejected.");
+                    responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                    responseValidation.Message ?? "The terminal response was rejected.");
             }
-        }
 
-        if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)
+            if (!Session.TryGetTerminalReceipt(request.Call.CallId, out _))
+            {
+                var record = _session.RecordTerminal(
+                    request.Call.CallId,
+                    authority.AuthorityId,
+                    receipt);
+                if (!record.Accepted)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        record.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                        record.Message ?? "The terminal receipt was rejected.");
+                }
+            }
+
+            if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    terminalResponse.SafeFailure?.Code ?? SidecarCapabilityErrors.HostFailure,
+                    terminalResponse.SafeFailure?.Message ?? "The sidecar terminal callback failed.");
+            }
+
+            return JsonSerializer.Deserialize<TResult>(
+                    terminalResponse.Execution.Result.Value.GetRawText(),
+                    SidecarCapabilityTransportCodec.CreateJsonOptions())
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The sidecar terminal callback returned no result.");
+        }
+        finally
         {
-            throw new OutOfProcessCapabilityException(
-                terminalResponse.SafeFailure?.Code ?? SidecarCapabilityErrors.HostFailure,
-                terminalResponse.SafeFailure?.Message ?? "The sidecar terminal callback failed.");
+            if (terminalSequenceRegistered)
+                CompleteTerminalSequence(request.Call.Sequence);
         }
-
-        return JsonSerializer.Deserialize<TResult>(
-                terminalResponse.Execution.Result.Value.GetRawText(),
-                SidecarCapabilityTransportCodec.CreateJsonOptions())
-            ?? throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The sidecar terminal callback returned no result.");
     }
 
     private static ActionContext<TAction> BindHostEntryDispatcherContext<TAction>(
