@@ -56,6 +56,9 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 "The host action entry request context does not match the typed host authority.");
         }
 
+        using var rootActionExchange = _parentTerminalRequest is null
+            ? await _transport.EnterRootActionExchangeAsync(cancellationToken)
+            : null;
         var identity = OutOfProcessActionDescriptorIdentity.Create(request.Descriptor);
         var terminalBinding = _transport.ResolveActionEntryTerminal(
             identity,

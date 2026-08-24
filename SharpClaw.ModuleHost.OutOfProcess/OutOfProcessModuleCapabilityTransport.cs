@@ -296,6 +296,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         CancellationToken ct) =>
         GetRequiredConnection().InvokeActionAsync(request, terminal, ct);
 
+    internal ValueTask<IDisposable> EnterRootActionExchangeAsync(CancellationToken ct) =>
+        GetRequiredConnection().EnterRootActionExchangeAsync(ct);
+
     internal SidecarCapabilitySessionBinding Binding => GetRequiredConnection().Binding;
 
     internal async Task AcceptAsync(
@@ -566,6 +569,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _actionEntryQueue;
     private readonly BoundedExecutionQueue _terminalQueue;
+    private readonly SemaphoreSlim _rootActionExchangeGate = new(1, 1);
     private readonly SemaphoreSlim _rootRelayImportGate = new(1, 1);
     private readonly object _rotationSync = new();
     private readonly object _outgoingSequenceSync = new();
@@ -612,6 +616,23 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     }
 
     public SemaphoreSlim SendGate { get; }
+
+    internal async ValueTask<IDisposable> EnterRootActionExchangeAsync(CancellationToken ct)
+    {
+        await _rootActionExchangeGate.WaitAsync(ct);
+        return new SemaphoreLease(_rootActionExchangeGate);
+    }
+
+    private sealed class SemaphoreLease(SemaphoreSlim gate) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                gate.Release();
+        }
+    }
 
     public SidecarCapabilitySessionBinding Binding =>
         Volatile.Read(ref _session).Binding;
@@ -1180,6 +1201,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         FailPending(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         await _actionEntryQueue.DisposeAsync();
         await _terminalQueue.DisposeAsync();
+        _rootActionExchangeGate.Dispose();
         _rootRelayImportGate.Dispose();
         try
         {
