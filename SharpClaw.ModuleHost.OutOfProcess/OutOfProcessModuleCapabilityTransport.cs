@@ -515,6 +515,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
             source.TrySetResult();
         return source;
     }
+
+    private static TaskCompletionSource CreateSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 internal sealed record ModuleNestedActionMetadata(
