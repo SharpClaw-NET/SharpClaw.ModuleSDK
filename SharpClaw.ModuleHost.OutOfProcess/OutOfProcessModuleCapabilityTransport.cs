@@ -1142,6 +1142,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
+            WriteRotationDiagnostic($"run-failure {ex}");
             failure = ex;
         }
         finally
@@ -1626,6 +1627,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
+            WriteRotationDiagnostic($"action-entry-failure {ex}");
             _disconnect.Cancel();
         }
     }
