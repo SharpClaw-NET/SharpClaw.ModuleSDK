@@ -2687,6 +2687,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     issued.Message ?? "The host action entry authority was rejected.");
             }
 
+            var transportValidation = transport.Validate(
+                DateTimeOffset.UtcNow,
+                authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
+                    authority,
+                    _controlToken));
+            WriteRotationDiagnostic(
+                $"host-entry-transport-validation accepted={transportValidation.Accepted}; code={transportValidation.Code}; "
+                + $"message={transportValidation.Message}; requestAction={request.Action.ContentHash}:{request.Action.ByteLength}; "
+                + $"authorityAction={transport.Authority.ActionContentHash}:{transport.Authority.ActionByteLength}; "
+                + $"requestLineage={transport.Request.Context.Contribution?.Lineage.PayloadContentHash}:{transport.Request.Context.Contribution?.Lineage.PayloadByteLength}; "
+                + $"authorityType={transport.Authority.InputTypeIdentity}; authoritySchema={transport.Authority.InputSchemaVersion}");
             var authorityValidation = _session.ValidateHostActionEntry(
                 transport,
                 DateTimeOffset.UtcNow,
