@@ -196,6 +196,11 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             _parentTerminalRequest.Call,
             now,
             out var importedCarrier);
+        OutOfProcessModuleCapabilityTransport.WriteRotationDiagnostic(
+            $"nested-import accepted={import.Accepted}; code={import.Code}; "
+            + $"message={import.Message}; parentSequence={_parentTerminalRequest.Call.Sequence}; "
+            + $"peerSequence={peerCall.Sequence}; peerCall={peerCall.CallId}; "
+            + $"bindingGeneration={_transport.BindingGeneration}");
         if (!import.Accepted || importedCarrier is null)
         {
             throw new OutOfProcessCapabilityException(

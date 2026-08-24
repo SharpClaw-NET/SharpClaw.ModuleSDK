@@ -2397,7 +2397,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         return new OutOfProcessCapabilityException(error.Code, error.Message);
     }
 
-    private static void WriteRotationDiagnostic(string message)
+    internal static void WriteRotationDiagnostic(string message)
     {
         var path = Environment.GetEnvironmentVariable(
             "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");

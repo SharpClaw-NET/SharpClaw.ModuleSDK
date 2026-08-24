@@ -2299,6 +2299,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             Session,
             DateTimeOffset.UtcNow,
             out var relay);
+        WriteRotationDiagnostic(
+            $"nested-relay issue={issue.Accepted}; parentSequence={request.Call.Sequence}; "
+            + $"peerSequence={relay?.PeerCall?.Sequence}; peerCall={relay?.PeerCall?.CallId}; "
+            + $"nestedCall={relay?.Call.CallId}; hostBindingGeneration={Session.BindingGeneration}");
         var outcomeKind = issue.Accepted && relay is not null
             ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
             : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;
@@ -3465,6 +3469,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
+    }
+
+    private static void WriteRotationDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable(
+            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        File.AppendAllText(
+            path,
+            $"{DateTimeOffset.UtcNow:O} host {message}{Environment.NewLine}");
     }
 
 }
