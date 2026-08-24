@@ -1357,8 +1357,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             BeforeRotationStartAsync = async () =>
             {
                 Console.WriteLine(
-                    $"rotation-state active={options.HostActionEntryContexts.HasActiveContexts}; "
-                    + $"pending={options.HostActionEntryContexts.HasPendingContexts}");
+                    $"rotation-state active={client.HostActionEntryContexts.HasActiveContexts}; "
+                    + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
                 rotationStarted.TrySetResult();
                 await rotationRelease.Task;
             },
