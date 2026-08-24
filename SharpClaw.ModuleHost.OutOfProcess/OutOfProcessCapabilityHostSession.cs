@@ -2908,12 +2908,22 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         };
         var terminalSequenceRegistered = request.Invocation == SidecarActionInvocationKind.HostEntry
             && request.HostContext is not null;
+        var terminalSequenceCompleted = false;
         if (terminalSequenceRegistered)
             await WaitForTerminalSequenceAsync(request.Call.Sequence, ct);
 
         try
         {
-            var terminalResponse = await SendTerminalAsync(terminalRequest, ct);
+            var terminalResponse = await SendTerminalAsync(
+                terminalRequest,
+                ct,
+                terminalSequenceRegistered
+                    ? () =>
+                    {
+                        CompleteTerminalSequence(request.Call.Sequence);
+                        terminalSequenceCompleted = true;
+                    }
+                    : null);
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
                 terminalRequest,
                 terminalResponse,
@@ -2955,7 +2965,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         finally
         {
-            if (terminalSequenceRegistered)
+            if (terminalSequenceRegistered && !terminalSequenceCompleted)
                 CompleteTerminalSequence(request.Call.Sequence);
         }
     }
@@ -3082,7 +3092,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     private async Task<SidecarActionTerminalTransportResponse> SendTerminalAsync(
         SidecarActionTerminalTransportRequest request,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action? afterSend = null)
     {
         var completion = new TaskCompletionSource<SidecarActionTerminalTransportResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3102,6 +3113,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 ct);
+            afterSend?.Invoke();
             return await completion.Task.WaitAsync(ct);
         }
         finally
