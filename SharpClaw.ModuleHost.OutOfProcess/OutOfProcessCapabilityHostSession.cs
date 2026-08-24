@@ -18,6 +18,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingActionRequests = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
     private TaskCompletionSource _callChange = CreateSignal();
     private readonly CancellationTokenSource _disconnect = new();
@@ -1200,12 +1201,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
-        await WaitForRotationAsync(
-            channelCt,
-            request.HostContext?.CapabilityId,
-            allowAnyActiveCarrier: request.NestedCarrier is not null,
-            allowPendingCarrier: request.NestedCarrier is null
-                && request.HostContext is not null);
+        await _rotationGate.WaitAsync(channelCt);
+        try
+        {
+            if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The incoming action request identifier was reused.");
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
         if (_capabilityQueue.TrySchedule(
                 ct => HandleActionRequestAsync(request, ct),
                 channelCt,
@@ -1215,6 +1225,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             return;
         }
 
+        RemovePendingActionRequest(request.Call.CallId);
         await SendActionFailureAsync(
             request,
             SidecarCapabilityErrors.ModuleBusy,
@@ -1496,6 +1507,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 if (rotation is null)
                 {
                     if (_rotationReady is null
+                        || !_pendingActionRequests.IsEmpty
                         || !_calls.IsEmpty
                         || !_outgoingCapabilityCalls.IsEmpty
                         || !_terminals.IsEmpty)
@@ -2048,6 +2060,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
+            RemovePendingActionRequest(request.Call.CallId);
+        }
+    }
+
+    private void RemovePendingActionRequest(Guid callId)
+    {
+        if (_pendingActionRequests.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
         }
     }
 
