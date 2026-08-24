@@ -2698,6 +2698,20 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 + $"authorityAction={transport.Authority.ActionContentHash}:{transport.Authority.ActionByteLength}; "
                 + $"requestLineage={transport.Request.Context.Contribution?.Lineage.PayloadContentHash}:{transport.Request.Context.Contribution?.Lineage.PayloadByteLength}; "
                 + $"authorityType={transport.Authority.InputTypeIdentity}; authoritySchema={transport.Authority.InputSchemaVersion}");
+            WriteRotationDiagnostic(
+                $"host-entry-authority-shape requestWellFormed={transport.Request.IsWellFormed(DateTimeOffset.UtcNow)}; "
+                + $"authorityValid={transport.Authority.IsValid}; proofValid={OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(transport.Authority, _controlToken)}; "
+                + $"lineageDescriptor={HostActionEntryAuthorityValidator.MatchesDescriptorLineage(transport.Request.Context.Contribution?.Lineage, descriptor)}; "
+                + $"authorityIds={transport.Authority.RequestId}:{transport.Authority.CancellationId}:{transport.Authority.CallId}; "
+                + $"contextIds={transport.Request.Context.RequestId}:{transport.Request.Context.CancellationId}; "
+                + $"authorityInvocation={transport.Authority.InvocationId}:{transport.Authority.ParentInvocationId}:{transport.Authority.Depth}:{transport.Authority.Attempt}; "
+                + $"contextInvocation={transport.Request.Context.InvocationId}:{transport.Request.Context.ParentInvocationId}:{transport.Request.Context.Depth}:{transport.Request.Context.Attempt}; "
+                + $"authorityLineage={transport.Authority.ActionKey.Value}:{transport.Authority.ActionVersion}:{transport.Authority.DescriptorHash}; "
+                + $"contextLineage={transport.Request.Context.Contribution?.Lineage.ActionKey.Value}:{transport.Request.Context.Contribution?.Lineage.ActionVersion}:{transport.Request.Context.Contribution?.Lineage.DescriptorHash}; "
+                + $"authorityContext={transport.Authority.TraceId}:{transport.Authority.IdempotencyKey}:{transport.Authority.Deadline}:{transport.Authority.ExpiresAt}; "
+                + $"requestContext={transport.Request.Context.TraceId}:{transport.Request.Context.IdempotencyKey}:{transport.Request.Context.Deadline}:{transport.Request.Context.ExpiresAt}; "
+                + $"authorityCapability={transport.Authority.CapabilityId}:{transport.Authority.CapabilityHandleHash}; "
+                + $"requestCapability={transport.Request.Context.CapabilityId}:{HostActionEntryAuthorityValidator.ComputeCapabilityHandleHash(transport.Request.Context.CapabilityHandle)}");
             var authorityValidation = _session.ValidateHostActionEntry(
                 transport,
                 DateTimeOffset.UtcNow,
