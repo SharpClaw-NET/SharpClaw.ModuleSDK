@@ -3374,7 +3374,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         string? code,
         string? message) =>
         new(
-            null,
+            CreateFailureResultIdentity(request),
             new SidecarActionOutcomeEnvelope(
                 ActionOutcomeKind.Failed,
                 null!,
@@ -3395,6 +3395,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     _session.Binding.SafeFailure),
             _session.Binding.SafeFailure,
             Completed: true);
+
+    private static SidecarActionResultIdentity CreateFailureResultIdentity(
+        SidecarActionCapabilityRequest request) =>
+        new(
+            Guid.NewGuid(),
+            request.Call.CallId,
+            request.Descriptor.Key,
+            request.Descriptor.Version,
+            request.Descriptor.ResultTypeIdentity,
+            SidecarCapabilityTransportCodec.ComputeSha256("null"u8));
 
     private static T Deserialize<T>(SidecarSerializedPayload? payload)
     {
