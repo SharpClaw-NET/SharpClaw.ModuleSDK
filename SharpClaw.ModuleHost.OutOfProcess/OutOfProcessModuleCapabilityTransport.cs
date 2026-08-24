@@ -1636,6 +1636,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            WriteRotationDiagnostic($"module-action-failure {ex}");
             if (active is not null && !sessionCompleted)
             {
                 CompleteCall(request.Call.CallId, 0);

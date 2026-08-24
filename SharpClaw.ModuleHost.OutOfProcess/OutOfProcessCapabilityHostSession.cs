@@ -2124,6 +2124,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         catch (Exception ex)
         {
             Volatile.Write(ref _lastHandledFailure, ex);
+            WriteRotationDiagnostic($"host-action-failure {ex}");
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
                 : 0;
