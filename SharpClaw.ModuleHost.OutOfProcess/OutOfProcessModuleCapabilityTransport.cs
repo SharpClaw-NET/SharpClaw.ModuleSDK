@@ -40,6 +40,9 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     internal Guid? ActiveCarrierId => _activeCarrierId.Value;
 
+    internal string TemporarySessionState =>
+        GetRequiredConnection().TemporarySessionState;
+
     internal IDisposable PushActiveCarrier(Guid capabilityId)
     {
         if (capabilityId == Guid.Empty)
@@ -2407,6 +2410,35 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         File.AppendAllText(
             path,
             $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
+    }
+
+    internal string TemporarySessionState
+    {
+        get
+        {
+            var type = _session.GetType();
+            object? Field(string name) => type
+                .GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.GetValue(_session);
+
+            return $"lastSequence={Field("_lastSequence")}; totalCalls={Field("_totalCalls")}; "
+                + $"inFlight={Field("_inFlight")}; calls={TemporaryCount(Field("_calls"))}; "
+                + $"reservedNested={TemporaryCount(Field("_reservedNestedCalls"))}; "
+                + $"nonces={TemporaryCount(Field("_nonces"))}";
+        }
+    }
+
+    private static int TemporaryCount(object? value)
+    {
+        if (value is System.Collections.ICollection collection)
+            return collection.Count;
+        if (value is not System.Collections.IEnumerable enumerable)
+            return -1;
+
+        var count = 0;
+        foreach (var _ in enumerable)
+            count++;
+        return count;
     }
 
     private static void ThrowIfRejected(SidecarCapabilityValidationResult validation)

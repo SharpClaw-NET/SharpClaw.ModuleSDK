@@ -200,7 +200,8 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             $"nested-import accepted={import.Accepted}; code={import.Code}; "
             + $"message={import.Message}; parentSequence={_parentTerminalRequest.Call.Sequence}; "
             + $"peerSequence={peerCall.Sequence}; peerCall={peerCall.CallId}; "
-            + $"bindingSession={_transport.Binding.SessionId}; bindingRequest={_transport.Binding.RequestId}");
+            + $"bindingSession={_transport.Binding.SessionId}; bindingRequest={_transport.Binding.RequestId}; "
+            + $"session={_transport.TemporarySessionState}");
         if (!import.Accepted || importedCarrier is null)
         {
             throw new OutOfProcessCapabilityException(
