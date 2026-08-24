@@ -1587,6 +1587,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 new OutOfProcessHostActionEntry(_transport),
                 active.Cancellation.Token);
             var response = CreateIncomingActionResponse(request, execution, ActionOutcomeKind.Completed, null);
+            WriteRotationDiagnostic(
+                $"module-response call={request.Call.CallId}; descriptor={request.Descriptor.Key.Value}:{request.Descriptor.Version}; "
+                + $"expectedResultType={request.Descriptor.ResultTypeIdentity}; expectedSchema={request.Descriptor.ResultSchemaVersion}; "
+                + $"identityCall={response.ResultIdentity?.CallId}; identityKey={response.ResultIdentity?.ActionKey.Value}; "
+                + $"identityVersion={response.ResultIdentity?.ActionVersion}; identityType={response.ResultIdentity?.ResultTypeIdentity}; "
+                + $"identityHash={response.ResultIdentity?.ContentHash}; outcomeType={response.Outcome.Result?.TypeIdentity}; "
+                + $"outcomeSchema={response.Outcome.Result?.SchemaVersion}; outcomeHash={response.Outcome.Result?.ContentHash}");
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
                 request,
                 response,

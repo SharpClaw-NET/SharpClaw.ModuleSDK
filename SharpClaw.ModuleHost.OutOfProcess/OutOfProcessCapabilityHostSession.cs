@@ -2020,6 +2020,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 request,
                 active.Cancellation.Token);
             var response = CreateActionResponse(request, registration, outcome);
+            WriteRotationDiagnostic(
+                $"host-response call={request.Call.CallId}; descriptor={request.Descriptor.Key.Value}:{request.Descriptor.Version}; "
+                + $"expectedResultType={request.Descriptor.ResultTypeIdentity}; expectedSchema={request.Descriptor.ResultSchemaVersion}; "
+                + $"identityCall={response.ResultIdentity?.CallId}; identityKey={response.ResultIdentity?.ActionKey.Value}; "
+                + $"identityVersion={response.ResultIdentity?.ActionVersion}; identityType={response.ResultIdentity?.ResultTypeIdentity}; "
+                + $"identityHash={response.ResultIdentity?.ContentHash}; outcomeType={response.Outcome.Result?.TypeIdentity}; "
+                + $"outcomeSchema={response.Outcome.Result?.SchemaVersion}; outcomeHash={response.Outcome.Result?.ContentHash}");
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
                 request,
                 response,
