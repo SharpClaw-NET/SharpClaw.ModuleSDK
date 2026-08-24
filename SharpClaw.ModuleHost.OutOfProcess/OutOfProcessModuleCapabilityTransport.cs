@@ -718,12 +718,21 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request.Action.ByteLength,
                 DateTimeOffset.UtcNow,
                 out _)
-            : _session.BeginCall(
-                request.Call,
-                SidecarCapabilityKind.Action,
-                request.Action,
-                request.Action.ByteLength,
-                DateTimeOffset.UtcNow);
+            : request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.HostContext is not null
+                ? _session.BeginActionCall(
+                    request,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out _,
+                    static (_, _) => false,
+                    ValidateTerminalAuthority)
+                : _session.BeginCall(
+                    request.Call,
+                    SidecarCapabilityKind.Action,
+                    request.Action,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow);
         ThrowIfRejected(begin);
         ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
