@@ -1325,7 +1325,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     Action = request.EffectiveAction,
                     HostContext = importedHostContext,
                     EffectiveHostEntryContext = new SidecarActionEffectiveHostEntryContext(
-                        initiatingContext,
+                        importedHostContext,
                         terminalContext,
                         request.Authority),
                 };
