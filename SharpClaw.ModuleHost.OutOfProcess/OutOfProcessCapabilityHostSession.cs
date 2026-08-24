@@ -266,38 +266,57 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         await WaitForRotationAsync(
             dispatchCancellation.Token,
             hostContext.CapabilityId);
-        var call = CreateOutgoingCall(hostContext.Deadline);
-        var cancellation = new SidecarCancellationIdentity(
-            call.CancellationId,
-            SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
-            hostContext.Deadline);
-        _rotationGate.Wait(dispatchCancellation.Token);
-        try
+        SidecarCapabilityCallIdentity call = null!;
+        SidecarCancellationIdentity cancellation = null!;
+        while (true)
         {
-            var begin = Session.BeginCall(
-                call,
-                SidecarCapabilityKind.Action,
-                actionPayload,
-                actionPayload.ByteLength,
-                DateTimeOffset.UtcNow,
-                hostContext);
-            if (!begin.Accepted)
+            Task? activeRotation = null;
+            await _rotationGate.WaitAsync(dispatchCancellation.Token);
+            try
             {
-                throw new OutOfProcessCapabilityException(
-                    begin.Code ?? SidecarCapabilityErrors.Unauthorized,
-                    begin.Message ?? "The capability session rejected the module action entry.");
+                lock (_rotationSync)
+                {
+                    if (_rotationTask is { IsCompleted: false } rotationTask)
+                        activeRotation = rotationTask;
+                }
+
+                if (activeRotation is null)
+                {
+                    call = CreateOutgoingCall(hostContext.Deadline);
+                    cancellation = new SidecarCancellationIdentity(
+                        call.CancellationId,
+                        SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
+                        hostContext.Deadline);
+                    var begin = Session.BeginCall(
+                        call,
+                        SidecarCapabilityKind.Action,
+                        actionPayload,
+                        actionPayload.ByteLength,
+                        DateTimeOffset.UtcNow,
+                        hostContext);
+                    if (!begin.Accepted)
+                    {
+                        throw new OutOfProcessCapabilityException(
+                            begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                            begin.Message ?? "The capability session rejected the module action entry.");
+                    }
+
+                    if (!_outgoingCapabilityCalls.TryAdd(call.CallId, 0))
+                    {
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.Replay,
+                            "The capability call identifier was reused.");
+                    }
+
+                    break;
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
             }
 
-            if (!_outgoingCapabilityCalls.TryAdd(call.CallId, 0))
-            {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.Replay,
-                    "The capability call identifier was reused.");
-            }
-        }
-        finally
-        {
-            _rotationGate.Release();
+            await activeRotation.WaitAsync(dispatchCancellation.Token);
         }
 
         var terminalCalls = 0;
