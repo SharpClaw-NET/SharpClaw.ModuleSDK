@@ -1390,7 +1390,6 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
 
         hostContext = nestedContext;
-        using var peerCancellation = new CancellationTokenSource();
         var nestedTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["nested"],
@@ -1398,30 +1397,22 @@ public sealed class OutOfProcessApplicationProtocolTests
         var peerActivationTask = Task.Run(async () => await client.InvokeCliAsync(
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
-            sequentialContext,
-            peerCancellation.Token));
+            sequentialContext));
 
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         nestedTask.IsCompleted.Should().BeFalse();
         peerActivationTask.IsCompleted.Should().BeFalse();
-        peerCancellation.Cancel();
         rotationRelease.TrySetResult();
 
         var nested = await nestedTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var peerCancelled = false;
-        try
-        {
-            await peerActivationTask.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (OperationCanceledException)
-        {
-            peerCancelled = true;
-        }
+        var peer = await peerActivationTask.WaitAsync(TimeSpan.FromSeconds(5));
 
         nested.Result.Succeeded.Should().BeTrue(
             $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
             + string.Join(" | ", nested.Result.Output.Select(item => item.Text)));
-        peerCancelled.Should().BeTrue();
+        peer.Result.Succeeded.Should().BeTrue(
+            $"CLI error {peer.Result.Error?.Code}: {peer.Result.Error?.Message}; "
+            + string.Join(" | ", peer.Result.Output.Select(item => item.Text)));
         nested.Result.Output.Single().Text.Should().Be(
             "host-entry:Completed:nested-root:nested-child:entry-terminal:nested-grandchild");
 
