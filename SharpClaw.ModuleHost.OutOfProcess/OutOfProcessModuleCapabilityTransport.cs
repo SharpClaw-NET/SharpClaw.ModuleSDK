@@ -734,9 +734,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct,
         Guid? activeCarrierId)
     {
-        if (activeCarrierId is not null)
-            return;
-
         Task? rebind;
         lock (_rotationSync)
             rebind = _rebindReady?.Task;

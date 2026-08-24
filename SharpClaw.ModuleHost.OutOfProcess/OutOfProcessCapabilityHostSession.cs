@@ -1597,8 +1597,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         || !_outgoingCapabilityCalls.IsEmpty
                         || !_terminals.IsEmpty)
                         return null;
-                    if (_options.HostActionEntryContexts.HasActiveContexts)
-                        return null;
                     var nextPendingExpiration = _options.HostActionEntryContexts
                         .NextPendingContextExpiration();
                     if (nextPendingExpiration is not null)
