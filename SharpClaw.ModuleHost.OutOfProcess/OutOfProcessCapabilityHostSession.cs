@@ -1427,12 +1427,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             if (CompleteSessionCall(callId, 0))
                 Volatile.Write(ref removed.CompletionAccepted, 1);
         }
-        removed.Cancellation.Dispose();
         lock (_calls)
         {
             if (_calls.TryRemove(callId, out _))
                 SignalCallChange();
         }
+        removed.Cancellation.Dispose();
         try
         {
             await StartRotationIfReadyAsync(channelCt);
