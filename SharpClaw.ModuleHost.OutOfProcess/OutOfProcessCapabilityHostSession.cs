@@ -3490,9 +3490,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         if (string.IsNullOrWhiteSpace(path))
             return;
 
-        File.AppendAllText(
-            path,
-            $"{DateTimeOffset.UtcNow:O} host {message}{Environment.NewLine}");
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream);
+            writer.WriteLine($"{DateTimeOffset.UtcNow:O} host {message}");
+        }
+        catch (IOException)
+        {
+        }
     }
 
 }
