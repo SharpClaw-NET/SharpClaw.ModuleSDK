@@ -1326,7 +1326,19 @@ public sealed class OutOfProcessApplicationProtocolTests
     [Test, CancelAfter(30000)]
     public async Task NestedHostActionEntryRotatesWithTwoPendingContextsAtSixCallBoundary()
     {
+        var diagnosticPath = Environment.GetEnvironmentVariable(
+            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
+        void Trace(string message)
+        {
+            if (diagnosticPath is not null)
+                File.AppendAllText(
+                    diagnosticPath,
+                    $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
+        }
+
+        Trace("start");
         await using var client = await CreateClientAsync();
+        Trace("client-created");
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
         HostActionEntryRequestContext? hostContext = null;
@@ -1356,14 +1368,16 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             BeforeRotationStartAsync = async () =>
             {
-                Console.WriteLine(
-                    $"rotation-state active={client.HostActionEntryContexts.HasActiveContexts}; "
+                Trace(
+                    $"rotation-start active={client.HostActionEntryContexts.HasActiveContexts}; "
                     + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
                 rotationStarted.TrySetResult();
                 await rotationRelease.Task;
+                Trace("rotation-released");
             },
         };
         await client.ConnectCapabilitiesAsync(options);
+        Trace("connected");
 
         var nestedContext = IssueHostEntryContext(
             client,
@@ -1375,6 +1389,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt,
             "sequential-root");
+        Trace("contexts-issued");
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
         for (var i = 0; i < priorCalls; i++)
         {
@@ -1387,6 +1402,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"two-pending-boundary-{i}"));
             prior.Result.Succeeded.Should().BeTrue(
                 $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+            Trace($"prior-complete-{i}");
         }
 
         hostContext = nestedContext;
@@ -1398,11 +1414,14 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
             sequentialContext));
+        Trace("carrier-tasks-started");
 
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Trace("rotation-observed");
         nestedTask.IsCompleted.Should().BeFalse();
         peerActivationTask.IsCompleted.Should().BeFalse();
         rotationRelease.TrySetResult();
+        Trace("release-signaled");
 
         Exception? nestedFailure = null;
         Exception? peerFailure = null;
@@ -1423,6 +1442,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             peerFailure = ex;
         }
+        Trace($"carrier-tasks-observed nested={nestedFailure}; peer={peerFailure}");
 
         if (nestedFailure is not null || peerFailure is not null)
         {
