@@ -1771,7 +1771,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         ActionOutcomeKind kind,
         ExecutionError? error) =>
         new(
-            CreateFailureResultIdentity(request),
+            null,
             new SidecarActionOutcomeEnvelope(
                 kind,
                 null!,
@@ -1784,16 +1784,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             null!,
             Binding.SafeFailure,
             Completed: true);
-
-    private static SidecarActionResultIdentity CreateFailureResultIdentity(
-        SidecarActionCapabilityRequest request) =>
-        new(
-            Guid.NewGuid(),
-            request.Call.CallId,
-            request.Descriptor.Key,
-            request.Descriptor.Version,
-            request.Descriptor.ResultTypeIdentity,
-            SidecarCapabilityTransportCodec.ComputeSha256("null"u8));
 
     private static bool OutOfProcessActionDescriptorMatches(
         SidecarActionDescriptorIdentity left,
