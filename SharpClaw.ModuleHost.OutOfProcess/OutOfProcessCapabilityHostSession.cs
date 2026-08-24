@@ -19,6 +19,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
     private readonly ConcurrentDictionary<Guid, byte> _pendingActionRequests = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingStorageRequests = new();
     private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
     private readonly object _terminalSequenceSync = new();
     private readonly SortedSet<long> _pendingTerminalSequences = new();
@@ -811,6 +812,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 if (_calls.IsEmpty
                     && _outgoingCapabilityCalls.IsEmpty
+                    && _pendingStorageRequests.IsEmpty
                     && _terminals.IsEmpty)
                 {
                     return;
@@ -1204,18 +1206,31 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         CancellationToken channelCt)
     {
-        var terminalSequenceRegistered = RegisterTerminalSequence(request);
+        var pendingRegistered = false;
+        var terminalSequenceRegistered = false;
         var scheduled = false;
         try
         {
+            if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The incoming action request identifier was reused.");
+            }
+
+            pendingRegistered = true;
+            terminalSequenceRegistered = RegisterTerminalSequence(request);
             await _rotationGate.WaitAsync(channelCt);
             try
             {
-                if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+                if (_capabilityQueue.TrySchedule(
+                        ct => HandleActionRequestAsync(request, ct),
+                        channelCt,
+                        out var completion))
                 {
-                    throw new OutOfProcessCapabilityException(
-                        SidecarCapabilityErrors.Replay,
-                        "The incoming action request identifier was reused.");
+                    scheduled = true;
+                    _ = ObserveQueueCompletionAsync(completion);
+                    return;
                 }
             }
             finally
@@ -1223,17 +1238,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _rotationGate.Release();
             }
 
-            if (_capabilityQueue.TrySchedule(
-                    ct => HandleActionRequestAsync(request, ct),
-                    channelCt,
-                    out var completion))
-            {
-                scheduled = true;
-                _ = ObserveQueueCompletionAsync(completion);
-                return;
-            }
-
-            RemovePendingActionRequest(request.Call.CallId);
             await SendActionFailureAsync(
                 request,
                 SidecarCapabilityErrors.ModuleBusy,
@@ -1242,6 +1246,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         finally
         {
+            if (pendingRegistered && !scheduled)
+                RemovePendingActionRequest(request.Call.CallId);
             if (terminalSequenceRegistered && !scheduled)
                 CompleteTerminalSequence(request.Call.Sequence);
         }
@@ -1251,24 +1257,41 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarStorageCapabilityRequest request,
         CancellationToken channelCt)
     {
-        await WaitForRotationAsync(
-            channelCt,
-            ActiveCarrierIdFor(request.Call.CallId),
-            allowAnyActiveCarrier: true);
-        if (_capabilityQueue.TrySchedule(
-                ct => HandleStorageRequestAsync(request, ct),
-                channelCt,
-                out var completion))
+        if (!_pendingStorageRequests.TryAdd(request.Call.CallId, 0))
         {
-            _ = ObserveQueueCompletionAsync(completion);
-            return;
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The incoming storage request identifier was reused.");
         }
 
-        await SendStorageFailureAsync(
-            request,
-            SidecarCapabilityErrors.ModuleBusy,
-            "The host capability execution queue is full.",
-            channelCt);
+        var scheduled = false;
+        try
+        {
+            await WaitForRotationAsync(
+                channelCt,
+                ActiveCarrierIdFor(request.Call.CallId),
+                allowAnyActiveCarrier: true);
+            if (_capabilityQueue.TrySchedule(
+                    ct => HandleStorageRequestAsync(request, ct),
+                    channelCt,
+                    out var completion))
+            {
+                scheduled = true;
+                _ = ObserveQueueCompletionAsync(completion);
+                return;
+            }
+
+            await SendStorageFailureAsync(
+                request,
+                SidecarCapabilityErrors.ModuleBusy,
+                "The host capability execution queue is full.",
+                channelCt);
+        }
+        finally
+        {
+            if (!scheduled)
+                RemovePendingStorageRequest(request.Call.CallId);
+        }
     }
 
     private async Task ObserveQueueCompletionAsync(Task completion)
@@ -1569,6 +1592,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 {
                     if (_rotationReady is null
                         || !_pendingActionRequests.IsEmpty
+                        || !_pendingStorageRequests.IsEmpty
                         || !_calls.IsEmpty
                         || !_outgoingCapabilityCalls.IsEmpty
                         || !_terminals.IsEmpty)
@@ -2135,6 +2159,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
+    private void RemovePendingStorageRequest(Guid callId)
+    {
+        if (_pendingStorageRequests.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
+        }
+    }
+
     private async ValueTask CompleteCallBeforeActionFailureAsync(
         Guid callId,
         ActiveCall active,
@@ -2541,6 +2574,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         finally
         {
             await FinishCallAsync(request.Call.CallId, active, channelCt);
+            RemovePendingStorageRequest(request.Call.CallId);
         }
     }
 
