@@ -1304,7 +1304,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 var relayImport = _session.ImportHostActionEntryPeerRootRelay(
                     relay,
                     DateTimeOffset.UtcNow,
-                    out _);
+                    out var importedHostContext);
                 WriteRotationDiagnostic(
                     $"relay-import accepted={relayImport.Accepted}; code={relayImport.Code}; "
                     + $"message={relayImport.Message}; bindingSession={_session.Binding.SessionId}; "
@@ -1312,11 +1312,18 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     + $"call={request.Call.CallId}; sequence={request.Call.Sequence}; "
                     + $"authoritySession={request.Authority.SessionId}; authorityRequest={request.Authority.RequestId}");
                 ThrowIfRejected(relayImport);
+                if (importedHostContext is null)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The receiving root HostEntry relay returned no authenticated context.");
+                }
 
                 var rootRequest = pending.Request with
                 {
                     Call = request.Call,
                     Action = request.EffectiveAction,
+                    HostContext = importedHostContext,
                     EffectiveHostEntryContext = new SidecarActionEffectiveHostEntryContext(
                         initiatingContext,
                         terminalContext,
