@@ -1273,10 +1273,17 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request.Authority,
                 _session.BindingGeneration,
                 initiatingContext.CapabilityId);
-            ThrowIfRejected(_session.ImportHostActionEntryPeerRootRelay(
+            var relayImport = _session.ImportHostActionEntryPeerRootRelay(
                 relay,
                 DateTimeOffset.UtcNow,
-                out _));
+                out _);
+            WriteRotationDiagnostic(
+                $"relay-import accepted={relayImport.Accepted}; code={relayImport.Code}; "
+                + $"message={relayImport.Message}; bindingSession={_session.Binding.SessionId}; "
+                + $"bindingRequest={_session.Binding.RequestId}; generation={_session.BindingGeneration}; "
+                + $"call={request.Call.CallId}; sequence={request.Call.Sequence}; "
+                + $"authoritySession={request.Authority.SessionId}; authorityRequest={request.Authority.RequestId}");
+            ThrowIfRejected(relayImport);
 
             var rootRequest = pending.Request with
             {
@@ -2375,6 +2382,18 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
+    }
+
+    private static void WriteRotationDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable(
+            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        File.AppendAllText(
+            path,
+            $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
     }
 
     private static void ThrowIfRejected(SidecarCapabilityValidationResult validation)
