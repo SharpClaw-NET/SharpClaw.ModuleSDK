@@ -2083,7 +2083,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             {
                 throw new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.MalformedMessage,
-                    "The failed action response has no unique pending action call.");
+                    "The failed action response has no unique pending action call. "
+                    + $"kind={response.Outcome.Kind}; "
+                    + $"error={response.Outcome.Error?.Code}:{response.Outcome.Error?.Message}; "
+                    + $"pending={string.Join(',', pendingCallIds)}");
             }
 
             callId = pendingCallIds[0];
