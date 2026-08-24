@@ -1404,8 +1404,36 @@ public sealed class OutOfProcessApplicationProtocolTests
         peerActivationTask.IsCompleted.Should().BeFalse();
         rotationRelease.TrySetResult();
 
-        var nested = await nestedTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var peer = await peerActivationTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Exception? nestedFailure = null;
+        Exception? peerFailure = null;
+        try
+        {
+            await nestedTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            nestedFailure = ex;
+        }
+
+        try
+        {
+            await peerActivationTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            peerFailure = ex;
+        }
+
+        if (nestedFailure is not null || peerFailure is not null)
+        {
+            Assert.Fail(
+                $"nestedFailure={nestedFailure}; peerFailure={peerFailure}; "
+                + $"hostFailure={client.CapabilitySession.LastHandledFailure}; "
+                + $"moduleFailure={_server.CapabilityFailure}");
+        }
+
+        var nested = await nestedTask;
+        var peer = await peerActivationTask;
 
         nested.Result.Succeeded.Should().BeTrue(
             $"CLI error {nested.Result.Error?.Code}: {nested.Result.Error?.Message}; "
