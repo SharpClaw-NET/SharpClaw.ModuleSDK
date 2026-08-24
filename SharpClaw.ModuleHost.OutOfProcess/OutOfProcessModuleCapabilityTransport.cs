@@ -2361,6 +2361,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
+            WriteRotationDiagnostic($"terminal-failure {ex}");
             try
             {
                 _disconnect.Cancel();
