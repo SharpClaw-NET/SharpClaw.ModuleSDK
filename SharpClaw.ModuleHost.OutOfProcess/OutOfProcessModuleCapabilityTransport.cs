@@ -563,6 +563,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly BoundedExecutionQueue _actionEntryQueue;
     private readonly BoundedExecutionQueue _terminalQueue;
     private readonly object _rotationSync = new();
+    private readonly object _outgoingSequenceSync = new();
+    private readonly SortedSet<long> _createdOutgoingSequences = new();
+    private TaskCompletionSource _outgoingSequenceChanged = CreateSignal();
     private Exception? _runFailure;
     private TaskCompletionSource? _rebindReady;
     private int _completedCallsForBinding;
@@ -633,6 +636,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         WaitForRebindIfReady(ct, activeCarrierId ?? _transport.ActiveCarrierId);
         var sequence = Interlocked.Increment(ref _sequence);
+        lock (_outgoingSequenceSync)
+            _createdOutgoingSequences.Add(sequence);
         var callId = Guid.NewGuid();
         return new SidecarCapabilityCallIdentity(
             Binding.SessionId,
@@ -645,6 +650,44 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             capability,
             sequence,
             deadline);
+    }
+
+    private void EnsureOutgoingCallSequence(long sequence)
+    {
+        lock (_outgoingSequenceSync)
+            _createdOutgoingSequences.Add(sequence);
+    }
+
+    private async ValueTask WaitForOutgoingCallTurnAsync(
+        long sequence,
+        CancellationToken ct)
+    {
+        EnsureOutgoingCallSequence(sequence);
+        while (true)
+        {
+            Task changed;
+            lock (_outgoingSequenceSync)
+            {
+                if (_createdOutgoingSequences.Min == sequence)
+                    return;
+
+                changed = _outgoingSequenceChanged.Task;
+            }
+
+            await changed.WaitAsync(ct);
+        }
+    }
+
+    private void CompleteOutgoingCallSequence(long sequence)
+    {
+        lock (_outgoingSequenceSync)
+        {
+            if (!_createdOutgoingSequences.Remove(sequence))
+                return;
+
+            _outgoingSequenceChanged.TrySetResult();
+            _outgoingSequenceChanged = CreateSignal();
+        }
     }
 
     private void ObserveSequence(long sequence)
@@ -709,103 +752,121 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ValueTask<SidecarActionTerminalTransportResponse>>? terminal,
         CancellationToken ct)
     {
-        ValidateActionRequest(request);
-        using var deadline = CreateCallCancellation(request.Deadline, ct);
-        var callCancellation = deadline.Token;
-        var deferredRootHostEntry = request.Invocation == SidecarActionInvocationKind.HostEntry
-            && request.NestedCarrier is null
-            && request.HostContext is not null;
-        var begin = request.NestedCarrier is { } nestedCarrier
-            ? _session.BeginNestedHostActionEntryCall(
-                nestedCarrier,
-                request.Call,
-                request.Action,
-                request.Action.ByteLength,
-                DateTimeOffset.UtcNow,
-                out _)
-            : deferredRootHostEntry
-                ? SidecarCapabilityValidationResult.Accept()
-                : _session.BeginCall(
-                    request.Call,
-                    SidecarCapabilityKind.Action,
-                    request.Action,
-                    request.Action.ByteLength,
-                    DateTimeOffset.UtcNow);
-        ThrowIfRejected(begin);
-        ObserveSequence(request.Call.Sequence);
-        var completion = NewCompletion<SidecarActionCapabilityResponse>();
-        var pending = new PendingAction(request, terminal, completion);
-        pending.SessionCallStarted = !deferredRootHostEntry;
-        if (!_actions.TryAdd(request.Call.CallId, pending))
-        {
-            CompleteCall(request.Call.CallId, 0);
-            throw new OutOfProcessCapabilityException("sidecar_replay", "The action call identifier was reused.");
-        }
-
+        EnsureOutgoingCallSequence(request.Call.Sequence);
         var retainPending = false;
+        var outgoingSequenceCompleted = false;
         try
         {
-            await OutOfProcessCapabilityWire.SendAsync(
-                _socket,
-                OutOfProcessCapabilityFrameKind.ActionRequest,
-                request,
-                _limits.ProtocolMessageBytes,
-                SendGate,
-                callCancellation);
-            var response = await completion.Task.WaitAsync(callCancellation);
-            var validation = SidecarCapabilityTransportValidation.ValidateActionResponse(
-                pending.ResolvedRequest ?? request,
-                response,
-                Binding,
-                _session);
-            ThrowIfRejected(validation);
-            if (deferredRootHostEntry
-                && !pending.SessionCallStarted)
-            {
-                var lateBegin = _session.BeginCall(
+            ValidateActionRequest(request);
+            using var deadline = CreateCallCancellation(request.Deadline, ct);
+            var callCancellation = deadline.Token;
+            var deferredRootHostEntry = request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.NestedCarrier is null
+                && request.HostContext is not null;
+
+            await WaitForOutgoingCallTurnAsync(request.Call.Sequence, callCancellation);
+            var begin = request.NestedCarrier is { } nestedCarrier
+                ? _session.BeginNestedHostActionEntryCall(
+                    nestedCarrier,
                     request.Call,
-                    SidecarCapabilityKind.Action,
                     request.Action,
                     request.Action.ByteLength,
-                    DateTimeOffset.UtcNow);
-                ThrowIfRejected(lateBegin);
-                pending.SessionCallStarted = true;
+                    DateTimeOffset.UtcNow,
+                    out _)
+                : deferredRootHostEntry
+                    ? SidecarCapabilityValidationResult.Accept()
+                    : _session.BeginCall(
+                        request.Call,
+                        SidecarCapabilityKind.Action,
+                        request.Action,
+                        request.Action.ByteLength,
+                        DateTimeOffset.UtcNow);
+            ThrowIfRejected(begin);
+            ObserveSequence(request.Call.Sequence);
+            var completion = NewCompletion<SidecarActionCapabilityResponse>();
+            var pending = new PendingAction(request, terminal, completion)
+            {
+                SessionCallStarted = !deferredRootHostEntry,
+            };
+            if (!_actions.TryAdd(request.Call.CallId, pending))
+            {
+                CompleteCall(request.Call.CallId, 0);
+                throw new OutOfProcessCapabilityException(
+                    "sidecar_replay",
+                    "The action call identifier was reused.");
             }
 
-            var completionResult = CompleteCallResult(
-                request.Call.CallId,
-                response.Outcome.TerminalCallCount);
-            if (!completionResult.Accepted)
+            try
             {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.HostFailure,
-                    $"The sidecar action call could not be completed: "
-                    + $"{completionResult.Code}: {completionResult.Message}; "
-                    + $"terminalCallCount={response.Outcome.TerminalCallCount}");
+                await OutOfProcessCapabilityWire.SendAsync(
+                    _socket,
+                    OutOfProcessCapabilityFrameKind.ActionRequest,
+                    request,
+                    _limits.ProtocolMessageBytes,
+                    SendGate,
+                    callCancellation);
+                CompleteOutgoingCallSequence(request.Call.Sequence);
+                outgoingSequenceCompleted = true;
+                var response = await completion.Task.WaitAsync(callCancellation);
+                var validation = SidecarCapabilityTransportValidation.ValidateActionResponse(
+                    pending.ResolvedRequest ?? request,
+                    response,
+                    Binding,
+                    _session);
+                ThrowIfRejected(validation);
+                if (deferredRootHostEntry
+                    && !pending.SessionCallStarted)
+                {
+                    var lateBegin = _session.BeginCall(
+                        request.Call,
+                        SidecarCapabilityKind.Action,
+                        request.Action,
+                        request.Action.ByteLength,
+                        DateTimeOffset.UtcNow);
+                    ThrowIfRejected(lateBegin);
+                    pending.SessionCallStarted = true;
+                }
+
+                var completionResult = CompleteCallResult(
+                    request.Call.CallId,
+                    response.Outcome.TerminalCallCount);
+                if (!completionResult.Accepted)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.HostFailure,
+                        $"The sidecar action call could not be completed: "
+                        + $"{completionResult.Code}: {completionResult.Message}; "
+                        + $"terminalCallCount={response.Outcome.TerminalCallCount}");
+                }
+                return response;
             }
-            return response;
-        }
-        catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
-        {
-            retainPending = true;
-            await SendCancellationAsync(
-                request.Call,
-                request.Cancellation,
-                request.Deadline,
-                callCancellation,
-                ct);
-            _ = RetireActionAsync(request, completion);
-            throw;
-        }
-        catch
-        {
-            CompleteCall(request.Call.CallId, 0);
-            throw;
+            catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
+            {
+                retainPending = true;
+                await SendCancellationAsync(
+                    request.Call,
+                    request.Cancellation,
+                    request.Deadline,
+                    callCancellation,
+                    ct);
+                _ = RetireActionAsync(request, completion);
+                throw;
+            }
+            catch
+            {
+                CompleteCall(request.Call.CallId, 0);
+                throw;
+            }
+            finally
+            {
+                if (!retainPending)
+                    _actions.TryRemove(request.Call.CallId, out _);
+            }
         }
         finally
         {
-            if (!retainPending)
-                _actions.TryRemove(request.Call.CallId, out _);
+            if (!outgoingSequenceCompleted)
+                CompleteOutgoingCallSequence(request.Call.Sequence);
         }
     }
 
@@ -917,63 +978,84 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         SidecarStorageCapabilityRequest request,
         CancellationToken ct)
     {
-        ValidateStorageRequest(request);
-        using var deadline = CreateCallCancellation(request.Deadline, ct);
-        var callCancellation = deadline.Token;
-        var payload = request.RequestPayload ?? EmptyPayload();
-        var begin = _session.BeginCall(
-            request.Call,
-            SidecarCapabilityKind.Storage,
-            payload,
-            payload.ByteLength,
-            DateTimeOffset.UtcNow);
-        ThrowIfRejected(begin);
-        ObserveSequence(request.Call.Sequence);
-        var completion = NewCompletion<SidecarStorageCapabilityResponse>();
-        if (!_storage.TryAdd(request.Call.CallId, completion))
-        {
-            CompleteCall(request.Call.CallId, 0);
-            throw new OutOfProcessCapabilityException("sidecar_replay", "The storage call identifier was reused.");
-        }
+        EnsureOutgoingCallSequence(request.Call.Sequence);
+        var outgoingSequenceCompleted = false;
         var retainPending = false;
         try
         {
-            await OutOfProcessCapabilityWire.SendAsync(
-                _socket,
-                OutOfProcessCapabilityFrameKind.StorageRequest,
-                request,
-                _limits.ProtocolMessageBytes,
-                SendGate,
-                callCancellation);
-            var response = await completion.Task.WaitAsync(callCancellation);
-            ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
-                request,
-                response,
-                Binding));
-            if (!CompleteCall(request.Call.CallId, 0))
+            ValidateStorageRequest(request);
+            using var deadline = CreateCallCancellation(request.Deadline, ct);
+            var callCancellation = deadline.Token;
+            await WaitForOutgoingCallTurnAsync(request.Call.Sequence, callCancellation);
+            var payload = request.RequestPayload ?? EmptyPayload();
+            var begin = _session.BeginCall(
+                request.Call,
+                SidecarCapabilityKind.Storage,
+                payload,
+                payload.ByteLength,
+                DateTimeOffset.UtcNow);
+            ThrowIfRejected(begin);
+            ObserveSequence(request.Call.Sequence);
+            var completion = NewCompletion<SidecarStorageCapabilityResponse>();
+            if (!_storage.TryAdd(request.Call.CallId, completion))
             {
+                CompleteCall(request.Call.CallId, 0);
                 throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.HostFailure,
-                    "The sidecar storage call could not be completed.");
+                    "sidecar_replay",
+                    "The storage call identifier was reused.");
             }
-            return response;
-        }
-        catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
-        {
-            retainPending = true;
-            await SendCancellationAsync(request.Call, request.Cancellation, request.Deadline, callCancellation, ct);
-            _ = RetireStorageAsync(request, completion);
-            throw;
-        }
-        catch
-        {
-            CompleteCall(request.Call.CallId, 0);
-            throw;
+
+            try
+            {
+                await OutOfProcessCapabilityWire.SendAsync(
+                    _socket,
+                    OutOfProcessCapabilityFrameKind.StorageRequest,
+                    request,
+                    _limits.ProtocolMessageBytes,
+                    SendGate,
+                    callCancellation);
+                CompleteOutgoingCallSequence(request.Call.Sequence);
+                outgoingSequenceCompleted = true;
+                var response = await completion.Task.WaitAsync(callCancellation);
+                ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
+                    request,
+                    response,
+                    Binding));
+                if (!CompleteCall(request.Call.CallId, 0))
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.HostFailure,
+                        "The sidecar storage call could not be completed.");
+                }
+                return response;
+            }
+            catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
+            {
+                retainPending = true;
+                await SendCancellationAsync(
+                    request.Call,
+                    request.Cancellation,
+                    request.Deadline,
+                    callCancellation,
+                    ct);
+                _ = RetireStorageAsync(request, completion);
+                throw;
+            }
+            catch
+            {
+                CompleteCall(request.Call.CallId, 0);
+                throw;
+            }
+            finally
+            {
+                if (!retainPending)
+                    _storage.TryRemove(request.Call.CallId, out _);
+            }
         }
         finally
         {
-            if (!retainPending)
-                _storage.TryRemove(request.Call.CallId, out _);
+            if (!outgoingSequenceCompleted)
+                CompleteOutgoingCallSequence(request.Call.Sequence);
         }
     }
 
