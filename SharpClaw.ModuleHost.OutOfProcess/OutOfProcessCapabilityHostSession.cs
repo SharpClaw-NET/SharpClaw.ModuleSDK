@@ -2695,6 +2695,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     _controlToken));
             if (!authorityValidation.Accepted)
             {
+                WriteRotationDiagnostic(
+                    $"host-entry-authority-reject code={authorityValidation.Code}; message={authorityValidation.Message}; "
+                    + $"call={request.Call.CallId}; callRequest={request.Call.RequestId}; callCancellation={request.Call.CancellationId}; "
+                    + $"contextRequest={context.RequestId}; contextCancellation={context.CancellationId}; "
+                    + $"bindingRequest={_session.Binding.RequestId}; bindingCancellation={_session.Binding.CancellationId}; "
+                    + $"bindingGeneration={_session.BindingGeneration}");
                 throw new OutOfProcessCapabilityException(
                     authorityValidation.Code ?? SidecarCapabilityErrors.Unauthorized,
                     authorityValidation.Message ?? "The host action entry authority was rejected.");
