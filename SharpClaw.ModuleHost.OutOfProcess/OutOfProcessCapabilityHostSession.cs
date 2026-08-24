@@ -2689,6 +2689,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 ? null
                 : SidecarCapabilityTransportValidation
                     .ComputeHostActionEntryContextBindingHash(hostContext),
+            RootPeerCall = request.Invocation == SidecarActionInvocationKind.HostEntry
+                ? request.Call
+                : null,
         };
         authority = authority with
         {

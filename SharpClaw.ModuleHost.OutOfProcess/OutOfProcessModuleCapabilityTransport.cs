@@ -533,6 +533,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         TaskCompletionSource<SidecarActionCapabilityResponse> Completion)
     {
         public SidecarActionCapabilityRequest? ResolvedRequest { get; set; }
+
+        public bool SessionCallStarted { get; set; }
     }
 
     private sealed class IncomingAction(CancellationTokenSource cancellation)
@@ -710,6 +712,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         ValidateActionRequest(request);
         using var deadline = CreateCallCancellation(request.Deadline, ct);
         var callCancellation = deadline.Token;
+        var deferredRootHostEntry = request.Invocation == SidecarActionInvocationKind.HostEntry
+            && request.NestedCarrier is null
+            && request.HostContext is not null;
         var begin = request.NestedCarrier is { } nestedCarrier
             ? _session.BeginNestedHostActionEntryCall(
                 nestedCarrier,
@@ -718,15 +723,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 request.Action.ByteLength,
                 DateTimeOffset.UtcNow,
                 out _)
-            : request.Invocation == SidecarActionInvocationKind.HostEntry
-                && request.HostContext is not null
-                ? _session.BeginActionCall(
-                    request,
-                    request.Action.ByteLength,
-                    DateTimeOffset.UtcNow,
-                    out _,
-                    static (_, _) => false,
-                    ValidateTerminalAuthority)
+            : deferredRootHostEntry
+                ? SidecarCapabilityValidationResult.Accept()
                 : _session.BeginCall(
                     request.Call,
                     SidecarCapabilityKind.Action,
@@ -737,6 +735,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         ObserveSequence(request.Call.Sequence);
         var completion = NewCompletion<SidecarActionCapabilityResponse>();
         var pending = new PendingAction(request, terminal, completion);
+        pending.SessionCallStarted = !deferredRootHostEntry;
         if (!_actions.TryAdd(request.Call.CallId, pending))
         {
             CompleteCall(request.Call.CallId, 0);
@@ -760,6 +759,19 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 Binding,
                 _session);
             ThrowIfRejected(validation);
+            if (deferredRootHostEntry
+                && !pending.SessionCallStarted)
+            {
+                var lateBegin = _session.BeginCall(
+                    request.Call,
+                    SidecarCapabilityKind.Action,
+                    request.Action,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow);
+                ThrowIfRejected(lateBegin);
+                pending.SessionCallStarted = true;
+            }
+
             var completionResult = CompleteCallResult(
                 request.Call.CallId,
                 response.Outcome.TerminalCallCount);
@@ -1145,6 +1157,59 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
         ThrowIfRejected(validation);
         pending.ResolvedRequest = validationRequest;
+        if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
+            && pending.Request.NestedCarrier is null
+            && pending.Request.HostContext is { } initiatingContext)
+        {
+            var terminal = pending.Request.Terminal
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The root action has no terminal registration.");
+            var terminalContext = request.Context
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The root terminal request has no execution context.");
+            if (request.Authority.RootPeerCall != request.Call)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The root terminal authority has no receiving peer call.");
+            }
+
+            var relay = new SidecarHostActionEntryRootRelay(
+                request.Call,
+                request.Call,
+                initiatingContext,
+                request.Descriptor,
+                request.EffectiveAction,
+                terminal,
+                terminalContext.Snapshot,
+                request.Authority,
+                _session.BindingGeneration,
+                initiatingContext.CapabilityId);
+            ThrowIfRejected(_session.ImportHostActionEntryPeerRootRelay(
+                relay,
+                DateTimeOffset.UtcNow,
+                out _));
+
+            var rootRequest = pending.Request with
+            {
+                Call = request.Call,
+                Action = request.EffectiveAction,
+                EffectiveHostEntryContext = new SidecarActionEffectiveHostEntryContext(
+                    initiatingContext,
+                    terminalContext,
+                    request.Authority),
+            };
+            ThrowIfRejected(_session.BeginActionCall(
+                rootRequest,
+                request.EffectiveAction.ByteLength,
+                DateTimeOffset.UtcNow,
+                out _,
+                static (_, _) => false,
+                ValidateTerminalAuthority));
+            pending.SessionCallStarted = true;
+        }
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
             request.Authority.AuthorityId,
