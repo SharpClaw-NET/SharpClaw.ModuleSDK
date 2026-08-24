@@ -566,6 +566,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly CancellationTokenSource _disconnect = new();
     private readonly BoundedExecutionQueue _actionEntryQueue;
     private readonly BoundedExecutionQueue _terminalQueue;
+    private readonly SemaphoreSlim _rootRelayImportGate = new(1, 1);
     private readonly object _rotationSync = new();
     private readonly object _outgoingSequenceSync = new();
     private readonly SortedSet<long> _createdOutgoingSequences = new();
@@ -1179,6 +1180,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         FailPending(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         await _actionEntryQueue.DisposeAsync();
         await _terminalQueue.DisposeAsync();
+        _rootRelayImportGate.Dispose();
         try
         {
             if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -1251,61 +1253,69 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             && pending.Request.NestedCarrier is null
             && pending.Request.HostContext is { } initiatingContext)
         {
-            var terminal = pending.Request.Terminal
-                ?? throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.MalformedMessage,
-                    "The root action has no terminal registration.");
-            var terminalContext = request.Context
-                ?? throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.MalformedMessage,
-                    "The root terminal request has no execution context.");
-            if (request.Authority.RootPeerCall != request.Call)
+            await _rootRelayImportGate.WaitAsync(ct);
+            try
             {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.SpoofedIdentity,
-                    "The root terminal authority has no receiving peer call.");
-            }
+                var terminal = pending.Request.Terminal
+                    ?? throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.MalformedMessage,
+                        "The root action has no terminal registration.");
+                var terminalContext = request.Context
+                    ?? throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.MalformedMessage,
+                        "The root terminal request has no execution context.");
+                if (request.Authority.RootPeerCall != request.Call)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The root terminal authority has no receiving peer call.");
+                }
 
-            var relay = new SidecarHostActionEntryRootRelay(
-                request.Call,
-                request.Call,
-                initiatingContext,
-                request.Descriptor,
-                request.EffectiveAction,
-                terminal,
-                terminalContext.Snapshot,
-                request.Authority,
-                _session.BindingGeneration,
-                initiatingContext.CapabilityId);
-            var relayImport = _session.ImportHostActionEntryPeerRootRelay(
-                relay,
-                DateTimeOffset.UtcNow,
-                out _);
-            WriteRotationDiagnostic(
-                $"relay-import accepted={relayImport.Accepted}; code={relayImport.Code}; "
-                + $"message={relayImport.Message}; bindingSession={_session.Binding.SessionId}; "
-                + $"bindingRequest={_session.Binding.RequestId}; generation={_session.BindingGeneration}; "
-                + $"call={request.Call.CallId}; sequence={request.Call.Sequence}; "
-                + $"authoritySession={request.Authority.SessionId}; authorityRequest={request.Authority.RequestId}");
-            ThrowIfRejected(relayImport);
-
-            var rootRequest = pending.Request with
-            {
-                Call = request.Call,
-                Action = request.EffectiveAction,
-                EffectiveHostEntryContext = new SidecarActionEffectiveHostEntryContext(
+                var relay = new SidecarHostActionEntryRootRelay(
+                    request.Call,
+                    request.Call,
                     initiatingContext,
-                    terminalContext,
-                    request.Authority),
-            };
-            ThrowIfRejected(_session.BeginActionCall(
-                rootRequest,
-                request.EffectiveAction.ByteLength,
-                DateTimeOffset.UtcNow,
-                out _,
-                static (_, _) => false,
-                ValidateTerminalAuthority));
-            pending.SessionCallStarted = true;
+                    request.Descriptor,
+                    request.EffectiveAction,
+                    terminal,
+                    terminalContext.Snapshot,
+                    request.Authority,
+                    _session.BindingGeneration,
+                    initiatingContext.CapabilityId);
+                var relayImport = _session.ImportHostActionEntryPeerRootRelay(
+                    relay,
+                    DateTimeOffset.UtcNow,
+                    out _);
+                WriteRotationDiagnostic(
+                    $"relay-import accepted={relayImport.Accepted}; code={relayImport.Code}; "
+                    + $"message={relayImport.Message}; bindingSession={_session.Binding.SessionId}; "
+                    + $"bindingRequest={_session.Binding.RequestId}; generation={_session.BindingGeneration}; "
+                    + $"call={request.Call.CallId}; sequence={request.Call.Sequence}; "
+                    + $"authoritySession={request.Authority.SessionId}; authorityRequest={request.Authority.RequestId}");
+                ThrowIfRejected(relayImport);
+
+                var rootRequest = pending.Request with
+                {
+                    Call = request.Call,
+                    Action = request.EffectiveAction,
+                    EffectiveHostEntryContext = new SidecarActionEffectiveHostEntryContext(
+                        initiatingContext,
+                        terminalContext,
+                        request.Authority),
+                };
+                ThrowIfRejected(_session.BeginActionCall(
+                    rootRequest,
+                    request.EffectiveAction.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out _,
+                    static (_, _) => false,
+                    ValidateTerminalAuthority));
+                pending.SessionCallStarted = true;
+            }
+            finally
+            {
+                _rootRelayImportGate.Release();
+            }
         }
         ThrowIfRejected(_session.RecordTerminal(
             request.Call.CallId,
