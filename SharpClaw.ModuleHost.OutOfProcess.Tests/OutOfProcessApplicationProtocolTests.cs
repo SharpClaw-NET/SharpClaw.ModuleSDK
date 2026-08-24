@@ -1375,6 +1375,13 @@ public sealed class OutOfProcessApplicationProtocolTests
                 await rotationRelease.Task;
                 Trace("rotation-released");
             },
+            BeforeCarrierSessionBeginAsync = () =>
+            {
+                Trace(
+                    $"carrier-session-begin active={client.HostActionEntryContexts.HasActiveContexts}; "
+                    + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
+                return Task.CompletedTask;
+            },
         };
         await client.ConnectCapabilitiesAsync(options);
         Trace("connected");
@@ -1389,7 +1396,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.NestedHostEntryCliName,
             grantExpiresAt,
             "sequential-root");
-        Trace("contexts-issued");
+        Trace(
+            $"contexts-issued active={client.HostActionEntryContexts.HasActiveContexts}; "
+            + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
         const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
         for (var i = 0; i < priorCalls; i++)
         {
@@ -1402,7 +1411,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"two-pending-boundary-{i}"));
             prior.Result.Succeeded.Should().BeTrue(
                 $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
-            Trace($"prior-complete-{i}");
+            Trace(
+                $"prior-complete-{i} active={client.HostActionEntryContexts.HasActiveContexts}; "
+                + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
         }
 
         hostContext = nestedContext;
@@ -1414,7 +1425,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             ApplicationSmokeModule.NestedHostEntryCliName,
             ["sequential"],
             sequentialContext));
-        Trace("carrier-tasks-started");
+        Trace(
+            $"carrier-tasks-started active={client.HostActionEntryContexts.HasActiveContexts}; "
+            + $"pending={client.HostActionEntryContexts.HasPendingContexts}");
 
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Trace("rotation-observed");
