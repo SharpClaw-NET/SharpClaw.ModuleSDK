@@ -143,19 +143,28 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             target.Entry.Descriptor.ResultTypeIdentity,
             target.Entry.Descriptor.ResultSchemaVersion,
             target.Entry.Descriptor.DescriptorHash);
-        var targetResponse = await target.Client.CapabilitySession
-            .ExecuteCrossSidecarCarrierAsync(
-                relay.Carrier,
-                targetTerminal,
-                targetRegistration,
-                ct);
-        await SendCrossSidecarRelayResponseAsync(
-            request,
-            relay,
-            targetResponse,
-            null,
-            ct,
-            target.Client.CapabilitySession);
+        try
+        {
+            var targetResponse = await target.Client.CapabilitySession
+                .ExecuteCrossSidecarCarrierAsync(
+                    relay.Carrier,
+                    targetTerminal,
+                    targetRegistration,
+                    ct);
+            await SendCrossSidecarRelayResponseAsync(
+                request,
+                relay,
+                targetResponse,
+                null,
+                ct,
+                target.Client.CapabilitySession);
+        }
+        finally
+        {
+            Session.RemoveCrossSidecarPeerState(
+                request.Call.CallId,
+                DateTimeOffset.UtcNow);
+        }
     }
 
     private async Task SendCrossSidecarRelayResponseAsync(
