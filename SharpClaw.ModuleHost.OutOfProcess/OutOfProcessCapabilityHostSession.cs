@@ -774,8 +774,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             try
             {
                 await WaitForHostActionCallsToFinishAsync(_disconnect.Token);
+                var completionAuthority =
+                    Session.TryGetActiveHostActionEntryCarrier(
+                        authority.CapabilityId,
+                        out var rebasedAuthority)
+                    && rebasedAuthority is not null
+                        ? rebasedAuthority
+                        : authority;
                 var validation = Session.CompleteHostActionEntryCarrier(
-                    authority,
+                    completionAuthority,
                     completion,
                     DateTimeOffset.UtcNow);
                 if (!validation.Accepted)
