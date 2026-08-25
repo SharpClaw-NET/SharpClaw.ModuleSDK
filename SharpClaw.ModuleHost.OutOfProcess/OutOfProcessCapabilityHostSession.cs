@@ -2593,8 +2593,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         finally
         {
-            await FinishCallAsync(request.Call.CallId, active, channelCt);
             RemovePendingStorageRequest(request.Call.CallId);
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
         }
     }
 
