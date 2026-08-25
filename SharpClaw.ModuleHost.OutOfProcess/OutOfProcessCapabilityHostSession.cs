@@ -787,11 +787,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     DateTimeOffset.UtcNow);
                 if (!validation.Accepted)
                 {
-                throw new OutOfProcessCapabilityException(
-                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
-                        (validation.Message
-                            ?? "The host action entry carrier completion was rejected.")
-                        + $" state={TemporarySessionState(authority.CapabilityId)}");
+                    throw new OutOfProcessCapabilityException(
+                        validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                        validation.Message
+                            ?? "The host action entry carrier completion was rejected.");
                 }
 
                 completionAccepted = true;
@@ -832,96 +831,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             await changed.WaitAsync(ct);
         }
-    }
-
-    private string TemporarySessionState(Guid capabilityId)
-    {
-        var type = Session.GetType();
-        var callEntries = type
-            .GetField("_callEntryContexts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?.GetValue(Session);
-        var calls = type
-            .GetField("_calls", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?.GetValue(Session);
-        var matches = new System.Collections.Generic.List<string>();
-        if (callEntries is System.Collections.IEnumerable entries)
-        {
-            foreach (var entry in entries)
-            {
-                var key = entry?.GetType().GetProperty("Key")?.GetValue(entry);
-                var value = entry?.GetType().GetProperty("Value")?.GetValue(entry);
-                var entryCapabilityId = value?.GetType().GetProperty("CapabilityId")?.GetValue(value);
-                if (entryCapabilityId is Guid id && id == capabilityId)
-                {
-                    var invocationId = value?.GetType().GetProperty("InvocationId")?.GetValue(value);
-                    var parentInvocationId = value?.GetType().GetProperty("ParentInvocationId")?.GetValue(value);
-                    var depth = value?.GetType().GetProperty("Depth")?.GetValue(value);
-                    var attempt = value?.GetType().GetProperty("Attempt")?.GetValue(value);
-                    matches.Add(
-                        $"{key}:invocation={invocationId};parent={parentInvocationId};depth={depth};attempt={attempt}");
-                }
-            }
-        }
-
-        return $"contractCalls={TemporaryCount(calls)}; contractEntries={TemporaryCount(callEntries)}; "
-            + $"matchingEntries={string.Join(',', matches)}; "
-            + $"rootStates={TemporaryFieldCount(type, "_rootHostActionEntryStates")}; "
-            + $"nestedStates={TemporaryFieldCount(type, "_nestedCarrierStates")}; "
-            + $"nestedParents={TemporaryFieldCount(type, "_nestedCarrierParents")}; "
-            + $"reservedNested={TemporaryFieldCount(type, "_reservedNestedCalls")}; "
-            + $"nestedIds={TemporaryFieldCount(type, "_nestedCarrierIds")}; "
-            + $"entryCarriers={TemporaryFieldCount(type, "_activeEntryCarriers")}; "
-            + $"budgetReservations={TemporaryFieldCount(type, "_entryBudgetReservations")}; "
-            + $"nestedDetails={TemporaryMapDetails(type, "_nestedCarrierStates")}; "
-            + $"reservedDetails={TemporaryMapDetails(type, "_reservedNestedCalls")}";
-    }
-
-    private int TemporaryFieldCount(Type type, string fieldName)
-    {
-        var value = type
-            .GetField(fieldName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?.GetValue(Session);
-        return TemporaryCount(value);
-    }
-
-    private string TemporaryMapDetails(Type type, string fieldName)
-    {
-        var value = type
-            .GetField(fieldName, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?.GetValue(Session);
-        if (value is not System.Collections.IEnumerable entries)
-            return string.Empty;
-
-        var details = new System.Collections.Generic.List<string>();
-        foreach (var entry in entries)
-        {
-            var key = entry?.GetType().GetProperty("Key")?.GetValue(entry);
-            var item = entry?.GetType().GetProperty("Value")?.GetValue(entry);
-            var carrier = item?.GetType().GetProperty("Carrier")?.GetValue(item);
-            var parentCall = item?.GetType().GetProperty("ParentCall")?.GetValue(item);
-            var call = item?.GetType().GetProperty("Call")?.GetValue(item);
-            var context = item?.GetType().GetProperty("Context")?.GetValue(item);
-            var callId = call?.GetType().GetProperty("CallId")?.GetValue(call);
-            var parentCallId = parentCall?.GetType().GetProperty("CallId")?.GetValue(parentCall);
-            var carrierId = carrier?.GetType().GetProperty("CarrierId")?.GetValue(carrier);
-            var contextId = context?.GetType().GetProperty("CapabilityId")?.GetValue(context);
-            details.Add(
-                $"{key}:carrier={carrierId};parentCall={parentCallId};call={callId};context={contextId}");
-        }
-
-        return string.Join('|', details);
-    }
-
-    private static int TemporaryCount(object? value)
-    {
-        if (value is System.Collections.ICollection collection)
-            return collection.Count;
-        if (value is not System.Collections.IEnumerable enumerable)
-            return -1;
-        var count = 0;
-        foreach (var _ in enumerable)
-            count++;
-        return count;
     }
 
     private void WaitForNestedHostActionCallsToFinish(
@@ -2029,13 +1938,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 request,
                 active.Cancellation.Token);
             var response = CreateActionResponse(request, registration, outcome);
-            WriteRotationDiagnostic(
-                $"host-response call={request.Call.CallId}; descriptor={request.Descriptor.Key.Value}:{request.Descriptor.Version}; "
-                + $"expectedResultType={request.Descriptor.ResultTypeIdentity}; expectedSchema={request.Descriptor.ResultSchemaVersion}; "
-                + $"identityCall={response.ResultIdentity?.CallId}; identityKey={response.ResultIdentity?.ActionKey.Value}; "
-                + $"identityVersion={response.ResultIdentity?.ActionVersion}; identityType={response.ResultIdentity?.ResultTypeIdentity}; "
-                + $"identityHash={response.ResultIdentity?.ContentHash}; outcomeType={response.Outcome.Result?.TypeIdentity}; "
-                + $"outcomeSchema={response.Outcome.Result?.SchemaVersion}; outcomeHash={response.Outcome.Result?.ContentHash}");
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
                 request,
                 response,
@@ -2133,7 +2035,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         catch (Exception ex)
         {
             Volatile.Write(ref _lastHandledFailure, ex);
-            WriteRotationDiagnostic($"host-action-failure {ex}");
             var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
                 ? 1
                 : 0;
@@ -2314,11 +2215,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             Session,
             DateTimeOffset.UtcNow,
             out var relay);
-        WriteRotationDiagnostic(
-            $"nested-relay issue={issue.Accepted}; parentSequence={request.Call.Sequence}; "
-            + $"peerSequence={relay?.PeerCall?.Sequence}; peerCall={relay?.PeerCall?.CallId}; "
-            + $"nestedCall={relay?.Call.CallId}; code={issue.Code}; message={issue.Message}; "
-            + $"hostBindingGeneration={Session.BindingGeneration}");
         var outcomeKind = issue.Accepted && relay is not null
             ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
             : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;
@@ -2696,31 +2592,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     issued.Message ?? "The host action entry authority was rejected.");
             }
 
-            var transportValidation = transport.Validate(
-                DateTimeOffset.UtcNow,
-                authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
-                    authority,
-                    _controlToken));
-            WriteRotationDiagnostic(
-                $"host-entry-transport-validation accepted={transportValidation.Accepted}; code={transportValidation.Code}; "
-                + $"message={transportValidation.Message}; requestAction={request.Action.ContentHash}:{request.Action.ByteLength}; "
-                + $"authorityAction={transport.Authority.ActionContentHash}:{transport.Authority.ActionByteLength}; "
-                + $"requestLineage={transport.Request.Context.Contribution?.Lineage.PayloadContentHash}:{transport.Request.Context.Contribution?.Lineage.PayloadByteLength}; "
-                + $"authorityType={transport.Authority.InputTypeIdentity}; authoritySchema={transport.Authority.InputSchemaVersion}");
-            WriteRotationDiagnostic(
-                $"host-entry-authority-shape requestWellFormed={transport.Request.IsWellFormed(DateTimeOffset.UtcNow)}; "
-                + $"authorityValid={transport.Authority.IsValid}; proofValid={OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(transport.Authority, _controlToken)}; "
-                + $"lineageDescriptor={HostActionEntryAuthorityValidator.MatchesDescriptorLineage(transport.Request.Context.Contribution?.Lineage, descriptor)}; "
-                + $"authorityIds={transport.Authority.RequestId}:{transport.Authority.CancellationId}:{transport.Authority.CallId}; "
-                + $"contextIds={transport.Request.Context.RequestId}:{transport.Request.Context.CancellationId}; "
-                + $"authorityInvocation={transport.Authority.InvocationId}:{transport.Authority.ParentInvocationId}:{transport.Authority.Depth}:{transport.Authority.Attempt}; "
-                + $"contextInvocation={transport.Request.Context.InvocationId}:{transport.Request.Context.ParentInvocationId}:{transport.Request.Context.Depth}:{transport.Request.Context.Attempt}; "
-                + $"authorityLineage={transport.Authority.ActionKey.Value}:{transport.Authority.ActionVersion}:{transport.Authority.DescriptorHash}; "
-                + $"contextLineage={transport.Request.Context.Contribution?.Lineage.ActionKey.Value}:{transport.Request.Context.Contribution?.Lineage.ActionVersion}:{transport.Request.Context.Contribution?.Lineage.DescriptorHash}; "
-                + $"authorityContext={transport.Authority.TraceId}:{transport.Authority.IdempotencyKey}:{transport.Authority.Deadline}:{transport.Authority.ExpiresAt}; "
-                + $"requestContext={transport.Request.Context.TraceId}:{transport.Request.Context.IdempotencyKey}:{transport.Request.Context.Deadline}:{transport.Request.Context.ExpiresAt}; "
-                + $"authorityCapability={transport.Authority.CapabilityId}:{transport.Authority.CapabilityHandleHash}; "
-                + $"requestCapability={transport.Request.Context.CapabilityId}:{HostActionEntryAuthorityValidator.ComputeCapabilityHandleHash(transport.Request.Context.CapabilityHandle)}");
             var authorityValidation = _session.ValidateHostActionEntry(
                 transport,
                 DateTimeOffset.UtcNow,
@@ -2729,12 +2600,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     _controlToken));
             if (!authorityValidation.Accepted)
             {
-                WriteRotationDiagnostic(
-                    $"host-entry-authority-reject code={authorityValidation.Code}; message={authorityValidation.Message}; "
-                    + $"call={request.Call.CallId}; callRequest={request.Call.RequestId}; callCancellation={request.Call.CancellationId}; "
-                    + $"contextRequest={context.RequestId}; contextCancellation={context.CancellationId}; "
-                    + $"bindingRequest={_session.Binding.RequestId}; bindingCancellation={_session.Binding.CancellationId}; "
-                    + $"bindingGeneration={_session.BindingGeneration}");
                 throw new OutOfProcessCapabilityException(
                     authorityValidation.Code ?? SidecarCapabilityErrors.Unauthorized,
                     authorityValidation.Message ?? "The host action entry authority was rejected.");
@@ -3520,28 +3385,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
-    }
-
-    private static void WriteRotationDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable(
-            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-
-        try
-        {
-            using var stream = new FileStream(
-                path,
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.ReadWrite);
-            using var writer = new StreamWriter(stream);
-            writer.WriteLine($"{DateTimeOffset.UtcNow:O} host {message}");
-        }
-        catch (IOException)
-        {
-        }
     }
 
 }

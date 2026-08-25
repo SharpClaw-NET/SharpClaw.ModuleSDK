@@ -204,12 +204,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             _parentTerminalRequest.Call,
             now,
             out var importedCarrier);
-        WriteRotationDiagnostic(
-            $"nested-import accepted={import.Accepted}; code={import.Code}; "
-            + $"message={import.Message}; parentSequence={_parentTerminalRequest.Call.Sequence}; "
-            + $"peerSequence={peerCall.Sequence}; peerCall={peerCall.CallId}; "
-            + $"bindingSession={_transport.Binding.SessionId}; bindingRequest={_transport.Binding.RequestId}; "
-            + $"session={_transport.TemporarySessionState}");
         if (!import.Accepted || importedCarrier is null)
         {
             throw new OutOfProcessCapabilityException(
@@ -451,15 +445,4 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void WriteRotationDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable(
-            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-
-        File.AppendAllText(
-            path,
-            $"{DateTimeOffset.UtcNow:O} module-entry {message}{Environment.NewLine}");
-    }
 }

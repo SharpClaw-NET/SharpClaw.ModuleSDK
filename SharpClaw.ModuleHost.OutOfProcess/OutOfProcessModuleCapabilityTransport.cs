@@ -40,9 +40,6 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
 
     internal Guid? ActiveCarrierId => _activeCarrierId.Value;
 
-    internal string TemporarySessionState =>
-        GetRequiredConnection().TemporarySessionState;
-
     internal IDisposable PushActiveCarrier(Guid capabilityId)
     {
         if (capabilityId == Guid.Empty)
@@ -1164,7 +1161,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
-            WriteRotationDiagnostic($"run-failure {ex}");
             failure = ex;
         }
         finally
@@ -1305,12 +1301,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     relay,
                     DateTimeOffset.UtcNow,
                     out var importedHostContext);
-                WriteRotationDiagnostic(
-                    $"relay-import accepted={relayImport.Accepted}; code={relayImport.Code}; "
-                    + $"message={relayImport.Message}; bindingSession={_session.Binding.SessionId}; "
-                    + $"bindingRequest={_session.Binding.RequestId}; generation={_session.BindingGeneration}; "
-                    + $"call={request.Call.CallId}; sequence={request.Call.Sequence}; "
-                    + $"authoritySession={request.Authority.SessionId}; authorityRequest={request.Authority.RequestId}");
                 ThrowIfRejected(relayImport);
                 if (importedHostContext is null)
                 {
@@ -1587,13 +1577,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 new OutOfProcessHostActionEntry(_transport),
                 active.Cancellation.Token);
             var response = CreateIncomingActionResponse(request, execution, ActionOutcomeKind.Completed, null);
-            WriteRotationDiagnostic(
-                $"module-response call={request.Call.CallId}; descriptor={request.Descriptor.Key.Value}:{request.Descriptor.Version}; "
-                + $"expectedResultType={request.Descriptor.ResultTypeIdentity}; expectedSchema={request.Descriptor.ResultSchemaVersion}; "
-                + $"identityCall={response.ResultIdentity?.CallId}; identityKey={response.ResultIdentity?.ActionKey.Value}; "
-                + $"identityVersion={response.ResultIdentity?.ActionVersion}; identityType={response.ResultIdentity?.ResultTypeIdentity}; "
-                + $"identityHash={response.ResultIdentity?.ContentHash}; outcomeType={response.Outcome.Result?.TypeIdentity}; "
-                + $"outcomeSchema={response.Outcome.Result?.SchemaVersion}; outcomeHash={response.Outcome.Result?.ContentHash}");
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
                 request,
                 response,
@@ -1636,7 +1619,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            WriteRotationDiagnostic($"module-action-failure {ex}");
             if (active is not null && !sessionCompleted)
             {
                 CompleteCall(request.Call.CallId, 0);
@@ -1674,7 +1656,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
-            WriteRotationDiagnostic($"action-entry-failure {ex}");
             _disconnect.Cancel();
         }
     }
@@ -2410,7 +2391,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         catch (Exception ex)
         {
             Volatile.Write(ref _runFailure, ex);
-            WriteRotationDiagnostic($"terminal-failure {ex}");
             try
             {
                 _disconnect.Cancel();
@@ -2432,57 +2412,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
         return new OutOfProcessCapabilityException(error.Code, error.Message);
-    }
-
-    internal static void WriteRotationDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable(
-            "SHARPCLAW_MODULESDK_ROTATION_DIAGNOSTIC_LOG");
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-
-        try
-        {
-            using var stream = new FileStream(
-                path,
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.ReadWrite);
-            using var writer = new StreamWriter(stream);
-            writer.WriteLine($"{DateTimeOffset.UtcNow:O} {message}");
-        }
-        catch (IOException)
-        {
-        }
-    }
-
-    internal string TemporarySessionState
-    {
-        get
-        {
-            var type = _session.GetType();
-            object? Field(string name) => type
-                .GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                ?.GetValue(_session);
-
-            return $"lastSequence={Field("_lastSequence")}; totalCalls={Field("_totalCalls")}; "
-                + $"inFlight={Field("_inFlight")}; calls={TemporaryCount(Field("_calls"))}; "
-                + $"reservedNested={TemporaryCount(Field("_reservedNestedCalls"))}; "
-                + $"nonces={TemporaryCount(Field("_nonces"))}";
-        }
-    }
-
-    private static int TemporaryCount(object? value)
-    {
-        if (value is System.Collections.ICollection collection)
-            return collection.Count;
-        if (value is not System.Collections.IEnumerable enumerable)
-            return -1;
-
-        var count = 0;
-        foreach (var _ in enumerable)
-            count++;
-        return count;
     }
 
     private static void ThrowIfRejected(SidecarCapabilityValidationResult validation)
