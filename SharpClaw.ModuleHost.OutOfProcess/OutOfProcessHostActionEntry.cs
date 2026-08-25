@@ -23,6 +23,73 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
         _parentContribution = parentContribution;
     }
 
+    internal static OutOfProcessHostActionEntry CreateForIncomingAction(
+        OutOfProcessModuleCapabilityTransport transport,
+        SidecarActionCapabilityRequest request,
+        SidecarActionTerminalExecutionContext terminalContext,
+        SidecarActionEffectiveHostEntryContext effectiveHostEntry,
+        HostActionEntryContribution? parentContribution)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(terminalContext);
+        ArgumentNullException.ThrowIfNull(effectiveHostEntry);
+
+        var terminal = request.Terminal
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The incoming host action has no terminal registration.");
+        var authority = effectiveHostEntry.Authority;
+        var receipt = terminalContext.Receipt;
+        if (!effectiveHostEntry.IsWellFormed
+            || !terminalContext.IsWellFormed
+            || !OutOfProcessActionDescriptorIdentity.Matches(
+                request.Descriptor,
+                terminalContext.Descriptor)
+            || authority.TerminalId != terminal.TerminalId
+            || authority.CallId != terminalContext.Call.CallId
+            || authority.Invocation != terminalContext.Invocation
+            || authority.ReceiptId != receipt.ReceiptId
+            || authority.ReceiptCallId != receipt.CallId
+            || !string.Equals(
+                authority.ReceiptActionKey.Value,
+                receipt.ActionKey.Value,
+                StringComparison.Ordinal)
+            || authority.ReceiptActionVersion != receipt.ActionVersion
+            || authority.ReceiptAttempt != receipt.Attempt
+            || !string.Equals(
+                authority.ReceiptContentHash,
+                receipt.ContentHash,
+                StringComparison.Ordinal)
+            || authority.DescriptorHash != terminalContext.Descriptor.DescriptorHash
+            || authority.EffectiveActionContentHash != terminalContext.EffectiveAction.ContentHash
+            || authority.EffectiveActionByteLength != terminalContext.EffectiveAction.ByteLength)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The incoming host action authority does not match its terminal context.");
+        }
+
+        var parentTerminalRequest = new SidecarActionTerminalTransportRequest(
+            terminalContext.Call,
+            terminalContext.Invocation,
+            terminalContext.Descriptor,
+            terminalContext.EffectiveAction,
+            authority,
+            receipt,
+            terminalContext.Cancellation,
+            terminalContext.Deadline)
+        {
+            Context = terminalContext,
+            TerminalId = terminal.TerminalId,
+        };
+        return new OutOfProcessHostActionEntry(
+            transport,
+            terminalContext.Descriptor,
+            parentTerminalRequest,
+            parentContribution ?? effectiveHostEntry.InitiatingContext.Contribution);
+    }
+
     public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
         HostActionEntryRequest<TAction, TResult> request,
         IHostActionEntryTerminal<TAction, TResult> terminal,

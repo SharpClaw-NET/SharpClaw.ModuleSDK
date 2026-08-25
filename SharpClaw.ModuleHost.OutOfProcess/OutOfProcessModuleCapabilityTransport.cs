@@ -1646,10 +1646,18 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 effectiveContext.CapabilityId,
                 sessionRequest.Call);
             await using var invocationScope = _services.CreateAsyncScope();
+            var hostActionEntry = request.EffectiveHostEntryContext is { } incomingHostEntry
+                ? OutOfProcessHostActionEntry.CreateForIncomingAction(
+                    _transport,
+                    sessionRequest,
+                    terminalContext,
+                    incomingHostEntry,
+                    sessionRequest.HostContext?.Contribution)
+                : new OutOfProcessHostActionEntry(_transport);
             var execution = await registration.Invoker.InvokeAsync(
                 invocationScope.ServiceProvider,
                 terminalContext,
-                new OutOfProcessHostActionEntry(_transport),
+                hostActionEntry,
                 active.Cancellation.Token);
             var response = CreateIncomingActionResponse(request, execution, ActionOutcomeKind.Completed, null);
             var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
