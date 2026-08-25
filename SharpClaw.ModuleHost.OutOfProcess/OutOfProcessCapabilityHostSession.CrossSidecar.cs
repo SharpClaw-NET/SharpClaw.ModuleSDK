@@ -162,7 +162,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         finally
         {
             _ = Session.RevokeCrossSidecarActionEntry(
-                request.Call.CallId,
+                relay.Carrier.CarrierId,
                 DateTimeOffset.UtcNow);
         }
     }
