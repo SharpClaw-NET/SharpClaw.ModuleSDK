@@ -20,10 +20,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.MalformedMessage,
                 "The cross-sidecar terminal request has no neutral child request.");
-        if (!_calls.TryGetValue(request.Call.CallId, out var active)
-            || active.ActionRequest is not { } initiatingRequest
-            || !_terminals.ContainsKey(request.Call.CallId)
-            || request.Context is null)
+        SidecarActionCapabilityRequest? initiatingRequest = null;
+        if (_calls.TryGetValue(request.Call.CallId, out var active)
+            && active.ActionRequest is { } incomingRequest
+            && _terminals.ContainsKey(request.Call.CallId))
+        {
+            initiatingRequest = incomingRequest;
+        }
+        else if (_outgoingCapabilityCalls.ContainsKey(request.Call.CallId)
+            && _outgoingActions.TryGetValue(request.Call.CallId, out var pending)
+            && pending.Request is { } outgoingRequest)
+        {
+            initiatingRequest = outgoingRequest;
+        }
+
+        if (initiatingRequest is null || request.Context is null)
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
