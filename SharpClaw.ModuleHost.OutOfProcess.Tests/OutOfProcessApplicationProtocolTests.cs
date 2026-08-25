@@ -1690,6 +1690,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             out var authority);
         started.Accepted.Should().BeTrue(started.Message);
         authority.Should().NotBeNull();
+        var issuedAuthority = authority!;
 
         var replacement = OutOfProcessCapabilitySecurity.CreateBinding(
             client.Discovery.ContractHash,
@@ -1706,10 +1707,20 @@ public sealed class OutOfProcessApplicationProtocolTests
             context!.CapabilityId,
             out var preserved).Should().BeTrue();
         preserved.Should().NotBeNull();
-        preserved!.Should().BeEquivalentTo(authority);
+        preserved!.ModuleId.Should().Be(issuedAuthority.ModuleId);
+        preserved.GraphId.Should().Be(issuedAuthority.GraphId);
+        preserved.CapabilityId.Should().Be(issuedAuthority.CapabilityId);
+        preserved.Carrier.Should().BeEquivalentTo(issuedAuthority.Carrier);
+        preserved.IssuedAt.Should().Be(issuedAuthority.IssuedAt);
+        preserved.ExpiresAt.Should().Be(issuedAuthority.ExpiresAt);
+        preserved.CapabilityHandleHash.Should().Be(issuedAuthority.CapabilityHandleHash);
+        preserved.SessionId.Should().Be(replacement.SessionId);
+        preserved.RequestId.Should().Be(replacement.RequestId);
+        preserved.CancellationId.Should().Be(replacement.CancellationId);
+        preserved.BindingGeneration.Should().Be(session.BindingGeneration);
 
         var completed = session.CompleteHostActionEntryCarrier(
-            authority!,
+            preserved,
             HostActionEntryCarrierCompletionKind.Succeeded,
             DateTimeOffset.UtcNow);
         completed.Accepted.Should().BeTrue(completed.Message);
