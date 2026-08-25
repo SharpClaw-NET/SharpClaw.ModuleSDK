@@ -161,7 +161,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         }
         finally
         {
-            Session.RemoveCrossSidecarPeerState(
+            _ = Session.RevokeCrossSidecarActionEntry(
                 request.Call.CallId,
                 DateTimeOffset.UtcNow);
         }
