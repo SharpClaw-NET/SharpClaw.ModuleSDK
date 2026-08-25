@@ -143,6 +143,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             target.Entry.Descriptor.ResultTypeIdentity,
             target.Entry.Descriptor.ResultSchemaVersion,
             target.Entry.Descriptor.DescriptorHash);
+        var relayRevoked = false;
         try
         {
             var targetResponse = await target.Client.CapabilitySession
@@ -151,6 +152,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     targetTerminal,
                     targetRegistration,
                     ct);
+            var revocation = Session.RevokeCrossSidecarActionEntry(
+                relay.Carrier.CarrierId,
+                DateTimeOffset.UtcNow);
+            if (!revocation.Accepted
+                && !string.Equals(
+                    revocation.Code,
+                    SidecarCapabilityErrors.Duplicate,
+                    StringComparison.Ordinal))
+            {
+                throw new OutOfProcessCapabilityException(
+                    revocation.Code ?? SidecarCapabilityErrors.HostFailure,
+                    revocation.Message ?? "The cross-sidecar relay cleanup was rejected.");
+            }
+
+            relayRevoked = true;
             await SendCrossSidecarRelayResponseAsync(
                 request,
                 relay,
@@ -161,9 +177,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         }
         finally
         {
-            _ = Session.RevokeCrossSidecarActionEntry(
-                relay.Carrier.CarrierId,
-                DateTimeOffset.UtcNow);
+            if (!relayRevoked)
+            {
+                _ = Session.RevokeCrossSidecarActionEntry(
+                    relay.Carrier.CarrierId,
+                    DateTimeOffset.UtcNow);
+            }
         }
     }
 

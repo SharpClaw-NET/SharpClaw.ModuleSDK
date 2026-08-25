@@ -196,6 +196,7 @@ internal static class SidecarCapabilityErrors
     public const string ModuleBusy = "sidecar_module_busy";
     public const string Cancelled = "sidecar_cancelled";
     public const string Replay = "sidecar_replay";
+    public const string Duplicate = "sidecar_duplicate";
 }
 
 internal sealed class OutOfProcessCapabilityException : Exception
