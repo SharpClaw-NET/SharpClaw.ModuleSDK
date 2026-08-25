@@ -629,6 +629,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             RootPeerCall = invocation == SidecarActionInvocationKind.HostEntry
                 ? call
                 : null,
+            ReceivingRootBudgetId = initiatingContext.CapabilityId,
+            ReceivingPeerBindingGeneration = Session.BindingGeneration,
         };
         authority = authority with
         {
@@ -2906,6 +2908,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             RootPeerCall = request.Invocation == SidecarActionInvocationKind.HostEntry
                 ? request.Call
                 : null,
+            ReceivingRootBudgetId = hostContext?.CapabilityId ?? Guid.Empty,
+            ReceivingPeerBindingGeneration = _session.BindingGeneration,
         };
         authority = authority with
         {

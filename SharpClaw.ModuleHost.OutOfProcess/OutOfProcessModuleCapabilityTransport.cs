@@ -1299,8 +1299,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     terminal,
                     terminalContext.Snapshot,
                     request.Authority,
-                    _session.BindingGeneration,
-                    initiatingContext.CapabilityId);
+                    request.Authority.ReceivingPeerBindingGeneration,
+                    request.Authority.ReceivingRootBudgetId);
                 var relayImport = _session.ImportHostActionEntryPeerRootRelay(
                     relay,
                     DateTimeOffset.UtcNow,
@@ -1499,8 +1499,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     request.Terminal!,
                     effectiveHostEntry.EffectiveContext.Snapshot,
                     effectiveHostEntry.Authority,
-                    _session.BindingGeneration,
-                    request.HostContext.CapabilityId);
+                    effectiveHostEntry.Authority.ReceivingPeerBindingGeneration,
+                    effectiveHostEntry.Authority.ReceivingRootBudgetId);
                 var import = _session.ImportHostActionEntryPeerRootRelay(
                     rootRelay,
                     DateTimeOffset.UtcNow,
