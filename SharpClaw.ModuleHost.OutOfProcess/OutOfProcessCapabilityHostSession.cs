@@ -920,7 +920,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         authority,
                         controlToken),
                     authority.Proof,
-                    StringComparison.Ordinal));
+                    StringComparison.Ordinal),
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && OutOfProcessCapabilitySecurity.ValidateStorageContinuationProof(
+                    authority,
+                    controlToken));
 
     private void RegisterExternalAuthoritySession()
     {
@@ -2392,6 +2400,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             var requestPayload = request.RequestPayload;
             var requestFramePayload = requestPayload ?? EmptyPayload();
+            var storageContinuation = request.HostEntryContinuationAuthority;
             _rotationGate.Wait(channelCt);
             try
             {
@@ -2401,12 +2410,39 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             {
                 _rotationGate.Release();
             }
-            var begin = Session.BeginCall(
-                request.Call,
-                SidecarCapabilityKind.Storage,
-                requestFramePayload,
-                requestFramePayload.ByteLength,
-                DateTimeOffset.UtcNow);
+            SidecarCapabilityValidationResult begin;
+            if (storageContinuation is null)
+            {
+                begin = Session.BeginCall(
+                    request.Call,
+                    SidecarCapabilityKind.Storage,
+                    requestFramePayload,
+                    requestFramePayload.ByteLength,
+                    DateTimeOffset.UtcNow);
+            }
+            else
+            {
+                var import = Session.ImportHostEntryStorageContinuationAuthority(
+                    storageContinuation,
+                    DateTimeOffset.UtcNow);
+                if (!import.Accepted)
+                {
+                    AbandonCall(request.Call.CallId, active);
+                    active = null;
+                    await SendStorageFailureAsync(
+                        request,
+                        import.Code,
+                        import.Message,
+                        channelCt);
+                    return;
+                }
+
+                begin = Session.BeginStorageContinuationCall(
+                    request,
+                    requestFramePayload.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out _);
+            }
             if (!begin.Accepted)
             {
                 AbandonCall(request.Call.CallId, active);

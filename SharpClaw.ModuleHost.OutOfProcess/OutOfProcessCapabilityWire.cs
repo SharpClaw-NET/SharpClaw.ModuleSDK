@@ -363,6 +363,31 @@ internal static class OutOfProcessCapabilitySecurity
             Encoding.UTF8.GetBytes(authority.Proof));
     }
 
+    public static string CreateStorageContinuationProof(
+        SidecarHostEntryStorageContinuationAuthority authority,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-storage-continuation|"
+            + SidecarCapabilityTransportValidation.ComputeStorageContinuationBindingHash(authority);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static bool ValidateStorageContinuationProof(
+        SidecarHostEntryStorageContinuationAuthority authority,
+        string controlToken)
+    {
+        if (authority is null || string.IsNullOrWhiteSpace(authority.Proof))
+            return false;
+        var expected = CreateStorageContinuationProof(authority, controlToken);
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(authority.Proof));
+    }
+
     private static string ComputeAuthenticationSignature(
         string controlToken,
         SidecarAuthenticationProof proof,

@@ -16,7 +16,7 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         bool IsAuthorized);
 
     private readonly object _sync = new();
-    private readonly AsyncLocal<Guid?> _activeCarrierId = new();
+    private readonly AsyncLocal<ActiveCarrierState?> _activeCarrier = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _authenticationNonces = new(StringComparer.Ordinal);
     private TaskCompletionSource<OutOfProcessModuleCapabilityConnection> _ready = CreateReadySource();
     private TaskCompletionSource _connectionReleased = CreateReleasedSource(completed: true);
@@ -38,21 +38,45 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
     internal Exception? LastTerminalFailure => Volatile.Read(ref _lastTerminalFailure);
     internal Task ConnectionWaitObserved => _connectionWaitObserved.Task;
 
-    internal Guid? ActiveCarrierId => _activeCarrierId.Value;
+    internal Guid? ActiveCarrierId => _activeCarrier.Value?.CapabilityId;
+
+    internal SidecarCapabilityCallIdentity? ActiveCarrierCall =>
+        _activeCarrier.Value?.ParentCall;
 
     internal IDisposable PushActiveCarrier(Guid capabilityId)
     {
         if (capabilityId == Guid.Empty)
             throw new ArgumentException("The active carrier identifier is required.", nameof(capabilityId));
 
-        var previous = _activeCarrierId.Value;
-        _activeCarrierId.Value = capabilityId;
-        return new ActiveCarrierScope(_activeCarrierId, previous);
+        return PushActiveCarrierCore(capabilityId, parentCall: null);
     }
 
+    internal IDisposable PushActiveCarrier(
+        Guid capabilityId,
+        SidecarCapabilityCallIdentity parentCall)
+    {
+        if (capabilityId == Guid.Empty)
+            throw new ArgumentException("The active carrier identifier is required.", nameof(capabilityId));
+        ArgumentNullException.ThrowIfNull(parentCall);
+        return PushActiveCarrierCore(capabilityId, parentCall);
+    }
+
+    private IDisposable PushActiveCarrierCore(
+        Guid capabilityId,
+        SidecarCapabilityCallIdentity? parentCall)
+    {
+        var previous = _activeCarrier.Value;
+        _activeCarrier.Value = new ActiveCarrierState(capabilityId, parentCall);
+        return new ActiveCarrierScope(_activeCarrier, previous);
+    }
+
+    private sealed record ActiveCarrierState(
+        Guid CapabilityId,
+        SidecarCapabilityCallIdentity? ParentCall);
+
     private sealed class ActiveCarrierScope(
-        AsyncLocal<Guid?> carrier,
-        Guid? previous) : IDisposable
+        AsyncLocal<ActiveCarrierState?> carrier,
+        ActiveCarrierState? previous) : IDisposable
     {
         private int _disposed;
 
@@ -394,12 +418,23 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                                         controlToken),
                                     authority.Proof,
                                     StringComparison.Ordinal));
+                    var authenticateStorageContinuationAuthority =
+                        new Func<SidecarHostEntryStorageContinuationAuthority, string, bool>(
+                            (authority, canonicalBindingHash) =>
+                                string.Equals(
+                                    authority.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && OutOfProcessCapabilitySecurity.ValidateStorageContinuationProof(
+                                    authority,
+                                    controlToken));
                     var session = new SidecarCapabilitySession(
                         binding,
                         authenticate,
                         _ => true,
                         DateTimeOffset.UtcNow,
-                        authenticateHostTerminalAuthority);
+                        authenticateHostTerminalAuthority,
+                        authenticateStorageContinuationAuthority);
                     connection = new OutOfProcessModuleCapabilityConnection(
                         socket,
                         session,
@@ -731,6 +766,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct,
         Guid? activeCarrierId)
     {
+        if (activeCarrierId.HasValue && _transport.ActiveCarrierCall is not null)
+            return;
         Task? rebind;
         lock (_rotationSync)
             rebind = _rebindReady?.Task;
@@ -1011,12 +1048,47 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             var callCancellation = deadline.Token;
             await WaitForOutgoingCallTurnAsync(request.Call.Sequence, callCancellation);
             var payload = request.RequestPayload ?? EmptyPayload();
-            var begin = _session.BeginCall(
-                request.Call,
-                SidecarCapabilityKind.Storage,
-                payload,
-                payload.ByteLength,
-                DateTimeOffset.UtcNow);
+            var parentCall = _transport.ActiveCarrierCall;
+            var usesStorageContinuation = parentCall is not null
+                && request.Call.Sequence
+                    > _session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+            if (usesStorageContinuation)
+            {
+                var issue = _session.IssueHostEntryStorageContinuation(
+                    _session,
+                    parentCall!,
+                    parentCall!,
+                    request,
+                    DateTimeOffset.UtcNow,
+                    (authority, _) => OutOfProcessCapabilitySecurity.CreateStorageContinuationProof(
+                        authority,
+                        _controlToken),
+                    out var authority);
+                ThrowIfRejected(issue);
+                var wireAuthority = SidecarCapabilityTransportCodec.Deserialize<
+                    SidecarHostEntryStorageContinuationAuthority>(
+                    SidecarCapabilityTransportCodec.Serialize(authority));
+                ThrowIfRejected(_session.ImportHostEntryStorageContinuationAuthority(
+                    wireAuthority,
+                    DateTimeOffset.UtcNow));
+                request = request with
+                {
+                    HostEntryContinuationAuthority = wireAuthority,
+                };
+            }
+
+            var begin = usesStorageContinuation
+                ? _session.BeginStorageContinuationCall(
+                    request,
+                    payload.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out _)
+                : _session.BeginCall(
+                    request.Call,
+                    SidecarCapabilityKind.Storage,
+                    payload,
+                    payload.ByteLength,
+                    DateTimeOffset.UtcNow);
             ThrowIfRejected(begin);
             ObserveSequence(request.Call.Sequence);
             var completion = NewCompletion<SidecarStorageCapabilityResponse>();
@@ -1566,10 +1638,13 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     effectiveContext.Caller,
                     effectiveContext.Features,
                     effectiveContext.TraceId,
-                    effectiveContext.IdempotencyKey,
-                    request.Cancellation,
-                    receipt,
-                    effectiveContext.Deadline);
+                     effectiveContext.IdempotencyKey,
+                     request.Cancellation,
+                     receipt,
+                     effectiveContext.Deadline);
+            using var carrierScope = _transport.PushActiveCarrier(
+                effectiveContext.CapabilityId,
+                sessionRequest.Call);
             await using var invocationScope = _services.CreateAsyncScope();
             var execution = await registration.Invoker.InvokeAsync(
                 invocationScope.ServiceProvider,
