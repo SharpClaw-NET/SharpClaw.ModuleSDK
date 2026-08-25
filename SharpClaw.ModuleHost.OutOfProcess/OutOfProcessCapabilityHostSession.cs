@@ -1425,7 +1425,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private bool CompleteSessionCall(Guid callId, int terminalCallCount)
     {
         var session = Session;
-        var result = session.CompleteCall(callId, terminalCallCount);
+        var effectiveTerminalCallCount = terminalCallCount;
+        if (effectiveTerminalCallCount == 0
+            && session.TryGetTerminalReceipt(callId, out _))
+        {
+            effectiveTerminalCallCount = 1;
+        }
+
+        var result = session.CompleteCall(callId, effectiveTerminalCallCount);
         if (result.Accepted)
         {
             var callsForRotation = Interlocked.Increment(ref _completedCallsForBinding);
