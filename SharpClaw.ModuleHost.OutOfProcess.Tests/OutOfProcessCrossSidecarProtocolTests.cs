@@ -332,7 +332,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 targetClient,
                 targetDispatcher,
                 descriptors: targetDescriptors,
-                storageGateway: targetStorage));
+                storageGateway: targetStorage,
+                ownedStorageNames: ["target-store"]));
         TestContext.Progress.WriteLine("stage:target-connected");
 
         var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
@@ -626,12 +627,13 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         CountingActionDispatcher dispatcher,
         OutOfProcessCrossSidecarActionEntryCatalog? targetEntries = null,
         OutOfProcessActionDescriptorCatalog? descriptors = null,
-        IModuleStorageGateway? storageGateway = null) =>
+        IModuleStorageGateway? storageGateway = null,
+        IEnumerable<string>? ownedStorageNames = null) =>
         new(
             storageGateway ?? new EmptyStorageGateway(),
             dispatcher,
             client.CreateCapabilityGrant(DateTimeOffset.UtcNow.AddMinutes(2)),
-            ["unused"],
+            ownedStorageNames ?? ["unused"],
             descriptors ?? new OutOfProcessActionDescriptorCatalog(),
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,
