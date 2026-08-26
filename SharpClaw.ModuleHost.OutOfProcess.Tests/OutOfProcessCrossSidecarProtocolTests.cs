@@ -335,16 +335,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 storageGateway: targetStorage));
         TestContext.Progress.WriteLine("stage:target-connected");
 
-        var (blockingClient, blockingDispatcher) = await CreateSourceClientAsync(targetClient);
-        var (cancellingClient, cancellingDispatcher) = await CreateSourceClientAsync(targetClient);
-        await using (blockingClient)
-        await using (cancellingClient)
+        var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
+        await using (sourceClient)
         {
             TestContext.Progress.WriteLine("stage:source-clients-connected");
             var generationBefore = targetClient.CapabilitySession.BindingGeneration;
             var blocked = InvokeSourceAsync(
-                blockingClient,
-                blockingDispatcher,
+                sourceClient,
+                sourceDispatcher,
                 "cross-sidecar-block-observe");
             TestContext.Progress.WriteLine("stage:block-started");
             await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -352,8 +350,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
             targetDispatcher.CancelOperations = true;
             var cancelled = InvokeSourceAsync(
-                cancellingClient,
-                cancellingDispatcher,
+                sourceClient,
+                sourceDispatcher,
                 "cross-sidecar-cancel-observe");
             TestContext.Progress.WriteLine("stage:cancel-started");
             await Task.Delay(250);
@@ -381,8 +379,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             targetClient.CapabilitySession.BindingGeneration.Should().BeGreaterThan(generationBefore);
 
             var later = await InvokeSourceAsync(
-                cancellingClient,
-                cancellingDispatcher,
+                sourceClient,
+                sourceDispatcher,
                 "cross-sidecar").WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("stage:later-complete");
             later.Result.Succeeded.Should().BeTrue(
