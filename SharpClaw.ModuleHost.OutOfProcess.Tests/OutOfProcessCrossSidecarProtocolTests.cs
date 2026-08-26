@@ -365,6 +365,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 }
                 if (sourceDispatcher.LastException is not null)
                     TestContext.Progress.WriteLine(sourceDispatcher.LastException.ToString());
+                TestContext.Progress.WriteLine(
+                    $"target-dispatcher: runs={targetDispatcher.RunCalls}; "
+                    + $"terminals={targetDispatcher.TerminalCalls}; "
+                    + $"exception={targetDispatcher.LastException}");
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
                 throw;
