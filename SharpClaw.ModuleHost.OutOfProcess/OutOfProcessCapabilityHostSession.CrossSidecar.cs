@@ -596,7 +596,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     || response.CrossSidecarOutcome is not null)
                 {
                     throw new OutOfProcessCapabilityException(
-                        SidecarCapabilityErrors.InvalidResponse,
+                        SidecarCapabilityErrors.SpoofedIdentity,
                         "The target terminal response contains an unexpected cross-sidecar envelope.");
                 }
 
