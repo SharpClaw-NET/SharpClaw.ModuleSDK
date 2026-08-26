@@ -497,7 +497,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         dispatcher.HostContextFactory = () => context;
         return await client.InvokeCliAsync(
             ApplicationSmokeModule.HostEntryCliName,
-            [mode],
+            [mode, value],
             context);
     }
 

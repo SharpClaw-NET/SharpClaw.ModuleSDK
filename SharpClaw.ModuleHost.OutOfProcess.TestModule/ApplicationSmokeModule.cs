@@ -492,7 +492,9 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 var outcome = await hostActionEntry.InvokeAsync<ApplicationSmokeAction, ApplicationSmokeResult>(
                     new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                         HostAction,
-                        new ApplicationSmokeAction(actionMode, "action"),
+                        new ApplicationSmokeAction(
+                            actionMode,
+                            invocation.Arguments.Skip(1).FirstOrDefault() ?? "action"),
                         hostActionContext),
                     new HostActionTerminal(),
                     ct);
