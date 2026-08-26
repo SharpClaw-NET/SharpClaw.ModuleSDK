@@ -1457,6 +1457,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                             OutOfProcessCapabilityWire.Deserialize<OutOfProcessCapabilityCancellation>(frame.Payload));
                         break;
                     case OutOfProcessCapabilityFrameKind.CapabilityRebind:
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        RecordRebindState("rebind-frame-received");
+#endif
                         var rebind = BeginRebind(linked.Token);
                         var rebindTask = HandleRebindAsync(
                             OutOfProcessCapabilityWire.Deserialize<SidecarCapabilitySessionBinding>(frame.Payload),

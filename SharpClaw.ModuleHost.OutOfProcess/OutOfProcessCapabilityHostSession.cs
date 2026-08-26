@@ -1740,6 +1740,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 ct);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-rebind-sent",
+                DescribeHostRotationState());
+#endif
             var accepted = await acknowledgement.Task.WaitAsync(ct);
             if (!accepted.Accepted)
             {
