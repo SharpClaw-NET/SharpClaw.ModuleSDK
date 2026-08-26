@@ -472,7 +472,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var action = carrier.Action;
         var peerRelay = new SidecarCrossSidecarActionEntryRelay(carrier, target)
         {
-            PeerCall = carrier.Authority.PeerCall,
+            PeerCall = authority.TargetChildCall,
             PeerBindingGeneration = carrier.Authority.PeerBindingGeneration,
         };
         var crossSidecarActionRequest = new SidecarCrossSidecarActionEntryRequest(
@@ -529,7 +529,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             Attempt = hostContext.Attempt,
             ReceivingRootBudgetId = hostContext.CapabilityId,
             ReceivingPeerBindingGeneration = Session.BindingGeneration,
-            RootPeerCall = authority.PeerCall,
+            RootPeerCall = peerRelay.PeerCall,
             CrossSidecarPeerRelayBindingHash = SidecarCapabilityTransportValidation
                 .ComputeCrossSidecarPeerRelayBindingHash(peerRelay),
         };
