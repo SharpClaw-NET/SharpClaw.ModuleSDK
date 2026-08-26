@@ -355,12 +355,12 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
 
             targetStorage.Release.TrySetResult();
-            var blockedResult = await blocked;
+            var blockedResult = await blocked.WaitAsync(TimeSpan.FromSeconds(5));
             blockedResult.Result.Succeeded.Should().BeTrue(
                 $"Blocked target failed with {blockedResult.Result.Error?.Code}: "
                 + $"{blockedResult.Result.Error?.Message}");
 
-            var cancelledResult = await cancelled;
+            var cancelledResult = await cancelled.WaitAsync(TimeSpan.FromSeconds(5));
             cancelledResult.Result.Succeeded.Should().BeTrue(
                 $"Cancelled target failed with {cancelledResult.Result.Error?.Code}: "
                 + $"{cancelledResult.Result.Error?.Message}");
@@ -373,7 +373,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             var later = await InvokeSourceAsync(
                 cancellingClient,
                 cancellingDispatcher,
-                "cross-sidecar");
+                "cross-sidecar").WaitAsync(TimeSpan.FromSeconds(5));
             later.Result.Succeeded.Should().BeTrue(
                 $"Later relay failed with {later.Result.Error?.Code}: "
                 + $"{later.Result.Error?.Message}");
