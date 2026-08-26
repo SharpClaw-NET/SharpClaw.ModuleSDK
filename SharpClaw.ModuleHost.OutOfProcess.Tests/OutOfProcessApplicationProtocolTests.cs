@@ -1251,7 +1251,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new OutOfProcessHostActionEntryContextRegistry(),
                 new KernelExternalAuthoritySessionRegistry()));
 
-            for (var i = 0; i < 4; i++)
+            var hostEntryContext = IssueHostEntryContext(
+                client,
+                DateTimeOffset.UtcNow.AddMinutes(1));
+
+            for (var i = 0; i < 5; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1281,9 +1285,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             var hostEntry = client.InvokeCliAsync(
                 ApplicationSmokeModule.HostEntryCliName,
                 [],
-                IssueHostEntryContext(
-                    client,
-                    DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
+                hostEntryContext).AsTask();
             await actionResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
@@ -1314,7 +1316,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-reader-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(5);
+            storage.InvokeCalls.Should().Be(6);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
         }
