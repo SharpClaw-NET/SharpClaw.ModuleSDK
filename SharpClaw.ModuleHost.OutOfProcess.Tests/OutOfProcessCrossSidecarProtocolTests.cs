@@ -345,7 +345,19 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 sourceDispatcher,
                 "cross-sidecar-block-observe");
             TestContext.Progress.WriteLine("stage:block-started");
-            await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (TimeoutException)
+            {
+                TestContext.Progress.WriteLine(
+                    $"blocked-status: completed={blocked.IsCompleted}; faulted={blocked.IsFaulted}; "
+                    + $"canceled={blocked.IsCanceled}");
+                if (blocked.Exception is not null)
+                    TestContext.Progress.WriteLine(blocked.Exception.ToString());
+                throw;
+            }
             TestContext.Progress.WriteLine("stage:block-storage-started");
 
             targetDispatcher.CancelOperations = true;
