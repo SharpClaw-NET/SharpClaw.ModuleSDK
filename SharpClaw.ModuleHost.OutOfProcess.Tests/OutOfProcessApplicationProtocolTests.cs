@@ -1208,9 +1208,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var actionResponseRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var rebindStates = new ConcurrentQueue<string>();
         var responseGateUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
+            rebindStates.Enqueue(state);
             if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
                 rebindReceived.TrySetResult(state);
         });
@@ -1270,6 +1272,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             rebindState.Should().Contain("actions=[");
             rebindState.Should().Contain("incomingActions=[]");
             rebindState.Should().Contain("storage=[]");
+            TestContext.Progress.WriteLine(
+                "Rebind state evidence: " + string.Join(" | ", rebindStates));
 
             actionResponseRelease.TrySetResult();
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
