@@ -198,6 +198,7 @@ internal static class SidecarCapabilityErrors
     public const string Cancelled = "sidecar_cancelled";
     public const string Replay = "sidecar_replay";
     public const string Duplicate = "sidecar_duplicate";
+    public const string InvalidBinding = "sidecar_invalid_binding";
 }
 
 internal sealed class OutOfProcessCapabilityException : Exception

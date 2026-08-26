@@ -69,6 +69,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 {
                   "target": "module.application.smoke",
                   "effects": ["inspect", "wrap", "cancel"]
+                },
+                {
+                  "target": "permission.policy.read",
+                  "effects": ["inspect"]
                 }
               ]
             }
@@ -576,6 +580,99 @@ public sealed class OutOfProcessApplicationProtocolTests
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
         storage.InvokeCalls.Should().Be(0);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task AgentsJobImportNestedPermissionCompletesBeforeRootCarrierAndKeepsSession()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        descriptors.Add(ApplicationSmokeModule.PermissionPolicyAction);
+        var grants = client.Authorization.ActionGrants
+            .Where(grant =>
+                grant.ActionKey != ApplicationSmokeModule.AgentsJobImportAction.Key
+                && grant.ActionKey != ApplicationSmokeModule.PermissionPolicyAction.Key)
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.PermissionPolicyAction.Key,
+                ApplicationSmokeModule.PermissionPolicyAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var rootContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.AgentsJobImportAction,
+            new AgentsJobImportAction("permission-nested"),
+            new RequestPrincipal("module-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+
+        const int priorCalls = OutOfProcessCapabilityWire.DefaultMaximumCallsPerRequest - 2;
+        for (var i = 0; i < priorCalls; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"before-agents-permission-{i}"));
+
+            prior.Result.Succeeded.Should().BeTrue(
+                $"Prior CLI failed with {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.SelfOwnedEntryCliName,
+            ["permission-nested"],
+            rootContext);
+        result.Result.Succeeded.Should().BeTrue(
+            $"Agents import failed with {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+            + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+        result.Result.Output.Single().Text.Should().Contain(
+            "self-owned:Completed:imported:permission-nested:permission=permission:agents-job-import:");
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
+        storage.InvokeCalls.Should().Be(priorCalls + 1);
+        client.HostActionEntryContexts.HasPendingContexts.Should().BeFalse();
+        client.CapabilitySession.BindingGeneration.Should().BeGreaterThan(1);
+        client.CapabilitySession.RunFailure.Should().BeNull();
+
+        var later = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(client, ApplicationSmokeModule.CapabilityCliName, "after-agents-permission"));
+
+        later.Result.Succeeded.Should().BeTrue(
+            $"Later CLI failed with {later.Result.Error?.Code}: {later.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(priorCalls + 2);
+        client.CapabilitySession.RunFailure.Should().BeNull();
     }
 
     [Test, CancelAfter(15000)]
@@ -2611,10 +2708,21 @@ public sealed class OutOfProcessApplicationProtocolTests
                     + $"expected '{ExpectedSnapshotContractHash}'.");
             }
 
-            var grant = snapshot.ActionGrants.Single(item =>
+            var matchingGrants = snapshot.ActionGrants.Where(item =>
                 item.ActionKey == descriptor.Key
-                && item.ActionVersion == descriptor.Version);
+                && item.ActionVersion == descriptor.Version)
+                .ToArray();
+            if (matchingGrants.Length != 1)
+            {
+                throw new AssertionException(
+                    $"The dispatcher received {matchingGrants.Length} grants for "
+                    + $"{descriptor.Key}:{descriptor.Version}: "
+                    + string.Join(", ", matchingGrants.Select(item => item.Capabilities)));
+            }
+
+            var grant = matchingGrants[0];
             var expectedCapabilities = descriptor.Key == ApplicationSmokeModule.AgentsJobImportAction.Key
+                || descriptor.Key == ApplicationSmokeModule.PermissionPolicyAction.Key
                 ? ActionInterceptionCapabilities.Inspect
                 : ApplicationSmokeModule.HostCapabilities;
             if (grant.Capabilities != expectedCapabilities)

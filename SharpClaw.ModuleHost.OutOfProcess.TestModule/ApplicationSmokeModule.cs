@@ -17,6 +17,10 @@ public sealed record AgentsJobImportAction(string JobId);
 
 public sealed record AgentsJobImportResult(string Value);
 
+public sealed record PermissionPolicyReadAction(string PolicyId);
+
+public sealed record PermissionPolicyReadResult(string Value);
+
 public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplicationModule
 {
     public const string Id = "application_smoke_module";
@@ -34,9 +38,13 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string ScopedTerminalProbeEnvironmentVariable =
         "SHARPCLAW_MODULESDK_SCOPED_TERMINAL_PROBE";
     public const string AgentsJobImportActionHookId = "agents.job.import.authorization";
+    public const string PermissionPolicyActionHookId = "permission.policy.read.authorization";
 
     public static Guid AgentsJobImportTerminalId { get; } =
         new("44444444-4444-4444-8444-444444444444");
+
+    public static Guid PermissionPolicyTerminalId { get; } =
+        new("66666666-6666-4666-8666-666666666666");
 
     public static RequestPrincipal HostEntryCaller { get; } =
         new(
@@ -149,12 +157,38 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 typeof(AgentsJobImportResult)),
         };
 
+    public static ActionDescriptor<PermissionPolicyReadAction, PermissionPolicyReadResult>
+        PermissionPolicyAction { get; } =
+        new(
+            new SharpClawActionKey("permission.policy.read"),
+            1,
+            "permission",
+            ActionInterceptionCapabilities.Inspect,
+            ContainsSensitiveData: false,
+            HasIrreversibleEffects: false,
+            new ActionRepeatPolicy(ActionRepeatKind.None, 1, TimeSpan.Zero, "permission.policy.read"),
+            ContinuationPolicy: null,
+            TimeSpan.FromSeconds(5))
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(1),
+            SafePoints = [ActionSafePoint.BeforeTerminal],
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new SharpClawActionKey("permission.policy.read"),
+                1,
+                typeof(PermissionPolicyReadAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new SharpClawActionKey("permission.policy.read"),
+                1,
+                typeof(PermissionPolicyReadResult)),
+        };
+
     public ModuleIdentity Identity { get; } = new(Id, "Application Smoke", "appsmoke");
 
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Actions.Add(OwnedAction);
         module.Actions.Add(AgentsJobImportAction);
+        module.Actions.Add(PermissionPolicyAction);
         module.Services.AddScoped<ScopedEndpointResource>();
         module.Services.AddScoped<ScopedTerminalResource>();
         module.Storage.Add(new ModuleStorageContractDescriptor(
@@ -171,9 +205,18 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         module.Hooks.For(OwnedAction).Use<AuthorizationHook>(
             HostCapabilities,
             new HookOrdering(OwnedActionHookId));
+        module.Hooks.For(PermissionPolicyAction).Use<PermissionAuthorizationHook>(
+            ActionInterceptionCapabilities.Inspect,
+            new HookOrdering(PermissionPolicyActionHookId));
         module.AddActionEntry<AgentsJobImportAction, AgentsJobImportResult, AgentsJobImportTerminal>(
             AgentsJobImportAction,
             AgentsJobImportTerminalId);
+        module.AddActionEntry<
+            PermissionPolicyReadAction,
+            PermissionPolicyReadResult,
+            PermissionPolicyTerminal>(
+            PermissionPolicyAction,
+            PermissionPolicyTerminalId);
         module.Tools.Add<HostEntryToolHandler>(new ToolDescriptor(
             HostEntryToolName,
             "Invokes the host-owned application action through the tool ingress.",
@@ -241,6 +284,16 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         public ValueTask<IActionOutcome<ApplicationChildResult>> InvokeAsync(
             ActionContext<ApplicationChildAction> context,
             IActionControl<ApplicationChildAction, ApplicationChildResult> control,
+            CancellationToken ct) =>
+            control.ProceedAsync(ct);
+    }
+
+    public sealed class PermissionAuthorizationHook :
+        IActionInterceptor<PermissionPolicyReadAction, PermissionPolicyReadResult>
+    {
+        public ValueTask<IActionOutcome<PermissionPolicyReadResult>> InvokeAsync(
+            ActionContext<PermissionPolicyReadAction> context,
+            IActionControl<PermissionPolicyReadAction, PermissionPolicyReadResult> control,
             CancellationToken ct) =>
             control.ProceedAsync(ct);
     }
@@ -355,7 +408,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ActionContext<AgentsJobImportAction> context,
             CancellationToken cancellationToken)
         {
-            if (string.Equals(context.Action.JobId, "storage", StringComparison.Ordinal))
+            if (context.Action.JobId is "storage" or "permission-nested")
             {
                 await storage.InvokeAsync(
                     Id,
@@ -365,11 +418,52 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     cancellationToken);
             }
 
+            var permissionValue = string.Empty;
+            if (string.Equals(context.Action.JobId, "permission-nested", StringComparison.Ordinal))
+            {
+                var hostActionEntry = context.HostActionEntry
+                    ?? throw new InvalidOperationException(
+                        "The agents import terminal has no host action entry.");
+                var outcome = await hostActionEntry.InvokeNestedAsync<
+                    AgentsJobImportAction,
+                    PermissionPolicyReadAction,
+                    PermissionPolicyReadResult>(
+                    new HostActionEntryNestedRequest<
+                        AgentsJobImportAction,
+                        PermissionPolicyReadAction,
+                        PermissionPolicyReadResult>(
+                        PermissionPolicyAction.Key,
+                        PermissionPolicyAction.Version,
+                        new PermissionPolicyReadAction("agents-job-import"),
+                        context),
+                    new PermissionPolicyTerminal(),
+                    cancellationToken);
+                if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
+                {
+                    throw new InvalidOperationException(
+                        $"The permission action returned {outcome.Kind}.");
+                }
+
+                permissionValue = $":permission={outcome.Result.Value}";
+            }
+
             var snapshotHash = SidecarCapabilityTransportValidation
                 .ComputeSnapshotHash(context.Snapshot);
             return new AgentsJobImportResult(
-                $"imported:{context.Action.JobId}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}:scope={resource.InstanceId}:state={resource.State}");
+                $"imported:{context.Action.JobId}{permissionValue}:caller={context.Caller.SubjectId}:snapshot={snapshotHash}:scope={resource.InstanceId}:state={resource.State}");
         }
+    }
+
+    private sealed class PermissionPolicyTerminal :
+        IHostActionEntryTerminal<PermissionPolicyReadAction, PermissionPolicyReadResult>
+    {
+        public Guid TerminalId => PermissionPolicyTerminalId;
+
+        public ValueTask<PermissionPolicyReadResult> InvokeAsync(
+            ActionContext<PermissionPolicyReadAction> context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new PermissionPolicyReadResult($"permission:{context.Action.PolicyId}"));
     }
 
     public sealed class ScopedTerminalResource : IDisposable

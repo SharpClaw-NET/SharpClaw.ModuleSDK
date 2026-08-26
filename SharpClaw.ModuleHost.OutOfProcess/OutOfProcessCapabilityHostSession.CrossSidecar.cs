@@ -168,6 +168,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             }
 
             relayRevoked = true;
+            SignalCallChange();
             await SendCrossSidecarRelayResponseAsync(
                 request,
                 relay,
@@ -726,6 +727,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     outcomeValidation.Message ?? "The signed cross-sidecar outcome was rejected.");
             }
 
+            SignalCallChange();
             Volatile.Write(ref _lastCrossSidecarOutcome, completed);
             if (!receivedTerminalResponse)
                 await RotateAfterPreTerminalCrossSidecarAsync();
@@ -735,6 +737,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         catch
         {
             Session.CompleteCrossSidecarActionEntry(carrier, DateTimeOffset.UtcNow);
+            SignalCallChange();
             throw;
         }
     }

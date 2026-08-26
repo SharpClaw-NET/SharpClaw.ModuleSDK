@@ -425,9 +425,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
         finally
         {
-            CompleteSessionCall(call.CallId, sessionTerminalCallCount);
-            _outgoingCapabilityCalls.TryRemove(call.CallId, out _);
-            SignalCallChange();
+            await CompleteOutgoingCapabilityCallAsync(
+                call.CallId,
+                hostContext,
+                sessionTerminalCallCount);
         }
     }
 
@@ -1433,7 +1434,59 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
-    private bool CompleteSessionCall(Guid callId, int terminalCallCount)
+    private async ValueTask CompleteOutgoingCapabilityCallAsync(
+        Guid callId,
+        HostActionEntryRequestContext hostContext,
+        int terminalCallCount)
+    {
+        while (true)
+        {
+            var result = CompleteSessionCallResult(callId, terminalCallCount);
+            if (result.Accepted)
+            {
+                _outgoingCapabilityCalls.TryRemove(callId, out _);
+                SignalCallChange();
+                return;
+            }
+
+            if (!string.Equals(
+                    result.Code,
+                    SidecarCapabilityErrors.InvalidBinding,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    result.Message,
+                    "A parent action cannot complete while a nested action is active.",
+                    StringComparison.Ordinal))
+            {
+                throw new OutOfProcessCapabilityException(
+                    result.Code ?? SidecarCapabilityErrors.HostFailure,
+                    result.Message ?? "The capability call could not be completed.");
+            }
+
+            WaitForNestedHostActionCallsToFinish(
+                callId,
+                hostContext,
+                _disconnect.Token);
+
+            Task changed;
+            lock (_calls)
+            {
+                if (!_outgoingCapabilityCalls.ContainsKey(callId))
+                    return;
+
+                changed = _callChange.Task;
+            }
+
+            await changed.WaitAsync(_disconnect.Token);
+        }
+    }
+
+    private bool CompleteSessionCall(Guid callId, int terminalCallCount) =>
+        CompleteSessionCallResult(callId, terminalCallCount).Accepted;
+
+    private SidecarCapabilityValidationResult CompleteSessionCallResult(
+        Guid callId,
+        int terminalCallCount)
     {
         var session = Session;
         var effectiveTerminalCallCount = terminalCallCount;
@@ -1458,7 +1511,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             }
         }
 
-        return result.Accepted;
+        return result;
     }
 
     private async Task WaitForRotationAsync(
@@ -1756,7 +1809,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
     {
         if (request.Invocation == SidecarActionInvocationKind.HostEntry
-            && IsModuleOwnedHostActionAuthorized(request))
+            && (IsModuleOwnedHostActionAuthorized(request)
+                || IsModuleOwnedNestedHostActionAuthorized(request)))
         {
             return true;
         }
@@ -1835,6 +1889,28 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 request.Action.ContentHash,
                 StringComparison.Ordinal)
             && lineage.PayloadByteLength == request.Action.ByteLength;
+    }
+
+    private bool IsModuleOwnedNestedHostActionAuthorized(
+        SidecarActionCapabilityRequest request)
+    {
+        if (request.NestedCarrier is null
+            || request.Snapshot is not null
+            || request.HostContext is not null
+            || request.Terminal is not { IsWellFormed: true }
+            || request.Terminal.DescriptorHash != request.Descriptor.DescriptorHash
+            || !IsApplicationGraphBoundToSession())
+        {
+            return false;
+        }
+
+        return _application.ActionEntries.Any(entry =>
+            string.Equals(entry.ModuleId, _session.Binding.ModuleId, StringComparison.Ordinal)
+            && string.Equals(entry.ContractHash, _session.Binding.GraphId, StringComparison.Ordinal)
+            && entry.TerminalId == request.Terminal.TerminalId
+            && OutOfProcessActionDescriptorIdentity.Matches(
+                entry.Descriptor,
+                request.Descriptor));
     }
 
     private bool IsApplicationGraphBoundToSession() =>
