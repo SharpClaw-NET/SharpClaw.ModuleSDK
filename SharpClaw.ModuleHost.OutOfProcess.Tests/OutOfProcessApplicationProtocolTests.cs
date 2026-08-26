@@ -1216,15 +1216,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
                 rebindReceived.TrySetResult(state);
         });
-        OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
-        {
-            if (Interlocked.Exchange(ref responseGateUsed, 1) == 0)
-            {
-                actionResponseEntered.TrySetResult();
-                await actionResponseRelease.Task.WaitAsync(ct);
-            }
-        });
-
         try
         {
             await using var client = await CreateClientAsync();
@@ -1260,6 +1251,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 prior.Result.Succeeded.Should().BeTrue(
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
+
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
+            {
+                if (Interlocked.Exchange(ref responseGateUsed, 1) == 0)
+                {
+                    actionResponseEntered.TrySetResult();
+                    await actionResponseRelease.Task.WaitAsync(ct);
+                }
+            });
 
             var hostEntry = client.InvokeCliAsync(
                 ApplicationSmokeModule.HostEntryCliName,
