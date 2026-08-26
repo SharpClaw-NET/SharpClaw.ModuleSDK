@@ -1251,11 +1251,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new OutOfProcessHostActionEntryContextRegistry(),
                 new KernelExternalAuthoritySessionRegistry()));
 
-            var hostEntryContext = IssueHostEntryContext(
-                client,
-                DateTimeOffset.UtcNow.AddMinutes(1));
-
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 4; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1267,6 +1263,16 @@ public sealed class OutOfProcessApplicationProtocolTests
                 prior.Result.Succeeded.Should().BeTrue(
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
+
+            storage.BlockInvoke = true;
+            var gatedStorage = client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    "rebind-reader-gated-storage")).AsTask();
+            await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
             {
@@ -1285,10 +1291,18 @@ public sealed class OutOfProcessApplicationProtocolTests
             var hostEntry = client.InvokeCliAsync(
                 ApplicationSmokeModule.HostEntryCliName,
                 [],
-                hostEntryContext).AsTask();
+                IssueHostEntryContext(
+                    client,
+                    DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
             await actionResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
+
+            storage.InvocationRelease.TrySetResult();
+            var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
+            trigger.Result.Succeeded.Should().BeTrue(
+                $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
+
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
                 $"actions=[{expectedHostEntryCallId:N}]",
@@ -3054,6 +3068,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         public TaskCompletionSource InvocationStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource InvocationRelease { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource InvocationCancelled { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -3085,7 +3102,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 InvocationStarted.TrySetResult();
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    await InvocationRelease.Task.WaitAsync(ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
