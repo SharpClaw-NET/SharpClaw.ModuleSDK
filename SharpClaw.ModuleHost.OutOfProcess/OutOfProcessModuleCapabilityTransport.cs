@@ -1958,7 +1958,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             contribution);
         SidecarTerminalExecutionResult execution;
         using var carrierScope = _transport.PushActiveCarrier(
-            context.CapabilityId,
+            request.Authority.ReceivingRootBudgetId,
             request.Call);
         await using var invocationScope = _services.CreateAsyncScope();
         try

@@ -516,6 +516,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             ParentInvocationId = hostContext.ParentInvocationId,
             Depth = hostContext.Depth,
             Attempt = hostContext.Attempt,
+            ReceivingRootBudgetId = hostContext.CapabilityId,
+            ReceivingPeerBindingGeneration = Session.BindingGeneration,
         };
         var targetAuthority = terminalAuthority with
         {
