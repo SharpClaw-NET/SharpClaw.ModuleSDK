@@ -470,7 +470,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var target = authority.TargetEntry;
         var binding = Session.Binding;
         var action = carrier.Action;
-        var peerRelay = new SidecarCrossSidecarActionEntryRelay(carrier, target);
+        var peerRelay = new SidecarCrossSidecarActionEntryRelay(carrier, target)
+        {
+            PeerCall = carrier.Authority.PeerCall,
+            PeerBindingGeneration = carrier.Authority.PeerBindingGeneration,
+        };
         var crossSidecarActionRequest = new SidecarCrossSidecarActionEntryRequest(
             target.Descriptor.Key,
             target.Descriptor.Version,
