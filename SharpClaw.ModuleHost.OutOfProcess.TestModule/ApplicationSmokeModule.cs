@@ -781,6 +781,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                             "cross-sidecar-fail-root" or "cross-sidecar-fail-observe-root" => "fail",
                             "cross-sidecar-cancel-root" or "cross-sidecar-cancel-observe-root" => "cancel",
                             "cross-sidecar-block-observe-root" => "block",
+                            "cross-sidecar-root" when context.Action.Value == "block" => "block",
                             _ => "target",
                         },
                         context.Action.Value)),

@@ -343,7 +343,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             var blocked = InvokeSourceAsync(
                 sourceClient,
                 sourceDispatcher,
-                "cross-sidecar-block-observe");
+                "cross-sidecar",
+                "block");
             TestContext.Progress.WriteLine("stage:block-started");
             try
             {
@@ -479,14 +480,15 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     private static async Task<SidecarCliExecutionResponse> InvokeSourceAsync(
         OutOfProcessModuleClient client,
         CountingActionDispatcher dispatcher,
-        string mode)
+        string mode,
+        string value = "action")
     {
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Cli,
             ApplicationSmokeModule.HostEntryCliName,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
-            new ApplicationSmokeAction($"{mode}-root", "action"),
+            new ApplicationSmokeAction($"{mode}-root", value),
             ApplicationSmokeModule.HostEntryCaller,
             ApplicationSmokeModule.HostEntryFeatures,
             ApplicationSmokeModule.HostEntryTraceId,
