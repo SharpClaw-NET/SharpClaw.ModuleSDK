@@ -945,6 +945,118 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task NonRetryableCompletionReleasesLiveSessionBeforeCarrierCleanup()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ApplicationSmokeModule.AgentsJobImportAction.Capabilities,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var mutatorCalls = 0;
+        var observedTerminalCallCount = -1;
+        client.CapabilitySession.TestOutgoingTerminalCallCountMutator = value =>
+        {
+            mutatorCalls++;
+            observedTerminalCallCount = value;
+            return 2;
+        };
+        OutOfProcessCapabilityException? failure = null;
+        try
+        {
+            await client.InvokeModuleActionEntryAsync(
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("completion-rejection"),
+                client.IssueHostActionContext(
+                    HostActionEntryIngress.Cli,
+                    ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                    client.Discovery.ModuleId,
+                    ApplicationSmokeModule.AgentsJobImportAction,
+                    new AgentsJobImportAction("completion-rejection"),
+                    new RequestPrincipal("completion-test"),
+                    ExtensionFeatureSet.Empty,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow.AddMinutes(1)));
+        }
+        catch (OutOfProcessCapabilityException exception)
+        {
+            failure = exception;
+        }
+
+        mutatorCalls.Should().Be(1);
+        observedTerminalCallCount.Should().Be(1);
+        failure.Should().NotBeNull();
+        failure!.Code.Should().Be(SidecarCapabilityErrors.InvalidBinding);
+        failure.Message.Should().Be("The terminal call count must be zero or one.");
+        client.CapabilitySession.OutgoingCapabilityCallCount.Should().Be(0);
+        client.HostActionEntryContexts.HasActiveContexts.Should().BeFalse();
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(0);
+
+        client.CapabilitySession.TestOutgoingTerminalCallCountMutator = null;
+        var generationBefore = client.CapabilitySession.BindingGeneration;
+        var valid = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            new AgentsJobImportAction("after-rejection"),
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                new AgentsJobImportAction("after-rejection"),
+                new RequestPrincipal("completion-test"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        valid.Kind.Should().Be(ActionOutcomeKind.Completed);
+        valid.Result.Value.Should().StartWith("imported:after-rejection:");
+
+        for (var i = 0; i < 5; i++)
+        {
+            var followUp = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                [],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"completion-follow-up-{i}"));
+            followUp.Result.Succeeded.Should().BeTrue(
+                $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
+        }
+
+        client.CapabilitySession.BindingGeneration.Should().BeGreaterThan(generationBefore);
+        client.CapabilitySession.OutgoingCapabilityCallCount.Should().Be(0);
+        client.HostActionEntryContexts.HasActiveContexts.Should().BeFalse();
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
+        storage.InvokeCalls.Should().Be(5);
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CapabilitySessionRotatesAfterMaximumCalls()
     {
         await using var client = await CreateClientAsync();
