@@ -2567,7 +2567,18 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 return;
             }
 
-            if (!CompleteCall(request.Call.CallId, 0))
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "storage-before-complete",
+                request.Call.CallId.ToString("N"));
+#endif
+            var completionAccepted = CompleteCall(request.Call.CallId, 0);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "storage-after-complete",
+                $"{request.Call.CallId:N}|accepted={completionAccepted}");
+#endif
+            if (!completionAccepted)
             {
                 await SendStorageFailureAsync(
                     request,

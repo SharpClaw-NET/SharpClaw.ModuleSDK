@@ -1212,6 +1212,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var actionReleased = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var storageBeforeComplete = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var storageAfterComplete = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var storageResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
@@ -1229,6 +1233,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             {
                 actionReleased.TrySetResult();
             }
+            if (state.StartsWith("storage-before-complete|", StringComparison.Ordinal))
+                storageBeforeComplete.TrySetResult();
+            if (state.StartsWith("storage-after-complete|", StringComparison.Ordinal))
+                storageAfterComplete.TrySetResult();
         });
         try
         {
@@ -1308,6 +1316,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             storage.InvocationRelease.TrySetResult();
             await storage.InvocationReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Storage gateway invocation returned.");
+            await storageBeforeComplete.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Storage completion started.");
+            await storageAfterComplete.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Storage completion returned.");
             await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Storage response send started.");
             var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
