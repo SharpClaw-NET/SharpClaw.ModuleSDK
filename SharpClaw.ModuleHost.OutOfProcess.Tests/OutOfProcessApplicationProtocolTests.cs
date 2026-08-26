@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -1196,6 +1197,107 @@ public sealed class OutOfProcessApplicationProtocolTests
         followUp.Result.Succeeded.Should().BeTrue(
             $"Follow-up CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
         storage.InvokeCalls.Should().Be(9);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task RebindReaderDrainsPendingActionResponseWithoutHeadOfLineBlocking()
+    {
+        var rebindReceived = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var actionResponseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var actionResponseRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseGateUsed = 0;
+        OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
+        {
+            if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
+                rebindReceived.TrySetResult(state);
+        });
+        OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
+        {
+            if (Interlocked.Exchange(ref responseGateUsed, 1) == 0)
+            {
+                actionResponseEntered.TrySetResult();
+                await actionResponseRelease.Task.WaitAsync(ct);
+            }
+        });
+
+        try
+        {
+            await using var client = await CreateClientAsync();
+            var storage = new CountingStorageGateway();
+            var dispatcher = new CountingActionDispatcher();
+            var descriptors = new OutOfProcessActionDescriptorCatalog();
+            descriptors.Add(
+                ApplicationSmokeModule.HostAction,
+                static (context, _) => ValueTask.FromResult(
+                    new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
+            await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+                storage,
+                dispatcher,
+                client.CreateCapabilityGrant(),
+                ["application-store"],
+                descriptors,
+                new ActionPipelineSnapshot(
+                    client.Discovery.ContractHash,
+                    client.Authorization.ActionGrants,
+                    client.Authorization.EventGrants),
+                new OutOfProcessHostActionEntryContextRegistry(),
+                new KernelExternalAuthoritySessionRegistry()));
+
+            for (var i = 0; i < 5; i++)
+            {
+                var prior = await client.InvokeCliAsync(
+                    ApplicationSmokeModule.CapabilityCliName,
+                    ["single"],
+                    IssueCliContext(
+                        client,
+                        ApplicationSmokeModule.CapabilityCliName,
+                        $"rebind-reader-prior-{i}"));
+                prior.Result.Succeeded.Should().BeTrue(
+                    $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+            }
+
+            var hostEntry = client.InvokeCliAsync(
+                ApplicationSmokeModule.HostEntryCliName,
+                [],
+                IssueHostEntryContext(
+                    client,
+                    DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
+            await actionResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            rebindState.Should().Contain("actions=[");
+            rebindState.Should().Contain("incomingActions=[]");
+            rebindState.Should().Contain("storage=[]");
+
+            actionResponseRelease.TrySetResult();
+            var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
+            result.Result.Succeeded.Should().BeTrue(
+                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+                + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+            result.Result.Output.Single().Text.Should().Be(
+                "host-entry:Completed:entry-terminal:action");
+
+            var afterRotation = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    "rebind-reader-after"));
+            afterRotation.Result.Succeeded.Should().BeTrue(
+                $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+            storage.InvokeCalls.Should().Be(6);
+            dispatcher.RunCalls.Should().Be(1);
+            dispatcher.TerminalCalls.Should().Be(1);
+        }
+        finally
+        {
+            actionResponseRelease.TrySetResult();
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
+        }
     }
 
     [TestCase(false)]

@@ -2095,6 +2095,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             await FinishCallAsync(request.Call.CallId, active, channelCt);
             active = null;
 
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            await OutOfProcessProtocolTestFixture.BeforeActionResponseAsync(channelCt);
+#endif
             await OutOfProcessCapabilityWire.SendAsync(
                 _socket,
                 OutOfProcessCapabilityFrameKind.ActionResponse,

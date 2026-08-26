@@ -663,12 +663,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly BoundedExecutionQueue _terminalQueue;
     private readonly SemaphoreSlim _rootActionExchangeGate = new(1, 1);
     private readonly SemaphoreSlim _rootRelayImportGate = new(1, 1);
+    private readonly SemaphoreSlim _callAdmissionGate = new(1, 1);
     private readonly object _rotationSync = new();
     private readonly object _outgoingSequenceSync = new();
     private readonly SortedSet<long> _createdOutgoingSequences = new();
     private TaskCompletionSource _outgoingSequenceChanged = CreateSignal();
     private Exception? _runFailure;
     private TaskCompletionSource? _rebindReady;
+    private TaskCompletionSource? _rebindInProgress;
     private int _completedCallsForBinding;
     private long _sequence;
     private int _disposed;
@@ -752,22 +754,51 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct = default,
         Guid? activeCarrierId = null)
     {
-        WaitForRebindIfReady(ct, activeCarrierId ?? _transport.ActiveCarrierId);
-        var sequence = Interlocked.Increment(ref _sequence);
-        lock (_outgoingSequenceSync)
-            _createdOutgoingSequences.Add(sequence);
-        var callId = Guid.NewGuid();
-        return new SidecarCapabilityCallIdentity(
-            Binding.SessionId,
-            Binding.RequestId,
-            Binding.CancellationId,
-            callId,
-            $"{Binding.SessionId:N}:{sequence}:{Guid.NewGuid():N}",
-            Binding.ModuleId,
-            Binding.GraphId,
-            capability,
-            sequence,
-            deadline);
+        var carrierId = activeCarrierId ?? _transport.ActiveCarrierId;
+        while (true)
+        {
+            Task? waitForRebind = null;
+            _callAdmissionGate.Wait(ct);
+            try
+            {
+                lock (_rotationSync)
+                {
+                    var activeCarrier = carrierId.HasValue
+                        && _transport.ActiveCarrierCall is not null;
+                    if (!activeCarrier)
+                    {
+                        waitForRebind = _rebindInProgress?.Task
+                            ?? _rebindReady?.Task;
+                    }
+
+                    if (waitForRebind is null)
+                    {
+                        var sequence = Interlocked.Increment(ref _sequence);
+                        lock (_outgoingSequenceSync)
+                            _createdOutgoingSequences.Add(sequence);
+                        var binding = Binding;
+                        var callId = Guid.NewGuid();
+                        return new SidecarCapabilityCallIdentity(
+                            binding.SessionId,
+                            binding.RequestId,
+                            binding.CancellationId,
+                            callId,
+                            $"{binding.SessionId:N}:{sequence}:{Guid.NewGuid():N}",
+                            binding.ModuleId,
+                            binding.GraphId,
+                            capability,
+                            sequence,
+                            deadline);
+                    }
+                }
+            }
+            finally
+            {
+                _callAdmissionGate.Release();
+            }
+
+            waitForRebind.WaitAsync(ct).GetAwaiter().GetResult();
+        }
     }
 
     private void EnsureOutgoingCallSequence(long sequence)
@@ -820,18 +851,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 || Interlocked.CompareExchange(ref _sequence, sequence, current) == current)
                 return;
         }
-    }
-
-    private void WaitForRebindIfReady(
-        CancellationToken ct,
-        Guid? activeCarrierId)
-    {
-        if (activeCarrierId.HasValue && _transport.ActiveCarrierCall is not null)
-            return;
-        Task? rebind;
-        lock (_rotationSync)
-            rebind = _rebindReady?.Task;
-        rebind?.WaitAsync(ct).GetAwaiter().GetResult();
     }
 
     private bool CompleteCall(Guid callId, int terminalCallCount) =>
@@ -980,7 +999,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             finally
             {
                 if (!retainPending)
-                    _actions.TryRemove(request.Call.CallId, out _);
+                {
+                    if (_actions.TryRemove(request.Call.CallId, out _))
+                    {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        RecordStateRelease("actions", request.Call.CallId);
+#endif
+                    }
+                }
             }
         }
         finally
@@ -1090,7 +1116,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         finally
         {
-            _terminals.TryRemove(request.Call.CallId, out _);
+            if (_terminals.TryRemove(request.Call.CallId, out _))
+            {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                RecordStateRelease("terminals", request.Call.CallId);
+#endif
+            }
         }
     }
 
@@ -1204,7 +1235,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             finally
             {
                 if (!retainPending)
-                    _storage.TryRemove(request.Call.CallId, out _);
+                {
+                    if (_storage.TryRemove(request.Call.CallId, out _))
+                    {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        RecordStateRelease("storage", request.Call.CallId);
+#endif
+                    }
+                }
             }
         }
         finally
@@ -1276,6 +1314,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                                     terminalRequest.Call.CallId,
                                     out var removedTerminal))
                             {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                                RecordStateRelease(
+                                    "incomingTerminals",
+                                    terminalRequest.Call.CallId);
+#endif
                                 removedTerminal.Dispose();
                             }
                             throw new OutOfProcessCapabilityException(
@@ -1293,9 +1336,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                             OutOfProcessCapabilityWire.Deserialize<OutOfProcessCapabilityCancellation>(frame.Payload));
                         break;
                     case OutOfProcessCapabilityFrameKind.CapabilityRebind:
-                        await HandleRebindAsync(
+                        var rebind = BeginRebind(linked.Token);
+                        var rebindTask = HandleRebindAsync(
                             OutOfProcessCapabilityWire.Deserialize<SidecarCapabilitySessionBinding>(frame.Payload),
+                            rebind,
                             linked.Token);
+                        _ = ObserveRebindCompletionAsync(rebindTask, rebind);
                         break;
                     case OutOfProcessCapabilityFrameKind.Error:
                         throw ReadError(frame.Payload);
@@ -1319,9 +1365,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             _session.Disconnect();
             lock (_rotationSync)
             {
-                _rebindReady?.TrySetException(failure ?? new OutOfProcessCapabilityException(
+                var disconnect = failure ?? new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.Disconnected,
-                    "The sidecar capability channel disconnected."));
+                    "The sidecar capability channel disconnected.");
+                _rebindReady?.TrySetException(disconnect);
+                _rebindInProgress?.TrySetException(disconnect);
             }
             FailPending(failure ?? new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Disconnected,
@@ -1343,12 +1391,15 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         {
             _rebindReady?.TrySetException(
                 new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
+            _rebindInProgress?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         }
         FailPending(new ObjectDisposedException(nameof(OutOfProcessModuleCapabilityConnection)));
         await _actionEntryQueue.DisposeAsync();
         await _terminalQueue.DisposeAsync();
         _rootActionExchangeGate.Dispose();
         _rootRelayImportGate.Dispose();
+        _callAdmissionGate.Dispose();
         try
         {
             if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -1525,7 +1576,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         finally
         {
             if (_incomingTerminals.TryRemove(request.Call.CallId, out var removed))
+            {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                RecordStateRelease("incomingTerminals", request.Call.CallId);
+#endif
                 removed.Dispose();
+            }
             else
                 incoming.Dispose();
         }
@@ -1817,7 +1873,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         {
             if (active is not null)
             {
-                _incomingActions.TryRemove(request.Call.CallId, out _);
+                if (_incomingActions.TryRemove(request.Call.CallId, out _))
+                {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                    RecordStateRelease("incomingActions", request.Call.CallId);
+#endif
+                }
                 active.Cancellation.Dispose();
             }
         }
@@ -1997,7 +2058,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private void AbandonIncomingCall(Guid callId, IncomingAction active)
     {
         if (_incomingActions.TryRemove(callId, out var removed))
+        {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            RecordStateRelease("incomingActions", callId);
+#endif
             removed.Cancellation.Dispose();
+        }
         else
             active.Cancellation.Dispose();
     }
@@ -2401,16 +2467,109 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 + $"graph={call.GraphId};capability={call.Capability};sequence={call.Sequence};"
                 + $"deadline={call.Deadline.Ticks}/{call.Deadline.Offset.Ticks}";
 
+    private TaskCompletionSource BeginRebind(CancellationToken ct)
+    {
+        _callAdmissionGate.Wait(ct);
+        try
+        {
+            lock (_rotationSync)
+            {
+                if (_rebindInProgress is not null)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Replay,
+                        "The capability binding rotation was received more than once.");
+                }
+
+                var rebind = CreateSignal();
+                _rebindInProgress = rebind;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                RecordRebindState("rebind-admitted");
+#endif
+                return rebind;
+            }
+        }
+        finally
+        {
+            _callAdmissionGate.Release();
+        }
+    }
+
+    private async Task ObserveRebindCompletionAsync(
+        Task rebindTask,
+        TaskCompletionSource rebind)
+    {
+        try
+        {
+            await rebindTask;
+        }
+        catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+        {
+            rebind.TrySetException(
+                new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Disconnected,
+                    "The sidecar capability channel disconnected during binding rotation."));
+        }
+        catch (Exception ex)
+        {
+            rebind.TrySetException(ex);
+            Volatile.Write(ref _runFailure, ex);
+            try
+            {
+                _disconnect.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+    private void RecordRebindState(string phase) =>
+        OutOfProcessProtocolTestFixture.RecordRebindState(
+            phase,
+            string.Join(
+                ";",
+                DescribePendingCollection("actions", _actions.Keys),
+                DescribePendingCollection("incomingActions", _incomingActions.Keys),
+                DescribePendingCollection("storage", _storage.Keys),
+                DescribePendingCollection("terminals", _terminals.Keys),
+                DescribePendingCollection("incomingTerminals", _incomingTerminals.Keys)));
+
+    private static string DescribePendingCollection(
+        string name,
+        IEnumerable<Guid> callIds) =>
+        $"{name}=[{string.Join(",", callIds.OrderBy(callId => callId).Select(callId => callId.ToString("N")))}]";
+
+    private static void RecordStateRelease(string collection, Guid callId) =>
+        OutOfProcessProtocolTestFixture.RecordRebindState(
+            "state-released",
+            $"{collection}={callId:N}");
+#endif
+
     private async Task HandleRebindAsync(
         SidecarCapabilitySessionBinding binding,
+        TaskCompletionSource rebind,
         CancellationToken ct)
     {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        RecordRebindState("rebind-received");
+#endif
         while (!_actions.IsEmpty
             || !_incomingActions.IsEmpty
             || !_storage.IsEmpty
             || !_terminals.IsEmpty
             || !_incomingTerminals.IsEmpty)
+        {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            RecordRebindState("rebind-wait");
+#endif
             await Task.Delay(TimeSpan.FromMilliseconds(5), ct);
+        }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        RecordRebindState("rebind-drained");
+#endif
 
         SidecarCapabilityValidationResult validation;
         if (!string.Equals(binding.ModuleId, _authorization.ModuleId, StringComparison.Ordinal)
@@ -2465,15 +2624,18 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 rotation.Code ?? SidecarCapabilityErrors.Unauthorized,
                 rotation.Message ?? "The rotated capability binding could not replace the active binding.");
         }
-        TaskCompletionSource? rebind;
+        TaskCompletionSource? ready;
         lock (_rotationSync)
         {
-            rebind = _rebindReady;
+            ready = _rebindReady;
             _rebindReady = null;
+            if (ReferenceEquals(_rebindInProgress, rebind))
+                _rebindInProgress = null;
             Interlocked.Exchange(ref _completedCallsForBinding, 0);
             Interlocked.Exchange(ref _sequence, 0);
         }
-        rebind?.TrySetResult();
+        ready?.TrySetResult();
+        rebind.TrySetResult();
     }
 
     private async Task SendCancellationAsync(
@@ -2537,7 +2699,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         finally
         {
-            _actions.TryRemove(request.Call.CallId, out _);
+            if (_actions.TryRemove(request.Call.CallId, out _))
+            {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                RecordStateRelease("actions", request.Call.CallId);
+#endif
+            }
         }
     }
 
@@ -2561,7 +2728,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         finally
         {
-            _storage.TryRemove(request.Call.CallId, out _);
+            if (_storage.TryRemove(request.Call.CallId, out _))
+            {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                RecordStateRelease("storage", request.Call.CallId);
+#endif
+            }
         }
     }
 
