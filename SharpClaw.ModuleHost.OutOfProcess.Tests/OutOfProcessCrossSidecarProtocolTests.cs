@@ -508,6 +508,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 {
                   "target": "module.application.smoke",
                   "effects": ["inspect", "wrap", "cancel"]
+                },
+                {
+                  "target": "permission.policy.read",
+                  "effects": ["inspect"]
                 }
               ]
               """
