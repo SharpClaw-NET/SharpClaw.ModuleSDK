@@ -1223,6 +1223,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
             rebindStates.Enqueue(state);
+            TestContext.Progress.WriteLine("Rebind observer: " + state);
             if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
                 rebindReceived.TrySetResult(state);
             if (state.StartsWith("state-released|actions=", StringComparison.Ordinal)

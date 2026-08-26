@@ -1391,6 +1391,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         _callChange = CreateSignal();
     }
 
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+    private string DescribeHostRotationState() =>
+        $"pendingActions={_pendingActionRequests.Count};"
+            + $"pendingStorage={_pendingStorageRequests.Count};"
+            + $"calls={_calls.Count};"
+            + $"outgoing={_outgoingCapabilityCalls.Count};"
+            + $"terminals={_terminals.Count};"
+            + $"contexts={_options.HostActionEntryContexts.HasPendingContexts}";
+#endif
+
     private bool RegisterTerminalSequence(SidecarActionCapabilityRequest request)
     {
         if (request.Invocation != SidecarActionInvocationKind.HostEntry
@@ -1595,7 +1605,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         || !_calls.IsEmpty
                         || !_outgoingCapabilityCalls.IsEmpty
                         || !_terminals.IsEmpty)
+                    {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        if (_rotationReady is not null)
+                        {
+                            OutOfProcessProtocolTestFixture.RecordRebindState(
+                                "host-rotation-blocked",
+                                DescribeHostRotationState());
+                        }
+#endif
                         return null;
+                    }
                     var nextPendingExpiration = _options.HostActionEntryContexts
                         .NextPendingContextExpiration();
                     if (nextPendingExpiration is not null)
@@ -1604,6 +1624,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     var ready = _rotationReady;
                     var beforeRotationStart = _options.BeforeRotationStartAsync;
                     _options.BeforeRotationStartAsync = null;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                    OutOfProcessProtocolTestFixture.RecordRebindState(
+                        "host-rotation-start",
+                        DescribeHostRotationState());
+#endif
                     _rotationTask = RunRotationAsync(ready, beforeRotationStart, ct);
                     rotation = _rotationTask;
                 }
