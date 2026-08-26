@@ -1467,17 +1467,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 callId,
                 hostContext,
                 _disconnect.Token);
-
-            Task changed;
-            lock (_calls)
-            {
-                if (!_outgoingCapabilityCalls.ContainsKey(callId))
-                    return;
-
-                changed = _callChange.Task;
-            }
-
-            await changed.WaitAsync(_disconnect.Token);
         }
     }
 
