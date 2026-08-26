@@ -125,10 +125,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
     internal Exception? LastHandledFailure => Volatile.Read(ref _lastHandledFailure);
 
-    internal Func<int, int>? TestOutgoingTerminalCallCountMutator { get; set; }
-
-    internal int OutgoingCapabilityCallCount => _outgoingCapabilityCalls.Count;
-
     private SidecarCapabilitySession Session => Volatile.Read(ref _session);
 
     internal HostActionEntryRequestContext IssueHostActionEntryContext(
@@ -368,9 +364,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     terminalId,
                     terminalCancellation);
                 sessionTerminalCallCount = response.Outcome.TerminalCallCount;
-                sessionTerminalCallCount = TestOutgoingTerminalCallCountMutator?.Invoke(
-                    sessionTerminalCallCount)
-                    ?? sessionTerminalCallCount;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                sessionTerminalCallCount = OutOfProcessProtocolTestFixture
+                    .TransformResponseTerminalCallCount(sessionTerminalCallCount);
+#endif
                 var terminalOutcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
                 if (terminalOutcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
                     return terminalOutcome.Result;

@@ -19,6 +19,10 @@
     <OutOfProcessHostPayloadSource Condition="'$(OutOfProcessHostPayloadSource)' == ''">$(TargetDir)</OutOfProcessHostPayloadSource>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(OutOfProcessProtocolTestFixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="SharpClaw.Contracts" Version="0.5.0-beta.30" />
     <PackageReference Include="SharpClaw.Core" Version="0.5.0-beta.23" />

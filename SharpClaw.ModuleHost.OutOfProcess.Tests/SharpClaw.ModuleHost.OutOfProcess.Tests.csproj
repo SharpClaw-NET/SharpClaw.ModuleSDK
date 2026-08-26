@@ -2,6 +2,8 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <OutOfProcessProtocolTestFixture>true</OutOfProcessProtocolTestFixture>
+    <DefineConstants>$(DefineConstants);OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,7 +17,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SharpClaw.ModuleHost.InProcess\SharpClaw.ModuleHost.InProcess.csproj" />
-    <ProjectReference Include="..\SharpClaw.ModuleHost.OutOfProcess\SharpClaw.ModuleHost.OutOfProcess.csproj" />
+    <ProjectReference Include="..\SharpClaw.ModuleHost.OutOfProcess\SharpClaw.ModuleHost.OutOfProcess.csproj"
+                      AdditionalProperties="OutOfProcessProtocolTestFixture=$(OutOfProcessProtocolTestFixture)" />
     <ProjectReference Include="..\SharpClaw.ModuleHost.OutOfProcess.TestModule\SharpClaw.ModuleHost.OutOfProcess.TestModule.csproj" />
   </ItemGroup>
 </Project>
