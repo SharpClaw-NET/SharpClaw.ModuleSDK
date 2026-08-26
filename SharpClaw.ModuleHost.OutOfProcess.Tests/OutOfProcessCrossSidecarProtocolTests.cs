@@ -283,7 +283,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             {
 
             var targetGenerationBefore = _targetClient.CapabilitySession.BindingGeneration;
-            var cancelled = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-cancel-observe");
+            var cancelled = await InvokeSourceAsync(
+                client,
+                dispatcher,
+                "cross-sidecar-cancel-observe");
             cancelled.Result.Succeeded.Should().BeTrue();
             cancelled.Result.Output.Single().Text.Should().Contain(
                 "cross-sidecar-cancel-observe:outcome=Cancelled;error=none;result=none");
@@ -307,7 +310,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     [Test, CancelAfter(30000)]
     public async Task CrossSidecarPreTerminalCancellationWaitsForBlockedTargetRotation()
     {
-        TestContext.Progress.WriteLine("stage:begin");
         var (targetServer, targetAddress, targetToken) =
             await StartStandaloneServerAsync(
                 "cross-blocked-target",
@@ -327,77 +329,47 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
         targetDescriptors.Add(CrossSidecarModule.OwnedAction);
         targetDispatcher.BlockOperations = true;
+        var targetStorage = new BlockingStorageGateway();
+        targetStorage.Release.TrySetResult();
         await targetClient.ConnectCapabilitiesAsync(
             CreateOptions(
                 targetClient,
                 targetDispatcher,
-                descriptors: targetDescriptors));
-        TestContext.Progress.WriteLine("stage:target-connected");
-
+                descriptors: targetDescriptors,
+                storageGateway: targetStorage,
+                ownedStorageNames: ["target-store"]));
         var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
         await using (sourceClient)
         {
-            TestContext.Progress.WriteLine("stage:source-clients-connected");
             var generationBefore = targetClient.CapabilitySession.BindingGeneration;
             var blocked = InvokeSourceAsync(
                 sourceClient,
                 sourceDispatcher,
                 "cross-sidecar",
                 "block");
-            TestContext.Progress.WriteLine("stage:block-started");
-            try
-            {
-                await targetDispatcher.BlockInvocationStarted.Task.WaitAsync(
-                    TimeSpan.FromSeconds(5));
-            }
-            catch (TimeoutException)
-            {
-                TestContext.Progress.WriteLine(
-                    $"blocked-status: completed={blocked.IsCompleted}; faulted={blocked.IsFaulted}; "
-                    + $"canceled={blocked.IsCanceled}");
-                if (blocked.Status == TaskStatus.RanToCompletion)
-                {
-                    var result = blocked.Result;
-                    TestContext.Progress.WriteLine(
-                        $"blocked-result: succeeded={result.Result.Succeeded}; "
-                        + $"error={result.Result.Error?.Code}:{result.Result.Error?.Message}; "
-                        + $"output={string.Join('|', result.Result.Output.Select(item => item.Text))}");
-                }
-                if (sourceDispatcher.LastException is not null)
-                    TestContext.Progress.WriteLine(sourceDispatcher.LastException.ToString());
-                TestContext.Progress.WriteLine(
-                    $"target-dispatcher: runs={targetDispatcher.RunCalls}; "
-                        + $"terminals={targetDispatcher.TerminalCalls}; "
-                        + $"exception={targetDispatcher.LastException}");
-                TestContext.Progress.WriteLine(
-                    $"target-server-failure: {server.CapabilityFailure}");
-                if (blocked.Exception is not null)
-                    TestContext.Progress.WriteLine(blocked.Exception.ToString());
-                throw;
-            }
-            TestContext.Progress.WriteLine("stage:block-storage-started");
+            await targetDispatcher.BlockInvocationStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(5));
 
             targetDispatcher.CancelOperations = true;
             var cancelled = InvokeSourceAsync(
                 sourceClient,
                 sourceDispatcher,
                 "cross-sidecar-cancel-observe");
-            TestContext.Progress.WriteLine("stage:cancel-started");
             await Task.Delay(250);
-            TestContext.Progress.WriteLine("stage:cancel-delayed");
             cancelled.IsCompleted.Should().BeFalse();
             targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
 
             targetDispatcher.BlockRelease.TrySetResult();
-            TestContext.Progress.WriteLine("stage:block-released");
             var blockedResult = await blocked.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("stage:block-complete");
+            targetStorage.InvocationStarted.Task.IsCompleted.Should().BeTrue();
+            targetStorage.ObservedModuleId.Should().Be(CrossSidecarModule.Id);
+            targetStorage.ObservedStorageName.Should().Be("target-store");
+            targetStorage.ObservedOperation.Should().Be("echo");
             blockedResult.Result.Succeeded.Should().BeTrue(
                 $"Blocked target failed with {blockedResult.Result.Error?.Code}: "
                 + $"{blockedResult.Result.Error?.Message}");
 
             var cancelledResult = await cancelled.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("stage:cancel-complete");
             cancelledResult.Result.Succeeded.Should().BeTrue(
                 $"Cancelled target failed with {cancelledResult.Result.Error?.Code}: "
                 + $"{cancelledResult.Result.Error?.Message}");
@@ -411,7 +383,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 sourceClient,
                 sourceDispatcher,
                 "cross-sidecar").WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("stage:later-complete");
             later.Result.Succeeded.Should().BeTrue(
                 $"Later relay failed with {later.Result.Error?.Code}: "
                 + $"{later.Result.Error?.Message}");

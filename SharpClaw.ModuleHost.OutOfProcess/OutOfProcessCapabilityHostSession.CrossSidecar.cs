@@ -597,6 +597,25 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 hostContext,
                 cancellationToken);
             var receivedTerminalResponse = dispatch.TerminalResponse is not null;
+            if (!receivedTerminalResponse && dispatch.Kind == ActionOutcomeKind.Cancelled)
+            {
+                var cancelledAt = DateTimeOffset.UtcNow;
+                var cancelledAuthority = CreateCancelledTerminalAuthority(
+                    targetAuthority,
+                    peerRelay,
+                    cancelledAt);
+                await SendCancellationAsync(
+                    request.Call,
+                    request.Cancellation,
+                    request.Deadline,
+                    cancellationToken,
+                    cancellationToken,
+                    new SidecarCrossSidecarActionEntryPeerCancellation(
+                        peerRelay,
+                        cancelledAuthority,
+                        cancelledAt),
+                    cancelledAt);
+            }
             var response = dispatch.TerminalResponse
                 ?? CreateCrossSidecarDispatchResponse(
                     request,

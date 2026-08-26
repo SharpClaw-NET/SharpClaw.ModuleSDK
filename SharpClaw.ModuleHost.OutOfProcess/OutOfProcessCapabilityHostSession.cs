@@ -1068,13 +1068,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             }
             foreach (var action in _outgoingActions.Values)
             {
-                action.Cancellation.Cancel();
+                CancelSafely(action.Cancellation);
                 action.Completion.TrySetException(new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.Disconnected,
                     "The sidecar capability channel disconnected."));
             }
             foreach (var call in _calls.Values)
-                call.Cancellation.Cancel();
+                CancelSafely(call.Cancellation);
         }
     }
 
@@ -1095,14 +1095,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
         }
         foreach (var call in _calls.Values)
-            call.Cancellation.Cancel();
+            CancelSafely(call.Cancellation);
         foreach (var terminal in _terminals.Values)
         {
             terminal.TrySetException(new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
         }
         foreach (var action in _outgoingActions.Values)
         {
-            action.Cancellation.Cancel();
+            CancelSafely(action.Cancellation);
             action.Completion.TrySetException(
                 new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
         }
@@ -1126,6 +1126,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         _rotationGate.Dispose();
         SendGate.Dispose();
         _disconnect.Dispose();
+    }
+
+    private static void CancelSafely(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private async Task ScheduleActionRequestAsync(
@@ -3047,6 +3058,40 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             authority.Proof,
             StringComparison.Ordinal);
 
+    private SidecarHostTerminalAuthority CreateCancelledTerminalAuthority(
+        SidecarHostTerminalAuthority authority,
+        SidecarCrossSidecarActionEntryRelay peerRelay,
+        DateTimeOffset cancelledAt)
+    {
+        var peerCall = peerRelay.PeerCall
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar cancellation relay has no peer call.");
+        var sourceParentCall = peerRelay.Carrier.Authority.SourceParentCall;
+        var cancelled = authority with
+        {
+            SessionId = sourceParentCall.SessionId,
+            RequestId = sourceParentCall.RequestId,
+            CancellationId = sourceParentCall.CancellationId,
+            CallId = sourceParentCall.CallId,
+            CancellationState = SidecarHostTerminalCancellationState.Cancelled,
+            CancellationAt = cancelledAt,
+            RootPeerCall = peerCall,
+            CrossSidecarPeerRelayBindingHash =
+                SidecarCapabilityTransportValidation.ComputeCrossSidecarPeerRelayBindingHash(
+                    peerRelay),
+            CanonicalBindingHash = string.Empty,
+            Proof = string.Empty,
+        };
+        var canonicalBindingHash = SidecarCapabilityTransportValidation
+            .ComputeTerminalAuthorityBindingHash(cancelled);
+        var hashed = cancelled with { CanonicalBindingHash = canonicalBindingHash };
+        return hashed with
+        {
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(hashed, _controlToken),
+        };
+    }
+
     private async Task<SidecarActionTerminalTransportResponse> SendTerminalAsync(
         SidecarActionTerminalTransportRequest request,
         CancellationToken ct,
@@ -3061,6 +3106,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 "The terminal call identifier was reused.");
         }
 
+        var sent = false;
         try
         {
             await OutOfProcessCapabilityWire.SendAsync(
@@ -3070,8 +3116,36 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 ct);
+            sent = true;
             afterSend?.Invoke();
             return await completion.Task.WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (
+            sent
+            && ct.IsCancellationRequested
+            && request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
+        {
+            var cancelledAt = DateTimeOffset.UtcNow;
+            var cancelledAuthority = CreateCancelledTerminalAuthority(
+                request.Authority,
+                request.CrossSidecarPeerRelay
+                    ?? throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The cross-sidecar terminal request has no peer relay."),
+                cancelledAt);
+            await SendCancellationAsync(
+                request.Call,
+                request.Cancellation,
+                request.Deadline,
+                ct,
+                ct,
+                new SidecarCrossSidecarActionEntryPeerCancellation(
+                    request.CrossSidecarPeerRelay,
+                    cancelledAuthority,
+                    cancelledAt),
+                cancelledAt);
+            using var responseTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            return await completion.Task.WaitAsync(responseTimeout.Token);
         }
         finally
         {
@@ -3259,13 +3333,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarCancellationIdentity cancellation,
         DateTimeOffset deadline,
         CancellationToken callCancellation,
-        CancellationToken callerCancellation)
+        CancellationToken callerCancellation,
+        SidecarCrossSidecarActionEntryPeerCancellation? peerCancellation = null,
+        DateTimeOffset? sentAt = null)
     {
         var reason = deadline <= DateTimeOffset.UtcNow
             ? "deadline"
             : callerCancellation.IsCancellationRequested
                 ? "caller"
                 : "call";
+        var cancellationSentAt = sentAt ?? DateTimeOffset.UtcNow;
         using var sendTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         try
         {
@@ -3276,7 +3353,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     call,
                     cancellation,
                     reason,
-                    DateTimeOffset.UtcNow),
+                    cancellationSentAt,
+                    peerCancellation),
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 sendTimeout.Token);

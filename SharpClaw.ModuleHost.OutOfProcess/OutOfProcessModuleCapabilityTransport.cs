@@ -583,6 +583,65 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         public SidecarActionCapabilityRequest? Request { get; set; }
     }
 
+    private sealed class IncomingTerminal(
+        SidecarActionTerminalTransportRequest request,
+        CancellationTokenSource cancellation) : IDisposable
+    {
+        public SidecarActionTerminalTransportRequest Request { get; } = request;
+
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public object Sync { get; } = new();
+
+        private bool _relayImportStarted;
+
+        private bool _peerCancellationConsumed;
+
+        public bool RelayImportStarted
+        {
+            get
+            {
+                lock (Sync)
+                    return _relayImportStarted;
+            }
+        }
+
+        public bool PeerCancellationConsumed
+        {
+            get
+            {
+                lock (Sync)
+                    return _peerCancellationConsumed;
+            }
+        }
+
+        public bool TryBeginRelayImport()
+        {
+            lock (Sync)
+            {
+                if (_relayImportStarted || _peerCancellationConsumed)
+                    return false;
+                _relayImportStarted = true;
+                return true;
+            }
+        }
+
+        public bool TryConsumePeerCancellation(Func<bool> consume)
+        {
+            lock (Sync)
+            {
+                if (_relayImportStarted || _peerCancellationConsumed)
+                    return false;
+                if (!consume())
+                    return false;
+                _peerCancellationConsumed = true;
+                return true;
+            }
+        }
+
+        public void Dispose() => Cancellation.Dispose();
+    }
+
     private readonly WebSocket _socket;
     private SidecarCapabilitySession _session;
     private readonly string _controlToken;
@@ -595,6 +654,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     private readonly IServiceProvider _services;
     private readonly ConcurrentDictionary<Guid, PendingAction> _actions = new();
     private readonly ConcurrentDictionary<Guid, IncomingAction> _incomingActions = new();
+    private readonly ConcurrentDictionary<Guid, IncomingTerminal> _incomingTerminals = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarStorageCapabilityResponse>> _storage = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _retiredCalls = new();
@@ -1194,11 +1254,30 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     case OutOfProcessCapabilityFrameKind.ActionTerminalRequest:
                         var terminalRequest = OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportRequest>(
                             frame.Payload);
+                        var incomingTerminal = new IncomingTerminal(
+                            terminalRequest,
+                            CancellationTokenSource.CreateLinkedTokenSource(linked.Token));
+                        if (!_incomingTerminals.TryAdd(terminalRequest.Call.CallId, incomingTerminal))
+                        {
+                            incomingTerminal.Dispose();
+                            throw new OutOfProcessCapabilityException(
+                                SidecarCapabilityErrors.Replay,
+                                "The terminal call identifier was reused.");
+                        }
                         if (!_terminalQueue.TrySchedule(
-                                queueCt => HandleTerminalRequestAsync(terminalRequest, queueCt),
+                                queueCt => HandleTerminalRequestAsync(
+                                    terminalRequest,
+                                    incomingTerminal,
+                                    queueCt),
                                 linked.Token,
                                 out var terminalCompletion))
                         {
+                            if (_incomingTerminals.TryRemove(
+                                    terminalRequest.Call.CallId,
+                                    out var removedTerminal))
+                            {
+                                removedTerminal.Dispose();
+                            }
                             throw new OutOfProcessCapabilityException(
                                 SidecarCapabilityErrors.ModuleBusy,
                                 "The module terminal execution queue is full.");
@@ -1258,6 +1337,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         _session.Disconnect();
         foreach (var incoming in _incomingActions.Values)
             incoming.Cancellation.Cancel();
+        foreach (var incoming in _incomingTerminals.Values)
+            incoming.Cancellation.Cancel();
         lock (_rotationSync)
         {
             _rebindReady?.TrySetException(
@@ -1287,23 +1368,30 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private async Task HandleTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
+        IncomingTerminal incoming,
         CancellationToken ct)
     {
-        if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
-            && request.Context is not null
-            && request.CrossSidecarActionRequest is not null)
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            ct,
+            incoming.Cancellation.Token);
+        ct = linked.Token;
+        try
         {
-            await HandleCrossSidecarTerminalRequestAsync(request, ct);
-            return;
-        }
+            if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
+                && request.Context is not null
+                && request.CrossSidecarActionRequest is not null)
+            {
+                await HandleCrossSidecarTerminalRequestAsync(request, incoming, ct);
+                return;
+            }
 
-        if (!_actions.TryGetValue(request.Call.CallId, out var pending)
-            || pending.Terminal is null)
-        {
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.Unauthorized,
-                "The terminal request has no initiating action call.");
-        }
+            if (!_actions.TryGetValue(request.Call.CallId, out var pending)
+                || pending.Terminal is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The terminal request has no initiating action call.");
+            }
 
         var validationRequest = pending.Request;
         if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
@@ -1426,13 +1514,21 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 + $"requestReceipt={request.Receipt.CallId}; responseReceipt={response.Receipt?.CallId}; "
                 + $"completed={response.Execution.Completed}; result={response.Execution.Result?.TypeIdentity}");
         }
-        await OutOfProcessCapabilityWire.SendAsync(
-            _socket,
-            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
-            response,
-            _limits.ProtocolMessageBytes,
-            SendGate,
-            ct);
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+                response,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                ct);
+        }
+        finally
+        {
+            if (_incomingTerminals.TryRemove(request.Call.CallId, out var removed))
+                removed.Dispose();
+            else
+                incoming.Dispose();
+        }
     }
 
     private async Task HandleIncomingActionRequestAsync(
@@ -1745,8 +1841,132 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private void CancelIncomingAction(OutOfProcessCapabilityCancellation cancellation)
     {
-        if (!_incomingActions.TryGetValue(cancellation.Call.CallId, out var active)
-            || !cancellation.Call.Equals(CreateExpectedCall(cancellation.Call))
+        if (cancellation.PeerCancellation is { } peerCancellation)
+        {
+            if (_incomingTerminals.TryGetValue(
+                    cancellation.Call.CallId,
+                    out var terminalWithPeerCancellation))
+            {
+                CancelIncomingTerminal(cancellation, terminalWithPeerCancellation);
+                return;
+            }
+
+            IncomingAction? peerAction = null;
+            if (_incomingActions.TryGetValue(cancellation.Call.CallId, out var activePeerAction))
+            {
+                ValidateIncomingCancellation(cancellation, activePeerAction.Request?.Call);
+                peerAction = activePeerAction;
+            }
+
+            ConsumePeerCancellation(cancellation, peerCancellation);
+            peerAction?.Cancellation.Cancel();
+            return;
+        }
+
+        if (_incomingActions.TryGetValue(cancellation.Call.CallId, out var active))
+        {
+            ValidateIncomingCancellation(cancellation, active.Request?.Call);
+            active.Cancellation.Cancel();
+            return;
+        }
+
+        if (!_incomingTerminals.TryGetValue(cancellation.Call.CallId, out var incoming))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The module cancellation does not match an active call.");
+        }
+
+        CancelIncomingTerminal(cancellation, incoming);
+    }
+
+    private void CancelIncomingTerminal(
+        OutOfProcessCapabilityCancellation cancellation,
+        IncomingTerminal incoming)
+    {
+        ValidateIncomingCancellation(cancellation, incoming.Request.Call);
+        var peerRelay = incoming.Request.CrossSidecarPeerRelay;
+        var crossSidecar = incoming.Request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
+            && peerRelay is not null;
+        if (crossSidecar && !incoming.RelayImportStarted)
+        {
+            var peerCancellation = cancellation.PeerCancellation;
+            if (peerCancellation is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The cross-sidecar cancellation has no signed peer authority.");
+            }
+
+            if (!string.Equals(
+                    SidecarCapabilityTransportValidation.ComputeCrossSidecarPeerRelayBindingHash(
+                        peerRelay!),
+                    SidecarCapabilityTransportValidation.ComputeCrossSidecarPeerRelayBindingHash(
+                        peerCancellation.Relay),
+                    StringComparison.Ordinal))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The cross-sidecar cancellation relay does not match the terminal request.");
+            }
+
+            var consumed = incoming.TryConsumePeerCancellation(() =>
+            {
+                ConsumePeerCancellation(cancellation, peerCancellation);
+                return true;
+            });
+            if (!consumed && incoming.PeerCancellationConsumed)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The cross-sidecar cancellation was already consumed.");
+            }
+        }
+
+        incoming.Cancellation.Cancel();
+    }
+
+    private void ConsumePeerCancellation(
+        OutOfProcessCapabilityCancellation cancellation,
+        SidecarCrossSidecarActionEntryPeerCancellation peerCancellation)
+    {
+        ValidateCancellationEnvelope(cancellation);
+        if (!MatchesCapabilityCall(
+                cancellation.Call,
+                peerCancellation.Relay.Carrier.Authority.TargetChildCall)
+            || peerCancellation.CancelledAt != cancellation.SentAt)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar cancellation is not bound to its receiving call.");
+        }
+
+        var validation = _session.ConsumeCancelledCrossSidecarActionEntryPeerRelay(
+            peerCancellation,
+            cancellation.SentAt,
+            ValidateCrossSidecarOutcomeProof);
+        ThrowIfRejected(validation);
+    }
+
+    private void ValidateIncomingCancellation(
+        OutOfProcessCapabilityCancellation cancellation,
+        SidecarCapabilityCallIdentity? expectedCall)
+    {
+        if (expectedCall is null
+            || !MatchesCapabilityCall(cancellation.Call, expectedCall))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The module cancellation does not match the active call.");
+        }
+
+        ValidateCancellationEnvelope(cancellation);
+    }
+
+    private void ValidateCancellationEnvelope(
+        OutOfProcessCapabilityCancellation cancellation)
+    {
+        if (!cancellation.Call.Equals(CreateExpectedCall(cancellation.Call))
             || cancellation.Cancellation.CancellationId != cancellation.Call.CancellationId
             || !string.Equals(
                 cancellation.Cancellation.AuthorityHash,
@@ -1756,10 +1976,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         {
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.Unauthorized,
-                "The module action cancellation does not match an active call.");
+                "The module cancellation does not match the active call.");
         }
-
-        active.Cancellation.Cancel();
     }
 
     private SidecarCapabilityCallIdentity CreateExpectedCall(
@@ -1876,6 +2094,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
     private async Task HandleCrossSidecarTerminalRequestAsync(
         SidecarActionTerminalTransportRequest request,
+        IncomingTerminal incoming,
         CancellationToken ct)
     {
         var context = request.Context
@@ -1945,6 +2164,19 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The target module does not own the requested action terminal.");
         }
 
+        if (!incoming.TryBeginRelayImport())
+        {
+            if (!incoming.PeerCancellationConsumed)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Duplicate,
+                    "The cross-sidecar peer relay import was started more than once.");
+            }
+
+            await SendCancelledCrossSidecarTerminalResponseAsync(request, ct);
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var peerImport = _session.ImportCrossSidecarActionEntryPeerRelay(
             request,
@@ -1963,6 +2195,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             ?? throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
                 "The receiving peer relay has no local call identity.");
+        ObserveSequence(peerCall.Sequence);
         var peerReceipt = request.Receipt with { CallId = peerCall.CallId };
 
         var terminal = new SidecarActionTerminalRegistration(
@@ -2096,6 +2329,33 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
     }
 
+    private async Task SendCancelledCrossSidecarTerminalResponseAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken ct)
+    {
+        var cancellationFailure = new SidecarSafeFailureIdentity(
+            Guid.NewGuid(),
+            SidecarCapabilityErrors.Cancelled,
+            "The cross-sidecar target action was cancelled before relay import.",
+            Retryable: false);
+        var response = new SidecarActionTerminalTransportResponse(
+            null,
+            new SidecarTerminalExecutionResult(null, cancellationFailure, Completed: true),
+            request.Receipt,
+            _session.Binding.SafeFailure)
+        {
+            TerminalId = request.TerminalId,
+        };
+        using var sendTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+            response,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            sendTimeout.Token);
+    }
+
     private static bool OutOfProcessCapabilityTransportPayloadMatches(
         SidecarSerializedPayload left,
         SidecarSerializedPayload right) =>
@@ -2145,7 +2405,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         SidecarCapabilitySessionBinding binding,
         CancellationToken ct)
     {
-        while (!_actions.IsEmpty || !_storage.IsEmpty || !_terminals.IsEmpty)
+        while (!_actions.IsEmpty
+            || !_incomingActions.IsEmpty
+            || !_storage.IsEmpty
+            || !_terminals.IsEmpty
+            || !_incomingTerminals.IsEmpty)
             await Task.Delay(TimeSpan.FromMilliseconds(5), ct);
 
         SidecarCapabilityValidationResult validation;
@@ -2545,6 +2809,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         foreach (var pending in _actions.Values)
             pending.Completion.TrySetException(error);
         foreach (var incoming in _incomingActions.Values)
+            incoming.Cancellation.Cancel();
+        foreach (var incoming in _incomingTerminals.Values)
             incoming.Cancellation.Cancel();
         foreach (var pending in _storage.Values)
             pending.TrySetException(error);

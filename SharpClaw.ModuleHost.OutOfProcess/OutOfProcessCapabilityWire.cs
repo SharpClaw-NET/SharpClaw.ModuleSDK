@@ -33,7 +33,8 @@ internal sealed record OutOfProcessCapabilityCancellation(
     SidecarCapabilityCallIdentity Call,
     SidecarCancellationIdentity Cancellation,
     string Reason,
-    DateTimeOffset SentAt);
+    DateTimeOffset SentAt,
+    SidecarCrossSidecarActionEntryPeerCancellation? PeerCancellation = null);
 
 internal static class OutOfProcessCapabilityWire
 {
