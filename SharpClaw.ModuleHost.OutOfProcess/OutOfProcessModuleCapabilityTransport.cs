@@ -1948,7 +1948,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         var peerImport = _session.ImportCrossSidecarActionEntryPeerRelay(
             request,
             DateTimeOffset.UtcNow,
-            ValidateCrossSidecarProof,
+            ValidateCrossSidecarOutcomeProof,
             out var importedCarrier);
         ThrowIfRejected(peerImport);
         if (importedCarrier is null)
@@ -1971,7 +1971,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.EffectiveAction.ByteLength,
             DateTimeOffset.UtcNow,
             out var importedHostContext,
-            ValidateCrossSidecarProof);
+            ValidateCrossSidecarOutcomeProof);
         if (!begin.Accepted || importedHostContext is null)
         {
             _session.RevokeCrossSidecarActionEntry(
@@ -2358,20 +2358,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         && string.Equals(
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
             authority.Proof,
-            StringComparison.Ordinal);
-
-    private bool ValidateCrossSidecarProof(
-        SidecarCrossSidecarActionEntryAuthority authority,
-        string proof) =>
-        string.Equals(
-            authority.CanonicalBindingHash,
-            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
-            StringComparison.OrdinalIgnoreCase)
-        && string.Equals(
-            CreateCrossSidecarProof(
-                authority with { Proof = string.Empty },
-                _controlToken),
-            proof,
             StringComparison.Ordinal);
 
     private bool ValidateCrossSidecarOutcomeProof(
