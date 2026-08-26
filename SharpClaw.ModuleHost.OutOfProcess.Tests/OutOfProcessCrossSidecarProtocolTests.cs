@@ -78,6 +78,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     [Test, CancelAfter(30000)]
     public async Task CrossSidecarActionUsesTargetDescriptorAndTerminal()
     {
+        _targetDispatcher.Reset();
         await using var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
             _sourceAddress,
             _sourceToken,
@@ -164,6 +165,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     [Test, CancelAfter(30000)]
     public async Task AgentsJobImportCrossSidecarPermissionCompletesParentAndKeepsSessionUsable()
     {
+        _targetDispatcher.Reset();
         await using var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
             _sourceAddress,
             _sourceToken,
@@ -956,6 +958,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         public void Reset()
         {
             RunCalls = 0;
+            ExternalRunCalls = 0;
             TerminalCalls = 0;
             LastException = null;
         }
