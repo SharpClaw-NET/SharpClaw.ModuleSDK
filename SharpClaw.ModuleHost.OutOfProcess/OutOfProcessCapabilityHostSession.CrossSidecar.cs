@@ -472,7 +472,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var action = carrier.Action;
         var peerRelay = new SidecarCrossSidecarActionEntryRelay(carrier, target)
         {
-            PeerCall = authority.TargetChildCall,
+            PeerCall = authority.PeerCall,
             PeerBindingGeneration = carrier.Authority.PeerBindingGeneration,
         };
         var crossSidecarActionRequest = new SidecarCrossSidecarActionEntryRequest(
@@ -592,13 +592,29 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     binding.SafeFailure);
             if (receivedTerminalResponse)
             {
+                if (response.CrossSidecarRelay is not null
+                    || response.CrossSidecarOutcome is not null)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.InvalidResponse,
+                        "The target terminal response contains an unexpected cross-sidecar envelope.");
+                }
+
+                var targetValidationRequest = request with
+                {
+                    CrossSidecarActionRequest = null,
+                    CrossSidecarPeerRelay = null,
+                };
+                var targetValidationResponse = response with
+                {
+                    CrossSidecarRelay = null,
+                    CrossSidecarOutcome = null,
+                };
                 var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
-                    request,
-                    response,
+                    targetValidationRequest,
+                    targetValidationResponse,
                     binding,
-                    binding,
-                    DateTimeOffset.UtcNow,
-                    ValidateCrossSidecarOutcomeProof);
+                    ValidateTerminalAuthority);
                 if (!responseValidation.Accepted)
                 {
                     throw new OutOfProcessCapabilityException(

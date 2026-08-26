@@ -1959,6 +1959,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The cross-sidecar peer relay returned no carrier.");
         }
 
+        var peerCall = importedCarrier.Authority.PeerCall
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The receiving peer relay has no local call identity.");
+        var peerReceipt = request.Receipt with { CallId = peerCall.CallId };
+
         var terminal = new SidecarActionTerminalRegistration(
             request.TerminalId,
             request.Descriptor.InputTypeIdentity,
@@ -2005,10 +2011,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             context,
             effectiveHostEntry,
             importedHostContext.Contribution);
-        var completed = false;
+        var revoked = false;
         using var carrierScope = _transport.PushActiveCarrier(
             importedHostContext.CapabilityId,
-            request.Call);
+            peerCall);
         try
         {
             SidecarTerminalExecutionResult execution;
@@ -2045,53 +2051,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     request.Descriptor.Version,
                     execution.Result.TypeIdentity,
                     execution.Result.ContentHash);
-            var outcomeKind = ct.IsCancellationRequested
-                ? ActionOutcomeKind.Cancelled
-                : execution.Result is null
-                    ? ActionOutcomeKind.Failed
-                    : ActionOutcomeKind.Completed;
-            var outcome = new SidecarActionOutcomeEnvelope(
-                outcomeKind,
-                execution.Result,
-                null,
-                outcomeKind == ActionOutcomeKind.Failed
-                    ? new ExecutionError(
-                        execution.Failure?.Code ?? SidecarCapabilityErrors.HostFailure,
-                        execution.Failure?.Message ?? "The module action entry failed.")
-                    : null,
-                null,
-                request.Receipt,
-                _session.Binding.SafeFailure,
-                1);
             ThrowIfRejected(_session.RecordTerminal(
-                request.Call.CallId,
+                peerCall.CallId,
                 request.Authority.AuthorityId,
-                request.Receipt));
-            var completion = _session.CompleteCrossSidecarActionEntry(
-                importedCarrier,
-                outcome,
-                request.Receipt,
-                execution,
-                resultIdentity,
-                _session.Binding.SafeFailure,
-                DateTimeOffset.UtcNow,
-                (authority, canonicalHash) => CreateCrossSidecarProof(
-                    authority with
-                    {
-                        CanonicalBindingHash = canonicalHash,
-                        Proof = string.Empty,
-                    },
-                    _controlToken),
-                out var completedOutcome);
-            ThrowIfRejected(completion);
-            if (completedOutcome is null)
-            {
-                throw new OutOfProcessCapabilityException(
-                    SidecarCapabilityErrors.HostFailure,
-                    "The cross-sidecar outcome was not created.");
-            }
-
-            completed = true;
+                peerReceipt));
             var response = new SidecarActionTerminalTransportResponse(
                 resultIdentity,
                 execution,
@@ -2099,8 +2062,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 _session.Binding.SafeFailure)
             {
                 TerminalId = request.TerminalId,
-                CrossSidecarRelay = request.CrossSidecarPeerRelay,
-                CrossSidecarOutcome = completedOutcome,
             };
             await OutOfProcessCapabilityWire.SendAsync(
                 _socket,
@@ -2109,12 +2070,26 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 ct);
+
+            var revocation = _session.RevokeCrossSidecarActionEntry(
+                importedCarrier.CarrierId,
+                DateTimeOffset.UtcNow);
+            if (!revocation.Accepted
+                && !string.Equals(
+                    revocation.Code,
+                    SidecarCapabilityErrors.Duplicate,
+                    StringComparison.Ordinal))
+            {
+                ThrowIfRejected(revocation);
+            }
+
+            revoked = true;
         }
         finally
         {
-            if (!completed)
+            if (!revoked)
             {
-                _session.RevokeCrossSidecarActionEntry(
+                _ = _session.RevokeCrossSidecarActionEntry(
                     importedCarrier.CarrierId,
                     DateTimeOffset.UtcNow);
             }
