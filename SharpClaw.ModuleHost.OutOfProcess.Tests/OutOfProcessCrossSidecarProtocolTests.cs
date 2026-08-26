@@ -354,6 +354,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 TestContext.Progress.WriteLine(
                     $"blocked-status: completed={blocked.IsCompleted}; faulted={blocked.IsFaulted}; "
                     + $"canceled={blocked.IsCanceled}");
+                if (blocked.Status == TaskStatus.RanToCompletion)
+                {
+                    var result = blocked.Result;
+                    TestContext.Progress.WriteLine(
+                        $"blocked-result: succeeded={result.Result.Succeeded}; "
+                        + $"error={result.Result.Error?.Code}:{result.Result.Error?.Message}; "
+                        + $"output={string.Join('|', result.Result.Output.Select(item => item.Text))}");
+                }
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
                 throw;
