@@ -1212,6 +1212,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var actionReleased = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var storageResponseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
         var responseGateUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
@@ -1282,6 +1284,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                     await actionResponseRelease.Task.WaitAsync(ct);
                 }
             });
+            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(ct =>
+            {
+                storageResponseEntered.TrySetResult();
+                return Task.CompletedTask;
+            });
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
             {
                 if (call.Capability == SidecarCapabilityKind.Action)
@@ -1299,6 +1306,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 TimeSpan.FromSeconds(5));
 
             storage.InvocationRelease.TrySetResult();
+            await storage.InvocationReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Storage gateway invocation returned.");
+            await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Storage response send started.");
             var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
             trigger.Result.Succeeded.Should().BeTrue(
                 $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
@@ -1338,6 +1349,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             actionResponseRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }
@@ -3068,6 +3080,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         public TaskCompletionSource InvocationStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource InvocationReturned { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource InvocationRelease { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -3111,6 +3126,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 }
             }
 
+            InvocationReturned.TrySetResult();
             return JsonSerializer.SerializeToElement(new { value = "storage" });
         }
 
