@@ -146,12 +146,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var relayRevoked = false;
         try
         {
-            var targetResponse = await target.Client.CapabilitySession
+            var targetExecution = await target.Client.CapabilitySession
                 .ExecuteCrossSidecarCarrierAsync(
                     relay.Carrier,
                     targetTerminal,
                     targetRegistration,
                     ct);
+            var targetResponse = targetExecution.Response;
             var revocation = Session.RevokeCrossSidecarActionEntry(
                 relay.Carrier.CarrierId,
                 DateTimeOffset.UtcNow);
@@ -173,7 +174,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 targetResponse,
                 null,
                 ct,
-                target.Client.CapabilitySession);
+                target.Client.CapabilitySession,
+                targetExecution.OutcomeBinding);
         }
         finally
         {
@@ -192,7 +194,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         SidecarActionTerminalTransportResponse? targetResponse,
         SidecarSafeFailureIdentity? failure,
         CancellationToken ct,
-        OutOfProcessCapabilityHostSession? targetSession = null)
+        OutOfProcessCapabilityHostSession? targetSession = null,
+        SidecarCapabilitySessionBinding? targetBinding = null)
     {
         var execution = targetResponse?.Execution
             ?? new SidecarTerminalExecutionResult(
@@ -223,7 +226,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 request,
                 response,
                 Session.Binding,
-                targetSession.Session.Binding,
+                targetBinding ?? targetSession.Session.Binding,
                 DateTimeOffset.UtcNow,
                 targetSession.ValidateCrossSidecarOutcomeProof);
             if (!validation.Accepted)
@@ -442,7 +445,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         };
     }
 
-    internal async ValueTask<SidecarActionTerminalTransportResponse> ExecuteCrossSidecarCarrierAsync(
+    internal async ValueTask<(
+        SidecarActionTerminalTransportResponse Response,
+        SidecarCapabilitySessionBinding OutcomeBinding)> ExecuteCrossSidecarCarrierAsync(
         SidecarCrossSidecarActionEntryCarrier carrier,
         SidecarActionTerminalRegistration terminal,
         OutOfProcessActionDescriptorCatalog.Registration registration,
@@ -696,13 +701,34 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             }
 
             Volatile.Write(ref _lastCrossSidecarOutcome, completed);
-            return response with { CrossSidecarOutcome = completed };
+            if (!receivedTerminalResponse)
+                await RotateAfterPreTerminalCrossSidecarAsync();
+
+            return (response with { CrossSidecarOutcome = completed }, binding);
         }
         catch
         {
             Session.CompleteCrossSidecarActionEntry(carrier, DateTimeOffset.UtcNow);
             throw;
         }
+    }
+
+    private async Task RotateAfterPreTerminalCrossSidecarAsync()
+    {
+        await _rotationGate.WaitAsync(_disconnect.Token);
+        try
+        {
+            lock (_rotationSync)
+            {
+                _rotationReady ??= CreateSignal();
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
+        await StartRotationIfReadyAsync(_disconnect.Token);
     }
 
     internal bool ValidateCrossSidecarCarrier(

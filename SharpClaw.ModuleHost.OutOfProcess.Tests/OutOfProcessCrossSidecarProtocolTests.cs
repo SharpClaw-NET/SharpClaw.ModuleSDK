@@ -282,6 +282,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             await using (client)
             {
 
+            var targetGenerationBefore = _targetClient.CapabilitySession.BindingGeneration;
             var cancelled = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-cancel-observe");
             cancelled.Result.Succeeded.Should().BeTrue();
             cancelled.Result.Output.Single().Text.Should().Contain(
@@ -292,6 +293,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             _targetDispatcher.CancelOperations = false;
             var succeeded = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
             succeeded.Result.Succeeded.Should().BeTrue();
+            _targetClient.CapabilitySession.BindingGeneration.Should().BeGreaterThan(targetGenerationBefore);
             _targetDispatcher.RunCalls.Should().Be(2);
             _targetDispatcher.TerminalCalls.Should().Be(1);
             }
