@@ -1444,8 +1444,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             var result = CompleteSessionCallResult(callId, terminalCallCount);
             if (result.Accepted)
             {
-                _outgoingCapabilityCalls.TryRemove(callId, out _);
-                SignalCallChange();
+                ReleaseOutgoingCapabilityCall(callId);
                 return;
             }
 
@@ -1458,6 +1457,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     "A parent action cannot complete while a nested action is active.",
                     StringComparison.Ordinal))
             {
+                ReleaseOutgoingCapabilityCall(callId);
                 throw new OutOfProcessCapabilityException(
                     result.Code ?? SidecarCapabilityErrors.HostFailure,
                     result.Message ?? "The capability call could not be completed.");
@@ -1467,6 +1467,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 callId,
                 hostContext,
                 _disconnect.Token);
+        }
+    }
+
+    private void ReleaseOutgoingCapabilityCall(Guid callId)
+    {
+        if (_outgoingCapabilityCalls.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
         }
     }
 

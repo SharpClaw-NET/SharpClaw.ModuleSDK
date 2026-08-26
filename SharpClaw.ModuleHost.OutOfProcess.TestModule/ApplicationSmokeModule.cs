@@ -446,6 +446,31 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
 
                 permissionValue = $":permission={outcome.Result.Value}";
             }
+            else if (string.Equals(
+                         context.Action.JobId,
+                         "permission-cross-sidecar",
+                         StringComparison.Ordinal))
+            {
+                var hostActionEntry = context.HostActionEntry
+                    ?? throw new InvalidOperationException(
+                        "The agents import terminal has no host action entry.");
+                var outcome = await hostActionEntry.InvokeCrossSidecarAsync<
+                    PermissionPolicyReadAction,
+                    PermissionPolicyReadResult>(
+                    new ModuleCrossSidecarActionEntryRequest<
+                        PermissionPolicyReadAction,
+                        PermissionPolicyReadResult>(
+                        CrossSidecarModule.PermissionAction,
+                        new PermissionPolicyReadAction("agents-job-import")),
+                    cancellationToken);
+                if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
+                {
+                    throw new InvalidOperationException(
+                        $"The permission sidecar action returned {outcome.Kind}.");
+                }
+
+                permissionValue = $":permission={outcome.Result.Value}";
+            }
 
             var snapshotHash = SidecarCapabilityTransportValidation
                 .ComputeSnapshotHash(context.Snapshot);
@@ -955,6 +980,9 @@ public sealed class CrossSidecarModule : ISharpClawModule
     public static Guid TerminalId { get; } =
         new("33333333-3333-4333-8333-333333333333");
 
+    public static Guid PermissionTerminalId { get; } =
+        new("77777777-7777-4777-8777-777777777777");
+
     public static ActionDescriptor<CrossSidecarAction, CrossSidecarResult> OwnedAction { get; } =
         new(
             new SharpClawActionKey("target.application.dispatch"),
@@ -979,12 +1007,16 @@ public sealed class CrossSidecarModule : ISharpClawModule
                 typeof(CrossSidecarResult)),
         };
 
+    public static ActionDescriptor<PermissionPolicyReadAction, PermissionPolicyReadResult>
+        PermissionAction => ApplicationSmokeModule.PermissionPolicyAction;
+
     public ModuleIdentity Identity { get; } =
         new(Id, "Cross Sidecar Target", "cross-target");
 
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Actions.Add(OwnedAction);
+        module.Actions.Add(PermissionAction);
         module.Services.AddScoped<ApplicationSmokeModule.ScopedTerminalResource>();
         module.Storage.Add(new ModuleStorageContractDescriptor(
             Id,
@@ -994,6 +1026,12 @@ public sealed class CrossSidecarModule : ISharpClawModule
         module.AddActionEntry<CrossSidecarAction, CrossSidecarResult, TargetTerminal>(
             OwnedAction,
             TerminalId);
+        module.AddActionEntry<
+            PermissionPolicyReadAction,
+            PermissionPolicyReadResult,
+            PermissionTerminal>(
+            PermissionAction,
+            PermissionTerminalId);
     }
 
     public sealed class TargetTerminal(
@@ -1032,5 +1070,17 @@ public sealed class CrossSidecarModule : ISharpClawModule
                     + $"idempotency={context.IdempotencyKey}|scope={resource.State}"),
             };
         }
+    }
+
+    public sealed class PermissionTerminal :
+        IHostActionEntryTerminal<PermissionPolicyReadAction, PermissionPolicyReadResult>
+    {
+        public Guid TerminalId => PermissionTerminalId;
+
+        public ValueTask<PermissionPolicyReadResult> InvokeAsync(
+            ActionContext<PermissionPolicyReadAction> context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new PermissionPolicyReadResult($"permission:{context.Action.PolicyId}"));
     }
 }

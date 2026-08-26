@@ -55,6 +55,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         _targetDispatcher = new CountingActionDispatcher();
         var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
         targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        targetDescriptors.Add(CrossSidecarModule.PermissionAction);
         await _targetClient.ConnectCapabilitiesAsync(
             CreateOptions(
                 _targetClient,
@@ -158,6 +159,75 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         _targetDispatcher.RunCalls.Should().Be(1);
         _targetDispatcher.ExternalRunCalls.Should().Be(1);
         _targetDispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task AgentsJobImportCrossSidecarPermissionCompletesParentAndKeepsSessionUsable()
+    {
+        await using var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            _sourceAddress,
+            _sourceToken,
+            new SidecarHostDescriptorCatalog(
+                [
+                    ToDescriptor(ApplicationSmokeModule.HostAction),
+                    ToChildDescriptor(),
+                ],
+                [],
+                OutOfProcessModuleHostProtocol.Version,
+                new SidecarPayloadLimits()));
+        var dispatcher = new CountingActionDispatcher();
+        var sourceEntries = new OutOfProcessCrossSidecarActionEntryCatalog();
+        sourceEntries.Add(_targetClient);
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        await client.ConnectCapabilitiesAsync(
+            CreateOptions(client, dispatcher, sourceEntries, descriptors));
+
+        async Task<AgentsJobImportResult> InvokeAsync()
+        {
+            var action = new AgentsJobImportAction("permission-cross-sidecar");
+            var context = client.IssueHostActionContext(
+                HostActionEntryIngress.CrossModule,
+                ApplicationSmokeModule.SelfOwnedEntryCliName,
+                ApplicationSmokeModule.Id,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1));
+            dispatcher.HostContextFactory = () => context;
+            var outcome = await client.InvokeModuleActionEntryAsync(
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                context);
+            outcome.Kind.Should().Be(
+                ActionOutcomeKind.Completed,
+                $"Agents import failed with {outcome.Error?.Code}: {outcome.Error?.Message}");
+            outcome.Result.Should().NotBeNull();
+            return outcome.Result;
+        }
+
+        var first = await InvokeAsync();
+        first.Value.Should().Contain(
+            "imported:permission-cross-sidecar:permission=permission:agents-job-import:");
+        client.HostActionEntryContexts.HasPendingContexts.Should().BeFalse();
+        client.CapabilitySession.RunFailure.Should().BeNull();
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        _targetDispatcher.RunCalls.Should().Be(1);
+        _targetDispatcher.TerminalCalls.Should().Be(1);
+
+        var second = await InvokeAsync();
+        second.Value.Should().Contain(
+            "imported:permission-cross-sidecar:permission=permission:agents-job-import:");
+        client.HostActionEntryContexts.HasPendingContexts.Should().BeFalse();
+        client.CapabilitySession.RunFailure.Should().BeNull();
+        dispatcher.RunCalls.Should().Be(2);
+        dispatcher.TerminalCalls.Should().Be(2);
+        _targetDispatcher.RunCalls.Should().Be(2);
+        _targetDispatcher.TerminalCalls.Should().Be(2);
     }
 
     [Test, CancelAfter(30000)]

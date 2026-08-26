@@ -888,6 +888,63 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task DisconnectedHostActionCompletionReleasesOutgoingCallBeforeCarrierCleanup()
+    {
+        var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway { BlockInvoke = true };
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var action = new AgentsJobImportAction("storage");
+        var invocation = client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            action,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
+
+        await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await client.DisposeAsync();
+        await storage.InvocationCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var completed = await Task.WhenAny(
+            invocation,
+            Task.Delay(TimeSpan.FromSeconds(5)));
+        completed.Should().Be(invocation);
+        Func<Task> awaitInvocation = async () => await invocation;
+        await awaitInvocation.Should().ThrowAsync<Exception>();
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CapabilitySessionRotatesAfterMaximumCalls()
     {
         await using var client = await CreateClientAsync();
