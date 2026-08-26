@@ -1945,9 +1945,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The target module does not own the requested action terminal.");
         }
 
+        var now = DateTimeOffset.UtcNow;
         var peerImport = _session.ImportCrossSidecarActionEntryPeerRelay(
             request,
-            DateTimeOffset.UtcNow,
+            now,
             ValidateCrossSidecarOutcomeProof,
             out var importedCarrier);
         ThrowIfRejected(peerImport);
@@ -1969,7 +1970,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             importedCarrier,
             terminal,
             request.EffectiveAction.ByteLength,
-            DateTimeOffset.UtcNow,
+            now,
             out var importedHostContext,
             ValidateCrossSidecarOutcomeProof);
         if (!begin.Accepted || importedHostContext is null)
