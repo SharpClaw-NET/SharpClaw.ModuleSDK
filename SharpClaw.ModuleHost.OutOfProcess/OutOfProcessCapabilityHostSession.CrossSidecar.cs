@@ -457,18 +457,25 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         ArgumentNullException.ThrowIfNull(terminal);
         ArgumentNullException.ThrowIfNull(registration);
         var now = DateTimeOffset.UtcNow;
-        var begin = Session.BeginCrossSidecarActionEntryCall(
-            carrier,
-            terminal,
-            carrier.Action.ByteLength,
-            now,
-            out var hostContext,
-            (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
-        if (!begin.Accepted || hostContext is null)
+        var begin = await WithCrossSidecarRelayAdmissionAsync(
+            () =>
+            {
+                var result = Session.BeginCrossSidecarActionEntryCall(
+                    carrier,
+                    terminal,
+                    carrier.Action.ByteLength,
+                    now,
+                    out var context,
+                    (authority, _) => ValidateCrossSidecarProof(authority, authority.Proof));
+                return (Result: result, HostContext: context);
+            },
+            cancellationToken);
+        var hostContext = begin.HostContext;
+        if (!begin.Result.Accepted || hostContext is null)
         {
             throw new OutOfProcessCapabilityException(
-                begin.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
-                begin.Message ?? "The cross-sidecar carrier was rejected.");
+                begin.Result.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                begin.Result.Message ?? "The cross-sidecar carrier was rejected.");
         }
 
         var authority = carrier.Authority;
@@ -715,12 +722,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession
 
     private async Task RotateAfterPreTerminalCrossSidecarAsync()
     {
+        Task rotationReady;
         await _rotationGate.WaitAsync(_disconnect.Token);
         try
         {
             lock (_rotationSync)
             {
                 _rotationReady ??= CreateSignal();
+                rotationReady = _rotationReady.Task;
             }
         }
         finally
@@ -728,7 +737,34 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             _rotationGate.Release();
         }
 
-        await StartRotationIfReadyAsync(_disconnect.Token);
+        RequestRotationRetry();
+        await rotationReady.WaitAsync(_disconnect.Token);
+    }
+
+    private async ValueTask<TResult> WithCrossSidecarRelayAdmissionAsync<TResult>(
+        Func<TResult> begin,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(begin);
+        while (true)
+        {
+            Task? rotation;
+            await _rotationGate.WaitAsync(ct);
+            try
+            {
+                lock (_rotationSync)
+                    rotation = _rotationTask ?? _rotationReady?.Task;
+
+                if (rotation is null)
+                    return begin();
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            await rotation.WaitAsync(ct);
+        }
     }
 
     internal bool ValidateCrossSidecarCarrier(

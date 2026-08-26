@@ -779,13 +779,15 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         {
                             "cross-sidecar-fail-root" or "cross-sidecar-fail-observe-root" => "fail",
                             "cross-sidecar-cancel-root" or "cross-sidecar-cancel-observe-root" => "cancel",
+                            "cross-sidecar-block-observe-root" => "block",
                             _ => "target",
                         },
                         context.Action.Value)),
                 ct);
             if (context.Action.Mode is
                 "cross-sidecar-fail-observe-root" or
-                "cross-sidecar-cancel-observe-root")
+                "cross-sidecar-cancel-observe-root" or
+                "cross-sidecar-block-observe-root")
             {
                 return new CrossSidecarResult(
                     $"outcome={outcome.Kind};error={outcome.Error?.Code ?? "none"};"
@@ -891,23 +893,41 @@ public sealed class CrossSidecarModule : ISharpClawModule
             TerminalId);
     }
 
-    public sealed class TargetTerminal(ApplicationSmokeModule.ScopedTerminalResource resource) :
+    public sealed class TargetTerminal(
+        ApplicationSmokeModule.ScopedTerminalResource resource,
+        IModuleStorageGateway storage) :
         IHostActionEntryTerminal<CrossSidecarAction, CrossSidecarResult>
     {
         public Guid TerminalId => CrossSidecarModule.TerminalId;
 
-        public ValueTask<CrossSidecarResult> InvokeAsync(
+        public async ValueTask<CrossSidecarResult> InvokeAsync(
             ActionContext<CrossSidecarAction> context,
             CancellationToken ct) =>
-            context.Action.Operation switch
+            await InvokeCoreAsync(context, ct);
+
+        private async ValueTask<CrossSidecarResult> InvokeCoreAsync(
+            ActionContext<CrossSidecarAction> context,
+            CancellationToken ct)
+        {
+            if (context.Action.Operation == "block")
+            {
+                await storage.InvokeAsync(
+                    CrossSidecarModule.Id,
+                    "target-store",
+                    "echo",
+                    JsonSerializer.SerializeToElement(new { context.Action.Value }),
+                    ct);
+            }
+
+            return context.Action.Operation switch
             {
                 "fail" => throw new InvalidOperationException("The target action terminal failed."),
-                _ => ValueTask.FromResult(
-                    new CrossSidecarResult(
-                        $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
-                        + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
-                        + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
-                        + $"idempotency={context.IdempotencyKey}|scope={resource.State}")),
+                _ => new CrossSidecarResult(
+                    $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
+                    + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
+                    + $"caller={context.Caller.SubjectId}|trace={context.TraceId}|"
+                    + $"idempotency={context.IdempotencyKey}|scope={resource.State}"),
             };
+        }
     }
 }

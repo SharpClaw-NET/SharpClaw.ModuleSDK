@@ -305,6 +305,84 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task CrossSidecarPreTerminalCancellationWaitsForBlockedTargetRotation()
+    {
+        var (targetServer, targetAddress, targetToken) =
+            await StartStandaloneServerAsync(
+                "cross-blocked-target",
+                CrossSidecarModule.Id,
+                typeof(CrossSidecarModule));
+        await using var server = targetServer;
+        await using var targetClient = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            targetAddress,
+            targetToken,
+            new SidecarHostDescriptorCatalog(
+                [],
+                [],
+                OutOfProcessModuleHostProtocol.Version,
+                new SidecarPayloadLimits()));
+
+        var targetDispatcher = new CountingActionDispatcher();
+        var targetStorage = new BlockingStorageGateway();
+        var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
+        targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        await targetClient.ConnectCapabilitiesAsync(
+            CreateOptions(
+                targetClient,
+                targetDispatcher,
+                descriptors: targetDescriptors,
+                storageGateway: targetStorage));
+
+        var (blockingClient, blockingDispatcher) = await CreateSourceClientAsync(targetClient);
+        var (cancellingClient, cancellingDispatcher) = await CreateSourceClientAsync(targetClient);
+        await using (blockingClient)
+        await using (cancellingClient)
+        {
+            var generationBefore = targetClient.CapabilitySession.BindingGeneration;
+            var blocked = InvokeSourceAsync(
+                blockingClient,
+                blockingDispatcher,
+                "cross-sidecar-block-observe").AsTask();
+            await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            targetDispatcher.CancelOperations = true;
+            var cancelled = InvokeSourceAsync(
+                cancellingClient,
+                cancellingDispatcher,
+                "cross-sidecar-cancel-observe").AsTask();
+            await Task.Delay(250);
+            cancelled.IsCompleted.Should().BeFalse();
+            targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
+
+            targetStorage.Release.TrySetResult();
+            var blockedResult = await blocked;
+            blockedResult.Result.Succeeded.Should().BeTrue(
+                $"Blocked target failed with {blockedResult.Result.Error?.Code}: "
+                + $"{blockedResult.Result.Error?.Message}");
+
+            var cancelledResult = await cancelled;
+            cancelledResult.Result.Succeeded.Should().BeTrue(
+                $"Cancelled target failed with {cancelledResult.Result.Error?.Code}: "
+                + $"{cancelledResult.Result.Error?.Message}");
+            cancelledResult.Result.Output.Single().Text.Should().Contain(
+                "cross-sidecar-cancel-observe:outcome=Cancelled;error=none;result=none");
+
+            targetDispatcher.CancelOperations = false;
+            targetClient.CapabilitySession.BindingGeneration.Should().BeGreaterThan(generationBefore);
+
+            var later = await InvokeSourceAsync(
+                cancellingClient,
+                cancellingDispatcher,
+                "cross-sidecar");
+            later.Result.Succeeded.Should().BeTrue(
+                $"Later relay failed with {later.Result.Error?.Code}: "
+                + $"{later.Result.Error?.Message}");
+            targetDispatcher.RunCalls.Should().Be(3);
+            targetDispatcher.TerminalCalls.Should().Be(2);
+        }
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CrossSidecarOutcomeMutationIsRejectedAndSessionRemainsUsable()
     {
         _targetDispatcher.Reset();
@@ -510,9 +588,10 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         OutOfProcessModuleClient client,
         CountingActionDispatcher dispatcher,
         OutOfProcessCrossSidecarActionEntryCatalog? targetEntries = null,
-        OutOfProcessActionDescriptorCatalog? descriptors = null) =>
+        OutOfProcessActionDescriptorCatalog? descriptors = null,
+        IModuleStorageGateway? storageGateway = null) =>
         new(
-            new EmptyStorageGateway(),
+            storageGateway ?? new EmptyStorageGateway(),
             dispatcher,
             client.CreateCapabilityGrant(DateTimeOffset.UtcNow.AddMinutes(2)),
             ["unused"],
@@ -668,6 +747,66 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             JsonElement parameters,
             CancellationToken ct) =>
             throw new NotSupportedException();
+
+        public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageMutationAndOutboxRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRenewalRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRecoveryRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class BlockingStorageGateway : IModuleStorageGateway
+    {
+        public TaskCompletionSource InvocationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() =>
+        [
+            new ModuleStorageContractDescriptor(
+                CrossSidecarModule.Id,
+                "target-store",
+                [new ModuleStorageOperationDescriptor("echo")]),
+        ];
+
+        public async Task<JsonElement> InvokeAsync(
+            string moduleId,
+            string storageName,
+            string operation,
+            JsonElement parameters,
+            CancellationToken ct)
+        {
+            moduleId.Should().Be(CrossSidecarModule.Id);
+            storageName.Should().Be("target-store");
+            operation.Should().Be("echo");
+            InvocationStarted.TrySetResult();
+            await Release.Task.WaitAsync(ct);
+            return JsonSerializer.SerializeToElement(new { value = "released" });
+        }
 
         public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
             string moduleId,
