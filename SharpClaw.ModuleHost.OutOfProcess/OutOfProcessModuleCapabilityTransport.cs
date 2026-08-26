@@ -1992,6 +1992,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             request.Descriptor,
             request.EffectiveAction,
             request.Cancellation,
+            request.Deadline,
             importedCarrier,
             terminal) with
         {
@@ -2357,6 +2358,20 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         && string.Equals(
             OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
             authority.Proof,
+            StringComparison.Ordinal);
+
+    private bool ValidateCrossSidecarProof(
+        SidecarCrossSidecarActionEntryAuthority authority,
+        string proof) =>
+        string.Equals(
+            authority.CanonicalBindingHash,
+            SidecarCrossSidecarActionEntryValidation.ComputeAuthorityHash(authority),
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
+            CreateCrossSidecarProof(
+                authority with { Proof = string.Empty },
+                _controlToken),
+            proof,
             StringComparison.Ordinal);
 
     private bool ValidateCrossSidecarOutcomeProof(
