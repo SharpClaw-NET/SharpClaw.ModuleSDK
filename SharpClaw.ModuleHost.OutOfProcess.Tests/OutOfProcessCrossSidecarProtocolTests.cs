@@ -368,8 +368,12 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     TestContext.Progress.WriteLine(sourceDispatcher.LastException.ToString());
                 TestContext.Progress.WriteLine(
                     $"target-dispatcher: runs={targetDispatcher.RunCalls}; "
-                    + $"terminals={targetDispatcher.TerminalCalls}; "
-                    + $"exception={targetDispatcher.LastException}");
+                        + $"terminals={targetDispatcher.TerminalCalls}; "
+                        + $"exception={targetDispatcher.LastException}");
+                TestContext.Progress.WriteLine(
+                    $"target-storage: module={targetStorage.ObservedModuleId}; "
+                        + $"storage={targetStorage.ObservedStorageName}; "
+                        + $"operation={targetStorage.ObservedOperation}");
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
                 throw;
@@ -824,6 +828,12 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         public TaskCompletionSource Release { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public string? ObservedModuleId { get; private set; }
+
+        public string? ObservedStorageName { get; private set; }
+
+        public string? ObservedOperation { get; private set; }
+
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() =>
         [
             new ModuleStorageContractDescriptor(
@@ -839,10 +849,13 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             JsonElement parameters,
             CancellationToken ct)
         {
+            ObservedModuleId = moduleId;
+            ObservedStorageName = storageName;
+            ObservedOperation = operation;
+            InvocationStarted.TrySetResult();
             moduleId.Should().Be(CrossSidecarModule.Id);
             storageName.Should().Be("target-store");
             operation.Should().Be("echo");
-            InvocationStarted.TrySetResult();
             await Release.Task.WaitAsync(ct);
             return JsonSerializer.SerializeToElement(new { value = "released" });
         }
