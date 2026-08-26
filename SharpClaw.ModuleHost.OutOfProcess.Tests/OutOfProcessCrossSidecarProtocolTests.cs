@@ -342,14 +342,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             var blocked = InvokeSourceAsync(
                 blockingClient,
                 blockingDispatcher,
-                "cross-sidecar-block-observe").AsTask();
+                "cross-sidecar-block-observe");
             await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             targetDispatcher.CancelOperations = true;
             var cancelled = InvokeSourceAsync(
                 cancellingClient,
                 cancellingDispatcher,
-                "cross-sidecar-cancel-observe").AsTask();
+                "cross-sidecar-cancel-observe");
             await Task.Delay(250);
             cancelled.IsCompleted.Should().BeFalse();
             targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
