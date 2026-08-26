@@ -920,20 +920,12 @@ public sealed class CrossSidecarModule : ISharpClawModule
         {
             if (context.Action.Operation == "block")
             {
-                try
-                {
-                    await storage.InvokeAsync(
-                        CrossSidecarModule.Id,
-                        "target-store",
-                        "echo",
-                        JsonSerializer.SerializeToElement(new { context.Action.Value }),
-                        ct);
-                }
-                catch (Exception ex)
-                {
-                    return new CrossSidecarResult(
-                        $"storage-failure={ex.GetType().FullName}:{ex.Message}");
-                }
+                await storage.InvokeAsync(
+                    CrossSidecarModule.Id,
+                    "target-store",
+                    "echo",
+                    JsonSerializer.SerializeToElement(new { context.Action.Value }),
+                    ct);
             }
 
             return context.Action.Operation switch

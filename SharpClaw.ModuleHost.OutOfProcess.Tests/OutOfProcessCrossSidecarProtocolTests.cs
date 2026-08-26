@@ -324,16 +324,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 new SidecarPayloadLimits()));
 
         var targetDispatcher = new CountingActionDispatcher();
-        var targetStorage = new BlockingStorageGateway();
         var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
         targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        targetDispatcher.BlockOperations = true;
         await targetClient.ConnectCapabilitiesAsync(
             CreateOptions(
                 targetClient,
                 targetDispatcher,
-                descriptors: targetDescriptors,
-                storageGateway: targetStorage,
-                ownedStorageNames: ["target-store"]));
+                descriptors: targetDescriptors));
         TestContext.Progress.WriteLine("stage:target-connected");
 
         var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
@@ -349,7 +347,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             TestContext.Progress.WriteLine("stage:block-started");
             try
             {
-                await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await targetDispatcher.BlockInvocationStarted.Task.WaitAsync(
+                    TimeSpan.FromSeconds(5));
             }
             catch (TimeoutException)
             {
@@ -371,10 +370,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                         + $"terminals={targetDispatcher.TerminalCalls}; "
                         + $"exception={targetDispatcher.LastException}");
                 TestContext.Progress.WriteLine(
-                    $"target-storage: module={targetStorage.ObservedModuleId}; "
-                        + $"storage={targetStorage.ObservedStorageName}; "
-                        + $"operation={targetStorage.ObservedOperation}");
-                TestContext.Progress.WriteLine(
                     $"target-server-failure: {server.CapabilityFailure}");
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
@@ -393,7 +388,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             cancelled.IsCompleted.Should().BeFalse();
             targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
 
-            targetStorage.Release.TrySetResult();
+            targetDispatcher.BlockRelease.TrySetResult();
             TestContext.Progress.WriteLine("stage:block-released");
             var blockedResult = await blocked.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("stage:block-complete");
@@ -905,6 +900,14 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
         public bool CancelOperations { get; set; }
 
+        public bool BlockOperations { get; set; }
+
+        public TaskCompletionSource BlockInvocationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource BlockRelease { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Reset()
         {
             RunCalls = 0;
@@ -929,6 +932,12 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     new ExecutionError(
                         SidecarCapabilityErrors.Cancelled,
                         "The target action was cancelled."));
+            }
+            if (BlockOperations
+                && action is CrossSidecarAction { Operation: "block" })
+            {
+                BlockInvocationStarted.TrySetResult();
+                await BlockRelease.Task.WaitAsync(ct);
             }
             var hostContext = HostContextFactory?.Invoke();
             TResult result;
