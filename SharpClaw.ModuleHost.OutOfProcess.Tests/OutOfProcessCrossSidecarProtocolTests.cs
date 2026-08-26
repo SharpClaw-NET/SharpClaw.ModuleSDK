@@ -307,6 +307,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     [Test, CancelAfter(30000)]
     public async Task CrossSidecarPreTerminalCancellationWaitsForBlockedTargetRotation()
     {
+        TestContext.Progress.WriteLine("stage:begin");
         var (targetServer, targetAddress, targetToken) =
             await StartStandaloneServerAsync(
                 "cross-blocked-target",
@@ -332,35 +333,44 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 targetDispatcher,
                 descriptors: targetDescriptors,
                 storageGateway: targetStorage));
+        TestContext.Progress.WriteLine("stage:target-connected");
 
         var (blockingClient, blockingDispatcher) = await CreateSourceClientAsync(targetClient);
         var (cancellingClient, cancellingDispatcher) = await CreateSourceClientAsync(targetClient);
         await using (blockingClient)
         await using (cancellingClient)
         {
+            TestContext.Progress.WriteLine("stage:source-clients-connected");
             var generationBefore = targetClient.CapabilitySession.BindingGeneration;
             var blocked = InvokeSourceAsync(
                 blockingClient,
                 blockingDispatcher,
                 "cross-sidecar-block-observe");
+            TestContext.Progress.WriteLine("stage:block-started");
             await targetStorage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("stage:block-storage-started");
 
             targetDispatcher.CancelOperations = true;
             var cancelled = InvokeSourceAsync(
                 cancellingClient,
                 cancellingDispatcher,
                 "cross-sidecar-cancel-observe");
+            TestContext.Progress.WriteLine("stage:cancel-started");
             await Task.Delay(250);
+            TestContext.Progress.WriteLine("stage:cancel-delayed");
             cancelled.IsCompleted.Should().BeFalse();
             targetClient.CapabilitySession.BindingGeneration.Should().Be(generationBefore);
 
             targetStorage.Release.TrySetResult();
+            TestContext.Progress.WriteLine("stage:block-released");
             var blockedResult = await blocked.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("stage:block-complete");
             blockedResult.Result.Succeeded.Should().BeTrue(
                 $"Blocked target failed with {blockedResult.Result.Error?.Code}: "
                 + $"{blockedResult.Result.Error?.Message}");
 
             var cancelledResult = await cancelled.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("stage:cancel-complete");
             cancelledResult.Result.Succeeded.Should().BeTrue(
                 $"Cancelled target failed with {cancelledResult.Result.Error?.Code}: "
                 + $"{cancelledResult.Result.Error?.Message}");
@@ -374,6 +384,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 cancellingClient,
                 cancellingDispatcher,
                 "cross-sidecar").WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("stage:later-complete");
             later.Result.Succeeded.Should().BeTrue(
                 $"Later relay failed with {later.Result.Error?.Code}: "
                 + $"{later.Result.Error?.Message}");
