@@ -374,6 +374,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     $"target-storage: module={targetStorage.ObservedModuleId}; "
                         + $"storage={targetStorage.ObservedStorageName}; "
                         + $"operation={targetStorage.ObservedOperation}");
+                TestContext.Progress.WriteLine(
+                    $"target-server-failure: {server.CapabilityFailure}");
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
                 throw;
