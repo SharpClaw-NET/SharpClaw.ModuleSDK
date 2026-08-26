@@ -1,11 +1,15 @@
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+using SharpClaw.Contracts.Modules;
+
 namespace SharpClaw.ModuleHost.OutOfProcess;
 
 internal static class OutOfProcessProtocolTestFixture
 {
     private static Func<int, int>? _responseTerminalCallCountTransform;
     private static Func<CancellationToken, Task>? _beforeActionResponseAsync;
+    private static Func<CancellationToken, Task>? _beforeStorageResponseAsync;
     private static Action<string>? _rebindStateObserver;
+    private static Action<SidecarCapabilityCallIdentity>? _callCreatedObserver;
 
     internal static void ConfigureResponseTerminalCallCountTransform(
         Func<int, int>? transform) =>
@@ -22,8 +26,31 @@ internal static class OutOfProcessProtocolTestFixture
         Volatile.Read(ref _beforeActionResponseAsync)?.Invoke(cancellationToken)
         ?? Task.CompletedTask;
 
+    internal static void ConfigureBeforeStorageResponseAsync(
+        Func<CancellationToken, Task>? callback) =>
+        Interlocked.Exchange(ref _beforeStorageResponseAsync, callback);
+
+    internal static Task BeforeStorageResponseAsync(CancellationToken cancellationToken) =>
+        Volatile.Read(ref _beforeStorageResponseAsync)?.Invoke(cancellationToken)
+        ?? Task.CompletedTask;
+
     internal static void ConfigureRebindStateObserver(Action<string>? observer) =>
         Interlocked.Exchange(ref _rebindStateObserver, observer);
+
+    internal static void ConfigureCallCreatedObserver(
+        Action<SidecarCapabilityCallIdentity>? observer) =>
+        Interlocked.Exchange(ref _callCreatedObserver, observer);
+
+    internal static void RecordCallCreated(SidecarCapabilityCallIdentity call)
+    {
+        try
+        {
+            Volatile.Read(ref _callCreatedObserver)?.Invoke(call);
+        }
+        catch
+        {
+        }
+    }
 
     internal static void RecordRebindState(string phase, string state)
     {

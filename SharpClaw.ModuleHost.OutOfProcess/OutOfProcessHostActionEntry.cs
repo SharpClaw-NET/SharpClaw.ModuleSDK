@@ -136,52 +136,60 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             request.Deadline,
             cancellationToken,
             context.CapabilityId);
-        var transportContext = context with
+        try
         {
-            RequestId = call.RequestId,
-            CancellationId = call.CancellationId,
-        };
-        var actionPayload = OutOfProcessActionDispatcher.Payload(
-            request.Action,
-            identity.InputTypeIdentity,
-            identity.InputSchemaVersion);
-        var cancellation = new SidecarCancellationIdentity(
-            call.CancellationId,
-            SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
-            request.Deadline);
-        var sidecarRequest = SidecarActionCapabilityRequest.HostEntry(
-            call,
-            identity,
-            actionPayload,
-            cancellation,
-            request.Deadline,
-            transportContext,
-            new SidecarActionTerminalRegistration(
-                terminalBinding.TerminalId,
+            var transportContext = context with
+            {
+                RequestId = call.RequestId,
+                CancellationId = call.CancellationId,
+            };
+            var actionPayload = OutOfProcessActionDispatcher.Payload(
+                request.Action,
                 identity.InputTypeIdentity,
-                identity.InputSchemaVersion,
-                identity.ResultTypeIdentity,
-                identity.ResultSchemaVersion,
-                identity.DescriptorHash));
-        Func<
-            SidecarActionTerminalTransportRequest,
-            CancellationToken,
-            ValueTask<SidecarActionTerminalTransportResponse>>? terminalCallback =
-            terminalBinding.IsAuthorized
-                ? (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
-                    terminal,
-                    terminalRequest,
-                    _transport.Binding.SafeFailure,
-                    terminalCancellation,
-                    _transport,
-                    transportContext.Contribution)
-                : null;
-        var response = await _transport.InvokeActionAsync(
-            sidecarRequest,
-            terminalCallback,
-            cancellationToken);
-        ThrowIfHostEntryFailed(response);
-        return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+                identity.InputSchemaVersion);
+            var cancellation = new SidecarCancellationIdentity(
+                call.CancellationId,
+                SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
+                request.Deadline);
+            var sidecarRequest = SidecarActionCapabilityRequest.HostEntry(
+                call,
+                identity,
+                actionPayload,
+                cancellation,
+                request.Deadline,
+                transportContext,
+                new SidecarActionTerminalRegistration(
+                    terminalBinding.TerminalId,
+                    identity.InputTypeIdentity,
+                    identity.InputSchemaVersion,
+                    identity.ResultTypeIdentity,
+                    identity.ResultSchemaVersion,
+                    identity.DescriptorHash));
+            Func<
+                SidecarActionTerminalTransportRequest,
+                CancellationToken,
+                ValueTask<SidecarActionTerminalTransportResponse>>? terminalCallback =
+                terminalBinding.IsAuthorized
+                    ? (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
+                        terminal,
+                        terminalRequest,
+                        _transport.Binding.SafeFailure,
+                        terminalCancellation,
+                        _transport,
+                        transportContext.Contribution)
+                    : null;
+            var response = await _transport.InvokeActionAsync(
+                sidecarRequest,
+                terminalCallback,
+                cancellationToken);
+            ThrowIfHostEntryFailed(response);
+            return OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(

@@ -25,16 +25,24 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
     {
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline);
-        var request = SidecarStorageCapabilityRequest.ListContracts(
-            call,
-            _moduleId,
-            PayloadType<IReadOnlyList<ModuleStorageContractDescriptor>>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = _transport.InvokeStorageAsync(request, CancellationToken.None)
-            .GetAwaiter()
-            .GetResult();
-        return Deserialize<IReadOnlyList<ModuleStorageContractDescriptor>>(RequirePayload(response));
+        try
+        {
+            var request = SidecarStorageCapabilityRequest.ListContracts(
+                call,
+                _moduleId,
+                PayloadType<IReadOnlyList<ModuleStorageContractDescriptor>>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = _transport.InvokeStorageAsync(request, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            return Deserialize<IReadOnlyList<ModuleStorageContractDescriptor>>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async Task<JsonElement> InvokeAsync(
@@ -49,19 +57,27 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ArgumentException.ThrowIfNullOrWhiteSpace(operation);
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
-        var payload = Payload(
-            new OutOfProcessStorageInvokePayload(operation, value),
-            typeof(OutOfProcessStorageInvokePayload));
-        var request = SidecarStorageCapabilityRequest.Invoke(
-            call,
-            _moduleId,
-            storageName,
-            payload,
-            PayloadType<JsonElement>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = await _transport.InvokeStorageAsync(request, cancellationToken);
-        return Deserialize<JsonElement>(RequirePayload(response));
+        try
+        {
+            var payload = Payload(
+                new OutOfProcessStorageInvokePayload(operation, value),
+                typeof(OutOfProcessStorageInvokePayload));
+            var request = SidecarStorageCapabilityRequest.Invoke(
+                call,
+                _moduleId,
+                storageName,
+                payload,
+                PayloadType<JsonElement>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = await _transport.InvokeStorageAsync(request, cancellationToken);
+            return Deserialize<JsonElement>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
@@ -75,16 +91,24 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
-        var transportRequest = SidecarStorageCapabilityRequest.CommitMutationAndOutbox(
-            call,
-            _moduleId,
-            storageName,
-            Payload(request, typeof(ModuleStorageMutationAndOutboxRequest)),
-            PayloadType<ModuleStorageMutationAndOutboxResult>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
-        return Deserialize<ModuleStorageMutationAndOutboxResult>(RequirePayload(response));
+        try
+        {
+            var transportRequest = SidecarStorageCapabilityRequest.CommitMutationAndOutbox(
+                call,
+                _moduleId,
+                storageName,
+                Payload(request, typeof(ModuleStorageMutationAndOutboxRequest)),
+                PayloadType<ModuleStorageMutationAndOutboxResult>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
+            return Deserialize<ModuleStorageMutationAndOutboxResult>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
@@ -98,16 +122,24 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
-        var transportRequest = SidecarStorageCapabilityRequest.Claim(
-            call,
-            _moduleId,
-            storageName,
-            Payload(request, typeof(ModuleStorageClaimRequest)),
-            PayloadType<ModuleStorageClaimResult<T>>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
-        return Deserialize<ModuleStorageClaimResult<T>>(RequirePayload(response));
+        try
+        {
+            var transportRequest = SidecarStorageCapabilityRequest.Claim(
+                call,
+                _moduleId,
+                storageName,
+                Payload(request, typeof(ModuleStorageClaimRequest)),
+                PayloadType<ModuleStorageClaimResult<T>>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
+            return Deserialize<ModuleStorageClaimResult<T>>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
@@ -121,16 +153,24 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
-        var transportRequest = SidecarStorageCapabilityRequest.RenewClaim(
-            call,
-            _moduleId,
-            storageName,
-            Payload(request, typeof(ModuleStorageClaimRenewalRequest)),
-            PayloadType<ModuleStorageClaimRenewalResult>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
-        return Deserialize<ModuleStorageClaimRenewalResult>(RequirePayload(response));
+        try
+        {
+            var transportRequest = SidecarStorageCapabilityRequest.RenewClaim(
+                call,
+                _moduleId,
+                storageName,
+                Payload(request, typeof(ModuleStorageClaimRenewalRequest)),
+                PayloadType<ModuleStorageClaimRenewalResult>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
+            return Deserialize<ModuleStorageClaimRenewalResult>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public async Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
@@ -144,16 +184,24 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
         ArgumentNullException.ThrowIfNull(request);
         var deadline = Deadline();
         var call = _transport.CreateCall(SidecarCapabilityKind.Storage, deadline, cancellationToken);
-        var transportRequest = SidecarStorageCapabilityRequest.RecoverClaim(
-            call,
-            _moduleId,
-            storageName,
-            Payload(request, typeof(ModuleStorageClaimRecoveryRequest)),
-            PayloadType<ModuleStorageClaimRecoveryResult>(),
-            Cancellation(call, deadline),
-            deadline);
-        var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
-        return Deserialize<ModuleStorageClaimRecoveryResult>(RequirePayload(response));
+        try
+        {
+            var transportRequest = SidecarStorageCapabilityRequest.RecoverClaim(
+                call,
+                _moduleId,
+                storageName,
+                Payload(request, typeof(ModuleStorageClaimRecoveryRequest)),
+                PayloadType<ModuleStorageClaimRecoveryResult>(),
+                Cancellation(call, deadline),
+                deadline);
+            var response = await _transport.InvokeStorageAsync(transportRequest, cancellationToken);
+            return Deserialize<ModuleStorageClaimRecoveryResult>(RequirePayload(response));
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     private SidecarCancellationIdentity Cancellation(

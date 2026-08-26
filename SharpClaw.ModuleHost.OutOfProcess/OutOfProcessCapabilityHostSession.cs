@@ -3400,6 +3400,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarStorageCapabilityResponse response,
         CancellationToken ct)
     {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        await OutOfProcessProtocolTestFixture.BeforeStorageResponseAsync(ct);
+#endif
         await OutOfProcessCapabilityWire.SendAsync(
             _socket,
             OutOfProcessCapabilityFrameKind.StorageResponse,

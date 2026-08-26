@@ -25,34 +25,42 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 ? descriptor.DefaultTimeout
                 : TimeSpan.FromMinutes(1));
         var call = _transport.CreateCall(SidecarCapabilityKind.Action, deadline, cancellationToken);
-        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
-        var request = new SidecarActionCapabilityRequest(
-            call,
-            SidecarActionInvocationKind.Run,
-            identity,
-            Payload(action, identity.InputTypeIdentity, identity.InputSchemaVersion),
-            snapshot,
-            new SidecarCancellationIdentity(
-                call.CancellationId,
-                SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
-                deadline),
-            new SidecarTerminalContinuationRequest(
-                Guid.NewGuid(),
-                true,
-                null!,
-                null!,
-                deadline),
-            deadline);
-        var response = await _transport.InvokeActionAsync(
-            request,
-            (terminalRequest, ct) => ExecuteTerminalAsync(
-                terminal,
-                terminalRequest,
+        try
+        {
+            var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+            var request = new SidecarActionCapabilityRequest(
+                call,
+                SidecarActionInvocationKind.Run,
                 identity,
-                _transport.Binding.SafeFailure,
-                ct),
-            cancellationToken);
-        return CreateOutcome<TResult>(response);
+                Payload(action, identity.InputTypeIdentity, identity.InputSchemaVersion),
+                snapshot,
+                new SidecarCancellationIdentity(
+                    call.CancellationId,
+                    SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
+                    deadline),
+                new SidecarTerminalContinuationRequest(
+                    Guid.NewGuid(),
+                    true,
+                    null!,
+                    null!,
+                    deadline),
+                deadline);
+            var response = await _transport.InvokeActionAsync(
+                request,
+                (terminalRequest, ct) => ExecuteTerminalAsync(
+                    terminal,
+                    terminalRequest,
+                    identity,
+                    _transport.Binding.SafeFailure,
+                    ct),
+                cancellationToken);
+            return CreateOutcome<TResult>(response);
+        }
+        catch
+        {
+            _transport.ReleaseCallReservation(call);
+            throw;
+        }
     }
 
     public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
