@@ -1980,6 +1980,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             try
             {
                 active = RegisterCall(request.Call, channelCt, request);
+                RemovePendingActionRequest(request.Call.CallId);
             }
             finally
             {
@@ -2504,6 +2505,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             try
             {
                 active = RegisterCall(request.Call, channelCt);
+                RemovePendingStorageRequest(request.Call.CallId);
             }
             finally
             {
