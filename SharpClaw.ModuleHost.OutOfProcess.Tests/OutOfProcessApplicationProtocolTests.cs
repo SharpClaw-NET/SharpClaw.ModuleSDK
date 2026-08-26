@@ -951,6 +951,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();
         var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
         descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
         var grants = client.Authorization.ActionGrants
             .Append(new ActionCapabilityGrant(
@@ -1005,7 +1006,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
 
         mutatorCalls.Should().Be(1);
-        observedTerminalCallCount.Should().Be(1);
+        observedTerminalCallCount.Should().Be(0);
         failure.Should().NotBeNull();
         failure!.Code.Should().Be(SidecarCapabilityErrors.InvalidBinding);
         failure.Message.Should().Be("The terminal call count must be zero or one.");
@@ -1037,23 +1038,31 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         for (var i = 0; i < 5; i++)
         {
-            var followUp = await client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                [],
-                IssueCliContext(
-                    client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    $"completion-follow-up-{i}"));
-            followUp.Result.Succeeded.Should().BeTrue(
-                $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
+            var followUpAction = new AgentsJobImportAction($"completion-follow-up-{i}");
+            var followUp = await client.InvokeModuleActionEntryAsync(
+                ApplicationSmokeModule.AgentsJobImportAction,
+                followUpAction,
+                client.IssueHostActionContext(
+                    HostActionEntryIngress.Cli,
+                    ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                    client.Discovery.ModuleId,
+                    ApplicationSmokeModule.AgentsJobImportAction,
+                    followUpAction,
+                    new RequestPrincipal("completion-test"),
+                    ExtensionFeatureSet.Empty,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow.AddMinutes(1)));
+            followUp.Kind.Should().Be(ActionOutcomeKind.Completed);
+            followUp.Result.Value.Should().StartWith("imported:completion-follow-up-");
         }
 
         client.CapabilitySession.BindingGeneration.Should().BeGreaterThan(generationBefore);
         client.CapabilitySession.OutgoingCapabilityCallCount.Should().Be(0);
         client.HostActionEntryContexts.HasActiveContexts.Should().BeFalse();
-        dispatcher.RunCalls.Should().Be(2);
-        dispatcher.TerminalCalls.Should().Be(2);
-        storage.InvokeCalls.Should().Be(5);
+        dispatcher.RunCalls.Should().Be(7);
+        dispatcher.TerminalCalls.Should().Be(7);
+        storage.InvokeCalls.Should().Be(0);
     }
 
     [Test, CancelAfter(30000)]
