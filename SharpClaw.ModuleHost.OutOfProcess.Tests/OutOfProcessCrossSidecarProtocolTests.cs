@@ -363,6 +363,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                         + $"error={result.Result.Error?.Code}:{result.Result.Error?.Message}; "
                         + $"output={string.Join('|', result.Result.Output.Select(item => item.Text))}");
                 }
+                if (sourceDispatcher.LastException is not null)
+                    TestContext.Progress.WriteLine(sourceDispatcher.LastException.ToString());
                 if (blocked.Exception is not null)
                     TestContext.Progress.WriteLine(blocked.Exception.ToString());
                 throw;
