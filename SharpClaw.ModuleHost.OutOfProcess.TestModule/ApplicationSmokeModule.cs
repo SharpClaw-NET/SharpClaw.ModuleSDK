@@ -485,6 +485,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "cross-sidecar-cancel" => "cross-sidecar-cancel-root",
                     "cross-sidecar-fail-observe" => "cross-sidecar-fail-observe-root",
                     "cross-sidecar-cancel-observe" => "cross-sidecar-cancel-observe-root",
+                    "cross-sidecar-block-observe" => "cross-sidecar-block-observe-root",
                     "rotation" => "rotation-root",
                     _ => "host-entry",
                 };
