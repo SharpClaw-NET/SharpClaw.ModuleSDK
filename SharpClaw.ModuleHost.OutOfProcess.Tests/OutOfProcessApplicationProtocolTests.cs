@@ -1261,13 +1261,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
 
-            var pendingAction = client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                ["single"],
-                IssueCliContext(
+            var hostEntry = client.InvokeCliAsync(
+                ApplicationSmokeModule.HostEntryCliName,
+                [],
+                IssueHostEntryContext(
                     client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-reader-pending")).AsTask();
+                    DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
             await actionResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain("actions=[");
@@ -1277,11 +1276,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "Rebind state evidence: " + string.Join(" | ", rebindStates));
 
             actionResponseRelease.TrySetResult();
-            var result = await pendingAction.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
                 + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
-            result.Result.Output.Single().Text.Should().Be("storage:{\"value\":\"single\"}");
+            result.Result.Output.Single().Text.Should().Be(
+                "host-entry:Completed:entry-terminal:action");
 
             var afterRotation = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -1293,8 +1293,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
             storage.InvokeCalls.Should().Be(6);
-            dispatcher.RunCalls.Should().Be(0);
-            dispatcher.TerminalCalls.Should().Be(0);
+            dispatcher.RunCalls.Should().Be(1);
+            dispatcher.TerminalCalls.Should().Be(1);
         }
         finally
         {
