@@ -892,6 +892,11 @@ public sealed class CrossSidecarModule : ISharpClawModule
     {
         module.Actions.Add(OwnedAction);
         module.Services.AddScoped<ApplicationSmokeModule.ScopedTerminalResource>();
+        module.Storage.Add(new ModuleStorageContractDescriptor(
+            Id,
+            "target-store",
+            [new ModuleStorageOperationDescriptor("echo")],
+            "Cross-sidecar target storage."));
         module.AddActionEntry<CrossSidecarAction, CrossSidecarResult, TargetTerminal>(
             OwnedAction,
             TerminalId);
