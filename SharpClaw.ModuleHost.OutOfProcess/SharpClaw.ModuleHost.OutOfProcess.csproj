@@ -20,8 +20,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpClaw.Contracts" Version="0.5.0-beta.27" />
-    <PackageReference Include="SharpClaw.Core" Version="0.5.0-beta.20" />
+    <PackageReference Include="SharpClaw.Contracts" Version="0.5.0-beta.29" />
+    <PackageReference Include="SharpClaw.Core" Version="0.5.0-beta.22" />
   </ItemGroup>
 
   <ItemGroup>
