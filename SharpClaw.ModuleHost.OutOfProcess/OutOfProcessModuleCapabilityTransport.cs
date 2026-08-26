@@ -1290,8 +1290,8 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         CancellationToken ct)
     {
         if (request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar
-            && request.CrossSidecarActionRequest is null
-            && request.Context is not null)
+            && request.Context is not null
+            && request.CrossSidecarActionRequest is not null)
         {
             await HandleCrossSidecarTerminalRequestAsync(request, ct);
             return;
@@ -1925,6 +1925,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The cross-sidecar terminal authority does not match its execution context.");
         }
 
+        if (request.CrossSidecarActionRequest is null
+            || request.CrossSidecarPeerRelay is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar terminal request has no authenticated peer relay.");
+        }
+
         var registration = _actionEntries.SingleOrDefault(entry =>
             entry.TerminalId == request.TerminalId
             && OutOfProcessCapabilityTransportDescriptorMatches(
@@ -1937,55 +1945,96 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The target module does not own the requested action terminal.");
         }
 
-        var contribution = new HostActionEntryContribution(
-            new HostActionEntryIngressBinding(
-                HostActionEntryIngress.CrossModule,
-                Binding.ModuleId,
-                Binding.GraphId),
-            new HostActionEntryLineage(
-                request.Descriptor.Key,
-                request.Descriptor.Version,
-                request.Descriptor.DescriptorHash,
-                request.Descriptor.InputTypeIdentity,
-                request.Descriptor.InputSchemaVersion,
-                request.Descriptor.InputSchemaHash,
-                request.EffectiveAction.ContentHash,
-                request.EffectiveAction.ByteLength));
-        var hostEntry = new OutOfProcessHostActionEntry(
-            _transport,
-            request.Descriptor,
+        var peerImport = _session.ImportCrossSidecarActionEntryPeerRelay(
             request,
-            contribution);
-        SidecarTerminalExecutionResult execution;
-        using var carrierScope = _transport.PushActiveCarrier(
-            request.Authority.ReceivingRootBudgetId,
-            request.Call);
-        await using var invocationScope = _services.CreateAsyncScope();
-        try
+            DateTimeOffset.UtcNow,
+            ValidateCrossSidecarProof,
+            out var importedCarrier);
+        ThrowIfRejected(peerImport);
+        if (importedCarrier is null)
         {
-            execution = await registration.Invoker.InvokeAsync(
-                invocationScope.ServiceProvider,
-                context,
-                hostEntry,
-                ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            execution = new SidecarTerminalExecutionResult(
-                null,
-                _session.Binding.SafeFailure,
-                Completed: true);
-        }
-        catch (Exception)
-        {
-            execution = new SidecarTerminalExecutionResult(
-                null,
-                _session.Binding.SafeFailure,
-                Completed: true);
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar peer relay returned no carrier.");
         }
 
-        var response = new SidecarActionTerminalTransportResponse(
-            execution.Result is null
+        var terminal = new SidecarActionTerminalRegistration(
+            request.TerminalId,
+            request.Descriptor.InputTypeIdentity,
+            request.Descriptor.InputSchemaVersion,
+            request.Descriptor.ResultTypeIdentity,
+            request.Descriptor.ResultSchemaVersion,
+            request.Descriptor.DescriptorHash);
+        var begin = _session.BeginCrossSidecarActionEntryCall(
+            importedCarrier,
+            terminal,
+            request.EffectiveAction.ByteLength,
+            DateTimeOffset.UtcNow,
+            out var importedHostContext,
+            ValidateCrossSidecarProof);
+        if (!begin.Accepted || importedHostContext is null)
+        {
+            _session.RevokeCrossSidecarActionEntry(
+                importedCarrier.CarrierId,
+                DateTimeOffset.UtcNow);
+            ThrowIfRejected(begin);
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The receiving cross-sidecar carrier returned no host context.");
+        }
+
+        var effectiveHostEntry = new SidecarActionEffectiveHostEntryContext(
+            importedHostContext,
+            context,
+            request.Authority);
+        var incomingRequest = SidecarActionCapabilityRequest.HostEntryCrossSidecar(
+            request.Call,
+            request.Descriptor,
+            request.EffectiveAction,
+            request.Cancellation,
+            importedCarrier,
+            terminal) with
+        {
+            EffectiveHostEntryContext = effectiveHostEntry,
+        };
+        var hostEntry = OutOfProcessHostActionEntry.CreateForIncomingAction(
+            _transport,
+            incomingRequest,
+            context,
+            effectiveHostEntry,
+            importedHostContext.Contribution);
+        var completed = false;
+        using var carrierScope = _transport.PushActiveCarrier(
+            importedHostContext.CapabilityId,
+            request.Call);
+        try
+        {
+            SidecarTerminalExecutionResult execution;
+            await using var invocationScope = _services.CreateAsyncScope();
+            try
+            {
+                execution = await registration.Invoker.InvokeAsync(
+                    invocationScope.ServiceProvider,
+                    context,
+                    hostEntry,
+                    ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                execution = new SidecarTerminalExecutionResult(
+                    null,
+                    _session.Binding.SafeFailure,
+                    Completed: true);
+            }
+            catch (Exception)
+            {
+                execution = new SidecarTerminalExecutionResult(
+                    null,
+                    _session.Binding.SafeFailure,
+                    Completed: true);
+            }
+
+            var resultIdentity = execution.Result is null
                 ? null
                 : new SidecarActionResultIdentity(
                     Guid.NewGuid(),
@@ -1993,20 +2042,81 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     request.Descriptor.Key,
                     request.Descriptor.Version,
                     execution.Result.TypeIdentity,
-                    execution.Result.ContentHash),
-            execution,
-            request.Receipt,
-            _session.Binding.SafeFailure)
+                    execution.Result.ContentHash);
+            var outcomeKind = ct.IsCancellationRequested
+                ? ActionOutcomeKind.Cancelled
+                : execution.Result is null
+                    ? ActionOutcomeKind.Failed
+                    : ActionOutcomeKind.Completed;
+            var outcome = new SidecarActionOutcomeEnvelope(
+                outcomeKind,
+                execution.Result,
+                null,
+                outcomeKind == ActionOutcomeKind.Failed
+                    ? new ExecutionError(
+                        execution.Failure?.Code ?? SidecarCapabilityErrors.HostFailure,
+                        execution.Failure?.Message ?? "The module action entry failed.")
+                    : null,
+                null,
+                request.Receipt,
+                _session.Binding.SafeFailure,
+                1);
+            ThrowIfRejected(_session.RecordTerminal(
+                request.Call.CallId,
+                request.Authority.AuthorityId,
+                request.Receipt));
+            var completion = _session.CompleteCrossSidecarActionEntry(
+                importedCarrier,
+                outcome,
+                request.Receipt,
+                execution,
+                resultIdentity,
+                _session.Binding.SafeFailure,
+                DateTimeOffset.UtcNow,
+                (authority, canonicalHash) => CreateCrossSidecarProof(
+                    authority with
+                    {
+                        CanonicalBindingHash = canonicalHash,
+                        Proof = string.Empty,
+                    },
+                    _controlToken),
+                out var completedOutcome);
+            ThrowIfRejected(completion);
+            if (completedOutcome is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The cross-sidecar outcome was not created.");
+            }
+
+            completed = true;
+            var response = new SidecarActionTerminalTransportResponse(
+                resultIdentity,
+                execution,
+                request.Receipt,
+                _session.Binding.SafeFailure)
+            {
+                TerminalId = request.TerminalId,
+                CrossSidecarRelay = request.CrossSidecarPeerRelay,
+                CrossSidecarOutcome = completedOutcome,
+            };
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+                response,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                ct);
+        }
+        finally
         {
-            TerminalId = request.TerminalId,
-        };
-        await OutOfProcessCapabilityWire.SendAsync(
-            _socket,
-            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
-            response,
-            _limits.ProtocolMessageBytes,
-            SendGate,
-            ct);
+            if (!completed)
+            {
+                _session.RevokeCrossSidecarActionEntry(
+                    importedCarrier.CarrierId,
+                    DateTimeOffset.UtcNow);
+            }
+        }
     }
 
     private static bool OutOfProcessCapabilityTransportPayloadMatches(

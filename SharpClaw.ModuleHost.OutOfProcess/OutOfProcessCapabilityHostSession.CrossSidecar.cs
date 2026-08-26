@@ -470,6 +470,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var target = authority.TargetEntry;
         var binding = Session.Binding;
         var action = carrier.Action;
+        var peerRelay = new SidecarCrossSidecarActionEntryRelay(carrier, target);
+        var crossSidecarActionRequest = new SidecarCrossSidecarActionEntryRequest(
+            target.Descriptor.Key,
+            target.Descriptor.Version,
+            action,
+            authority.Deadline,
+            authority.ExpiresAt);
         var receipt = new SidecarTerminalReceipt(
             Guid.NewGuid().ToString("N"),
             target.Descriptor.Key,
@@ -518,6 +525,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             Attempt = hostContext.Attempt,
             ReceivingRootBudgetId = hostContext.CapabilityId,
             ReceivingPeerBindingGeneration = Session.BindingGeneration,
+            RootPeerCall = authority.PeerCall,
+            CrossSidecarPeerRelayBindingHash = SidecarCapabilityTransportValidation
+                .ComputeCrossSidecarPeerRelayBindingHash(peerRelay),
         };
         var targetAuthority = terminalAuthority with
         {
@@ -558,6 +568,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 receipt,
                 hostContext.Deadline),
             TerminalId = terminal.TerminalId,
+            CrossSidecarActionRequest = crossSidecarActionRequest,
+            CrossSidecarPeerRelay = peerRelay,
         };
         try
         {
@@ -580,7 +592,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     request,
                     response,
                     binding,
-                    (targetTerminalAuthority, proof) => ValidateTerminalAuthority(targetTerminalAuthority, proof));
+                    binding,
+                    DateTimeOffset.UtcNow,
+                    ValidateCrossSidecarOutcomeProof);
                 if (!responseValidation.Accepted)
                 {
                     throw new OutOfProcessCapabilityException(
