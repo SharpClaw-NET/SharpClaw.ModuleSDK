@@ -212,7 +212,14 @@ internal sealed class OutOfProcessModuleStorageGateway : IModuleStorageGateway
             SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),
             deadline);
 
-    private static DateTimeOffset Deadline() => DateTimeOffset.UtcNow.AddMinutes(1);
+    private DateTimeOffset Deadline()
+    {
+        var normalDeadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        var activeCarrierDeadline = _transport.ActiveCarrierCall?.Deadline;
+        return activeCarrierDeadline is { } deadline && deadline < normalDeadline
+            ? deadline
+            : normalDeadline;
+    }
 
     private void ValidateModule(string moduleId)
     {
