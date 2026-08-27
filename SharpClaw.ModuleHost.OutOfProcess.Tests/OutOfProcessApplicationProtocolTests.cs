@@ -1383,9 +1383,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthResponseEntered = new TaskCompletionSource(
+        var fifthStorageResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthResponseRelease = new TaskCompletionSource(
+        var fifthStorageResponseRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var hostEntryCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1441,10 +1441,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 TestContext.Progress.WriteLine($"Admission checkpoint: prior-{i}-complete");
             }
 
-            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
+            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(async ct =>
             {
-                fifthResponseEntered.TrySetResult();
-                await fifthResponseRelease.Task.WaitAsync(ct);
+                fifthStorageResponseEntered.TrySetResult();
+                await fifthStorageResponseRelease.Task.WaitAsync(ct);
             });
 
             TestContext.Progress.WriteLine("Admission checkpoint: starting-fifth");
@@ -1455,8 +1455,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                     client,
                     ApplicationSmokeModule.CapabilityCliName,
                     "rebind-admission-fifth")).AsTask();
-            await fifthResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Admission checkpoint: fifth-response-held");
+            await fifthStorageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Admission checkpoint: fifth-storage-response-held");
 
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(
                 async (request, ct) =>
@@ -1482,8 +1482,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine(
                 $"Admission checkpoint: host-entry-created-{expectedHostEntryCallId:N}");
 
-            TestContext.Progress.WriteLine("Admission checkpoint: releasing-fifth-response");
-            fifthResponseRelease.TrySetResult();
+            TestContext.Progress.WriteLine("Admission checkpoint: releasing-fifth-storage-response");
+            fifthStorageResponseRelease.TrySetResult();
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
@@ -1530,9 +1530,10 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
         finally
         {
-            fifthResponseRelease.TrySetResult();
+            fifthStorageResponseRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }
