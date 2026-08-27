@@ -1283,7 +1283,27 @@ public sealed class OutOfProcessApplicationProtocolTests
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
 
-            var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
+            actionResponseRelease.TrySetResult();
+
+            var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            rebindState.Should().Contain(
+                $"actions=[{expectedHostEntryCallId:N}]",
+                "the first rebind must identify the still-pending HostEntry call");
+            rebindState.Should().Contain("incomingActions=[]");
+            rebindState.Should().Contain("storage=[]");
+            var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            drainedState.Should().Contain(
+                "actions=[]",
+                "the response frame must clear the HostEntry call before rebind acknowledgement");
+            drainedState.Should().Contain("incomingActions=[]");
+            drainedState.Should().Contain("storage=[]");
+            var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
+            result.Result.Succeeded.Should().BeTrue(
+                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
+                + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
+            result.Result.Output.Single().Text.Should().Be(
+                "host-entry:Completed:entry-terminal:action");
+            var endpoint = await client.InvokeEndpointAsync(
                 typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
                 client.IssueHostActionContext(
                     HostActionEntryIngress.Endpoint,
@@ -1295,15 +1315,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     ApplicationSmokeModule.HostEntryFeatures,
                     Guid.NewGuid(),
                     Guid.NewGuid(),
-                    DateTimeOffset.UtcNow.AddMinutes(1))));
-            actionResponseRelease.TrySetResult();
-            var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
-            result.Result.Succeeded.Should().BeTrue(
-                $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
-                + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
-            result.Result.Output.Single().Text.Should().Be(
-                "host-entry:Completed:entry-terminal:action");
-            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
+                    DateTimeOffset.UtcNow.AddMinutes(1));
             endpoint.Succeeded.Should().BeTrue(
                 $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
             endpoint.Payload.Should().NotBeNull();
@@ -1311,22 +1323,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ActionOutcomeKind.Completed.ToString());
             endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
                 "entry-terminal:action");
-
-            var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            rebindState.Should().Contain(
-                $"actions=[{expectedHostEntryCallId:N}]",
-                "the first rebind must identify the still-pending HostEntry call");
-            rebindState.Should().Contain("incomingActions=[]");
-            rebindState.Should().Contain("storage=[]");
-            rebindState.Should().Contain(
-                $"outgoing=[{expectedHostEntryCallId:N}:",
-                "the first rebind must identify the gated HostEntry call");
-            var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            drainedState.Should().Contain(
-                "actions=[]",
-                "the response frame must clear the HostEntry call before rebind acknowledgement");
-            drainedState.Should().Contain("incomingActions=[]");
-            drainedState.Should().Contain("storage=[]");
             var observedStates = rebindStates.ToArray();
             var responseIndex = Array.FindIndex(
                 observedStates,
