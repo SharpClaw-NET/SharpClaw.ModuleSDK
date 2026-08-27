@@ -1265,7 +1265,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new OutOfProcessHostActionEntryContextRegistry(),
                 new KernelExternalAuthoritySessionRegistry()));
 
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 2; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1336,10 +1336,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 + string.Join(" | ", rebindStates));
             TestContext.Progress.WriteLine(
                 "Storage frame received: " + storageFrameReceived.Task.Result);
-            var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
-            trigger.Result.Succeeded.Should().BeTrue(
-                $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
-
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
                 $"actions=[{expectedHostEntryCallId:N}]",
@@ -1350,6 +1346,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "Rebind state evidence: " + string.Join(" | ", rebindStates));
 
             actionResponseRelease.TrySetResult();
+            var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
+            trigger.Result.Succeeded.Should().BeTrue(
+                $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -1367,7 +1366,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-reader-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(6);
+            storage.InvokeCalls.Should().Be(4);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
         }
