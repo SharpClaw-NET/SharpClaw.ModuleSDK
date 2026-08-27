@@ -153,6 +153,37 @@ internal static class OutOfProcessProtocolTestFixture
         }
     }
 
+    internal static void RecordStorageContinuationBoundary(
+        SidecarStorageCapabilityRequest request,
+        SidecarCapabilityCallIdentity? parentCall,
+        Guid? activeCarrierId,
+        bool activeContextFound,
+        long receivingLastSequence,
+        DateTimeOffset? targetContextDeadline)
+    {
+        try
+        {
+            var parentCallId = parentCall?.CallId.ToString("N") ?? "none";
+            var parentSequence = parentCall?.Sequence.ToString() ?? "none";
+            var carrierId = activeCarrierId?.ToString() ?? "none";
+            var deadline = targetContextDeadline?.ToString("O") ?? "none";
+            Emit(
+                "storage-continuation-predicate|"
+                + $"session={request.Call.SessionId};request={request.Call.RequestId};"
+                + $"cancellation={request.Call.CancellationId};call={request.Call.CallId:N};"
+                + $"parentCall={parentCallId};parentSequence={parentSequence};"
+                + $"activeCarrier={carrierId};activeContextFound={activeContextFound};"
+                + $"continuationAuthorityNull={request.HostEntryContinuationAuthority is null};"
+                + $"sequence={request.Call.Sequence};receivingLastSequence={receivingLastSequence};"
+                + $"requestDeadline={request.Deadline:O};targetContextDeadline={deadline};"
+                + $"module={request.Call.ModuleId};graph={request.Call.GraphId};"
+                + $"capability={request.Call.Capability}");
+        }
+        catch
+        {
+        }
+    }
+
     private static void RecordFailure(
         string phase,
         SidecarCapabilityCallIdentity call,

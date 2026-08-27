@@ -1289,6 +1289,19 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             var usesStorageContinuation = parentCall is not null
                 && request.Call.Sequence
                     > _session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            var activeCarrierId = _transport.ActiveCarrierId;
+            HostActionEntryRequestContext? activeContext = null;
+            var activeContextFound = activeCarrierId is { } carrierId
+                && _session.TryGetActiveHostActionEntryContext(carrierId, out activeContext);
+            OutOfProcessProtocolTestFixture.RecordStorageContinuationBoundary(
+                request,
+                parentCall,
+                activeCarrierId,
+                activeContextFound,
+                _session.LastSequence,
+                activeContext?.Deadline);
+#endif
             if (usesStorageContinuation)
             {
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
