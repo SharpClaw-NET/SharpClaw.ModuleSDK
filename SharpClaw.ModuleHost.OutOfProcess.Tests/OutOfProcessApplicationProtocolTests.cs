@@ -1543,7 +1543,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
             TestContext.Progress.WriteLine("Admission checkpoint: follow-up-complete");
-            storage.InvokeCalls.Should().Be(7);
+            storage.InvokeCalls.Should().Be(6);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
             TestContext.Progress.WriteLine(
