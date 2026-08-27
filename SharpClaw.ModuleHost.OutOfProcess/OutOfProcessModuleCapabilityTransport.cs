@@ -1408,6 +1408,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         CompleteAction(OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(frame.Payload));
                         break;
                     case OutOfProcessCapabilityFrameKind.StorageResponse:
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        RecordRebindState("storage-frame-received");
+#endif
                         CompleteStorage(OutOfProcessCapabilityWire.Deserialize<SidecarStorageCapabilityResponse>(frame.Payload));
                         break;
                     case OutOfProcessCapabilityFrameKind.ActionTerminalRequest:
