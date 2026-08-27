@@ -2532,6 +2532,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 "The receiving cross-sidecar carrier returned no host context.");
         }
 
+        ThrowIfRejected(_session.RecordTerminal(
+            peerCall.CallId,
+            request.Authority.AuthorityId,
+            peerReceipt));
+
         var effectiveHostEntry = new SidecarActionEffectiveHostEntryContext(
             importedHostContext,
             context,
@@ -2593,10 +2598,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     request.Descriptor.Version,
                     execution.Result.TypeIdentity,
                     execution.Result.ContentHash);
-            ThrowIfRejected(_session.RecordTerminal(
-                peerCall.CallId,
-                request.Authority.AuthorityId,
-                peerReceipt));
             var response = new SidecarActionTerminalTransportResponse(
                 resultIdentity,
                 execution,
