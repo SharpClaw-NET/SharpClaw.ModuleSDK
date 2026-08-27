@@ -1378,6 +1378,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     [Test, CancelAfter(30000)]
     public async Task RebindAdmissionReservesCallBeforeRequestRegistration()
     {
+        TestContext.Progress.WriteLine("Admission checkpoint: start");
         var rebindReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
@@ -1403,6 +1404,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         try
         {
             await using var client = await CreateClientAsync();
+            TestContext.Progress.WriteLine("Admission checkpoint: client-created");
             var storage = new CountingStorageGateway();
             var dispatcher = new CountingActionDispatcher();
             var descriptors = new OutOfProcessActionDescriptorCatalog();
@@ -1430,6 +1432,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 },
             };
             await client.ConnectCapabilitiesAsync(options);
+            TestContext.Progress.WriteLine("Admission checkpoint: capabilities-connected");
 
             for (var i = 0; i < 5; i++)
             {
@@ -1442,8 +1445,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                         $"rebind-admission-prior-{i}"));
                 prior.Result.Succeeded.Should().BeTrue(
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+                TestContext.Progress.WriteLine($"Admission checkpoint: prior-{i}-complete");
             }
 
+            TestContext.Progress.WriteLine("Admission checkpoint: starting-sixth");
             var sixthPrior = client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
                 ["single"],
@@ -1451,7 +1456,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                     client,
                     ApplicationSmokeModule.CapabilityCliName,
                     "rebind-admission-sixth")).AsTask();
+            TestContext.Progress.WriteLine("Admission checkpoint: sixth-started");
             await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Admission checkpoint: rotation-started");
 
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(
                 async (request, ct) =>
@@ -1465,6 +1472,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 }
             });
 
+            TestContext.Progress.WriteLine("Admission checkpoint: starting-host-entry");
             var hostEntry = client.InvokeCliAsync(
                 ApplicationSmokeModule.HostEntryCliName,
                 [],
@@ -1473,10 +1481,14 @@ public sealed class OutOfProcessApplicationProtocolTests
                     DateTimeOffset.UtcNow.AddMinutes(1))).AsTask();
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine(
+                $"Admission checkpoint: host-entry-created-{expectedHostEntryCallId:N}");
 
+            TestContext.Progress.WriteLine("Admission checkpoint: releasing-rotation");
             rotationRelease.TrySetResult();
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
             rebindState.Should().Contain(
                 $"outgoing=[{expectedHostEntryCallId:N}:",
                 "the rebind must observe the pre-registration call reservation");
@@ -1484,18 +1496,22 @@ public sealed class OutOfProcessApplicationProtocolTests
             rebindState.Should().Contain("storage=[]");
 
             requestRegistrationRelease.TrySetResult();
+            TestContext.Progress.WriteLine("Admission checkpoint: releasing-registration");
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
                 + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
+            TestContext.Progress.WriteLine("Admission checkpoint: host-entry-complete");
             var priorResult = await sixthPrior.WaitAsync(TimeSpan.FromSeconds(5));
             priorResult.Result.Succeeded.Should().BeTrue(
                 $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
+            TestContext.Progress.WriteLine("Admission checkpoint: sixth-complete");
 
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
             drainedState.Should().Contain("outgoing=[]");
+            TestContext.Progress.WriteLine("Admission checkpoint: rebind-drained");
 
             var afterRotation = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -1506,6 +1522,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-admission-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
+            TestContext.Progress.WriteLine("Admission checkpoint: follow-up-complete");
             storage.InvokeCalls.Should().Be(7);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
