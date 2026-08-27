@@ -1204,6 +1204,8 @@ public sealed class OutOfProcessApplicationProtocolTests
     {
         var rebindReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var rebindDrained = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var actionResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var actionResponseRelease = new TaskCompletionSource(
@@ -1217,6 +1219,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine("Rebind observer: " + state);
             if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
                 rebindReceived.TrySetResult(state);
+            if (state.StartsWith("rebind-drained|", StringComparison.Ordinal))
+                rebindDrained.TrySetResult(state);
         });
         try
         {
@@ -1310,13 +1314,19 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
-                "actions=[]",
-                "the first rebind must observe the completed action response");
+                $"actions=[{expectedHostEntryCallId:N}]",
+                "the first rebind must identify the still-pending HostEntry call");
             rebindState.Should().Contain("incomingActions=[]");
             rebindState.Should().Contain("storage=[]");
             rebindState.Should().Contain(
                 $"outgoing=[{expectedHostEntryCallId:N}:",
                 "the first rebind must identify the gated HostEntry call");
+            var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            drainedState.Should().Contain(
+                "actions=[]",
+                "the response frame must clear the HostEntry call before rebind acknowledgement");
+            drainedState.Should().Contain("incomingActions=[]");
+            drainedState.Should().Contain("storage=[]");
             var observedStates = rebindStates.ToArray();
             var responseIndex = Array.FindIndex(
                 observedStates,
@@ -1326,6 +1336,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 state => state.StartsWith("rebind-frame-received|", StringComparison.Ordinal));
             responseIndex.Should().BeGreaterThanOrEqualTo(0);
             rebindIndex.Should().BeGreaterThan(responseIndex);
+            var drainedIndex = Array.FindIndex(
+                observedStates,
+                state => state.StartsWith("rebind-drained|", StringComparison.Ordinal));
+            drainedIndex.Should().BeGreaterThan(rebindIndex);
             dispatcher.RunCalls.Should().Be(2);
             dispatcher.TerminalCalls.Should().Be(2);
         }
