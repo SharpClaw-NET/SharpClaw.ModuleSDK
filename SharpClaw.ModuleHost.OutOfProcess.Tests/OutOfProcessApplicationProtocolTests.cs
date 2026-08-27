@@ -1324,15 +1324,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 + string.Join(" | ", rebindStates));
             TestContext.Progress.WriteLine(
                 "Storage frame received: " + storageFrameReceived.Task.Result);
-            var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            rebindState.Should().Contain(
-                $"actions=[{expectedHostEntryCallId:N}]",
-                "the gated HostEntry call must cause the first observed rebind");
-            rebindState.Should().Contain("incomingActions=[]");
-            rebindState.Should().Contain("storage=[]");
-            TestContext.Progress.WriteLine(
-                "Rebind state evidence: " + string.Join(" | ", rebindStates));
-
             actionResponseRelease.TrySetResult();
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
@@ -1341,6 +1332,24 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
             await actionReleased.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            rebindState.Should().Contain(
+                "actions=[]",
+                "the first rebind must observe the completed action response");
+            rebindState.Should().Contain("incomingActions=[]");
+            rebindState.Should().Contain("storage=[]");
+            TestContext.Progress.WriteLine(
+                "Rebind state evidence: " + string.Join(" | ", rebindStates));
+
+            var observedStates = rebindStates.ToArray();
+            var responseIndex = Array.FindIndex(
+                observedStates,
+                state => state == $"action-response-frame-received|{expectedHostEntryCallId:N}");
+            var rebindIndex = Array.FindIndex(
+                observedStates,
+                state => state.StartsWith("rebind-frame-received|", StringComparison.Ordinal));
+            responseIndex.Should().BeGreaterThanOrEqualTo(0);
+            rebindIndex.Should().BeGreaterThan(responseIndex);
             var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
             endpoint.Succeeded.Should().BeTrue(
                 $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");

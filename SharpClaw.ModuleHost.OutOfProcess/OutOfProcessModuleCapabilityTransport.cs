@@ -1410,8 +1410,15 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         break;
                     }
                     case OutOfProcessCapabilityFrameKind.ActionResponse:
-                        CompleteAction(OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(frame.Payload));
+                    {
+                        var actionResponse = OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(
+                            frame.Payload);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        OutOfProcessProtocolTestFixture.RecordActionResponseFrame(actionResponse.Call);
+#endif
+                        CompleteAction(actionResponse);
                         break;
+                    }
                     case OutOfProcessCapabilityFrameKind.StorageResponse:
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
                         RecordRebindState("storage-frame-received");
