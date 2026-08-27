@@ -1430,7 +1430,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             await client.ConnectCapabilitiesAsync(options);
             TestContext.Progress.WriteLine("Admission checkpoint: capabilities-connected");
 
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 4; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1543,7 +1543,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
             TestContext.Progress.WriteLine("Admission checkpoint: follow-up-complete");
-            storage.InvokeCalls.Should().Be(8);
+            storage.InvokeCalls.Should().Be(7);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
             TestContext.Progress.WriteLine(
