@@ -1479,6 +1479,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                     && Interlocked.Exchange(ref registrationObserverUsed, 1) == 0)
                 {
                     hostEntryCallId.TrySetResult(request.Call.CallId);
+                    TestContext.Progress.WriteLine(
+                        $"Admission checkpoint: registration-gate-{request.Call.CallId:N}");
                     await requestRegistrationRelease.Task.WaitAsync(ct);
                 }
             });
@@ -1504,9 +1506,12 @@ public sealed class OutOfProcessApplicationProtocolTests
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
+            TestContext.Progress.WriteLine(
+                "Admission checkpoint: rebind-states-" + string.Join(" | ", rebindStates));
             rebindState.Should().Contain(
                 $"outgoing=[{expectedHostEntryCallId:N}:",
-                "the rebind must observe the pre-registration call reservation");
+                "the rebind must observe the pre-registration call reservation; states: "
+                + string.Join(" | ", rebindStates));
             rebindState.Should().Contain("actions=[]");
             rebindState.Should().Contain("storage=[]");
             rebindStates.Should().Contain(
