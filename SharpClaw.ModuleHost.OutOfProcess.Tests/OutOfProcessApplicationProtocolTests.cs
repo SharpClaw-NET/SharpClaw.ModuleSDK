@@ -1218,6 +1218,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var storageResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var storageFrameReceived = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
         var responseGateUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
@@ -1238,6 +1240,8 @@ public sealed class OutOfProcessApplicationProtocolTests
                 storageBeforeComplete.TrySetResult();
             if (state.StartsWith("storage-after-complete|", StringComparison.Ordinal))
                 storageAfterComplete.TrySetResult();
+            if (state.StartsWith("storage-frame-received|", StringComparison.Ordinal))
+                storageFrameReceived.TrySetResult(state);
         });
         try
         {
@@ -1323,6 +1327,15 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine("Storage completion returned.");
             await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Storage response send started.");
+            var storageFrameCompleted = await Task.WhenAny(
+                storageFrameReceived.Task,
+                Task.Delay(TimeSpan.FromSeconds(5)));
+            storageFrameCompleted.Should().Be(
+                storageFrameReceived.Task,
+                "the module reader must receive the storage response; states: "
+                + string.Join(" | ", rebindStates));
+            TestContext.Progress.WriteLine(
+                "Storage frame received: " + storageFrameReceived.Task.Result);
             var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
             trigger.Result.Succeeded.Should().BeTrue(
                 $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
