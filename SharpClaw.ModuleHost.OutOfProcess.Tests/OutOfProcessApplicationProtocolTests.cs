@@ -1386,6 +1386,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var requestRegistrationRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
         var callObserverUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
@@ -1406,7 +1410,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ApplicationSmokeModule.HostAction,
                 static (context, _) => ValueTask.FromResult(
                     new ApplicationSmokeResult($"entry-terminal:{context.Action.Value}")));
-            await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            var options = new OutOfProcessCapabilityHostOptions(
                 storage,
                 dispatcher,
                 client.CreateCapabilityGrant(),
@@ -1417,9 +1421,17 @@ public sealed class OutOfProcessApplicationProtocolTests
                     client.Authorization.ActionGrants,
                     client.Authorization.EventGrants),
                 new OutOfProcessHostActionEntryContextRegistry(),
-                new KernelExternalAuthoritySessionRegistry()));
+                new KernelExternalAuthoritySessionRegistry())
+            {
+                BeforeRotationStartAsync = async () =>
+                {
+                    rotationStarted.TrySetResult();
+                    await rotationRelease.Task;
+                },
+            };
+            await client.ConnectCapabilitiesAsync(options);
 
-            for (var i = 0; i < 2; i++)
+            for (var i = 0; i < 6; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1431,6 +1443,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 prior.Result.Succeeded.Should().BeTrue(
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
+
+            var sixthPrior = client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    "rebind-admission-sixth")).AsTask();
+            await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
             {
@@ -1451,19 +1472,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
 
-            var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
-                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
-                client.IssueHostActionContext(
-                    HostActionEntryIngress.Endpoint,
-                    typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
-                    client.Discovery.ModuleId,
-                    ApplicationSmokeModule.HostAction,
-                    new ApplicationSmokeAction("storage-heavy", "endpoint"),
-                    ApplicationSmokeModule.HostEntryCaller,
-                    ApplicationSmokeModule.HostEntryFeatures,
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    DateTimeOffset.UtcNow.AddMinutes(1))));
+            rotationRelease.TrySetResult();
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
@@ -1478,18 +1487,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
+            var priorResult = await sixthPrior.WaitAsync(TimeSpan.FromSeconds(5));
+            priorResult.Result.Succeeded.Should().BeTrue(
+                $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
 
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
             drainedState.Should().Contain("outgoing=[]");
-            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
-            endpoint.Succeeded.Should().BeTrue(
-                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
-            endpoint.Payload.Should().NotBeNull();
-            endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
-            endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
-                ActionOutcomeKind.Completed.ToString());
-            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
-                "entry-terminal:endpoint");
 
             var afterRotation = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -1500,15 +1503,16 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-admission-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(6);
-            dispatcher.RunCalls.Should().Be(2);
-            dispatcher.TerminalCalls.Should().Be(2);
+            storage.InvokeCalls.Should().Be(7);
+            dispatcher.RunCalls.Should().Be(1);
+            dispatcher.TerminalCalls.Should().Be(1);
             TestContext.Progress.WriteLine(
                 "Pre-registration rebind state evidence: "
                 + string.Join(" | ", rebindStates));
         }
         finally
         {
+            rotationRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
