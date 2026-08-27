@@ -1361,8 +1361,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
             storage.InvokeCalls.Should().Be(6);
-            dispatcher.RunCalls.Should().Be(1);
-            dispatcher.TerminalCalls.Should().Be(1);
+            dispatcher.RunCalls.Should().Be(2);
+            dispatcher.TerminalCalls.Should().Be(2);
         }
         finally
         {
