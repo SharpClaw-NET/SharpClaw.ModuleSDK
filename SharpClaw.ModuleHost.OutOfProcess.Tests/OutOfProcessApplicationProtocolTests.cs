@@ -1387,6 +1387,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var fifthStorageResponseRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var fifthActionResponseCallId = new TaskCompletionSource<Guid>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var hostEntryCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var requestRegistrationRelease = new TaskCompletionSource(
@@ -1446,6 +1448,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 fifthStorageResponseEntered.TrySetResult();
                 await fifthStorageResponseRelease.Task.WaitAsync(ct);
             });
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(
+                (call, _) =>
+                {
+                    fifthActionResponseCallId.TrySetResult(call.CallId);
+                    return Task.CompletedTask;
+                });
 
             TestContext.Progress.WriteLine("Admission checkpoint: starting-fifth");
             var fifthPrior = client.InvokeCliAsync(
@@ -1484,6 +1492,8 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             TestContext.Progress.WriteLine("Admission checkpoint: releasing-fifth-storage-response");
             fifthStorageResponseRelease.TrySetResult();
+            var expectedFifthActionCallId = await fifthActionResponseCallId.Task.WaitAsync(
+                TimeSpan.FromSeconds(5));
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
@@ -1492,6 +1502,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "the rebind must observe the pre-registration call reservation");
             rebindState.Should().Contain("actions=[]");
             rebindState.Should().Contain("storage=[]");
+            rebindStates.Should().Contain(
+                $"state-released|actions={expectedFifthActionCallId:N}",
+                "the action response must clear its pending call before rebind drain");
 
             requestRegistrationRelease.TrySetResult();
             TestContext.Progress.WriteLine("Admission checkpoint: releasing-registration");

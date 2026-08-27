@@ -2123,9 +2123,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 return;
             }
 
-            await FinishCallAsync(request.Call.CallId, active, channelCt);
-            active = null;
-
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
             await OutOfProcessProtocolTestFixture.BeforeActionResponseAsync(
                 request.Call,
@@ -2138,6 +2135,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 channelCt);
+
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
+            active = null;
         }
         catch (OperationCanceledException) when (
             active is not null
