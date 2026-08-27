@@ -344,6 +344,133 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task CrossSidecarCompletedDenyFailsParentThenContinuesWithLaterUse()
+    {
+        var (targetServer, targetAddress, targetToken) =
+            await StartStandaloneServerAsync(
+                "cross-failed-parent-rotation",
+                CrossSidecarModule.Id,
+                typeof(CrossSidecarModule));
+        await using var server = targetServer;
+        await using var targetClient = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            targetAddress,
+            targetToken,
+            new SidecarHostDescriptorCatalog(
+                [],
+                [],
+                OutOfProcessModuleHostProtocol.Version,
+                new SidecarPayloadLimits()));
+
+        var targetDispatcher = new CountingActionDispatcher();
+        var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
+        targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        await targetClient.ConnectCapabilitiesAsync(
+            CreateOptions(
+                targetClient,
+                targetDispatcher,
+                descriptors: targetDescriptors));
+
+        var (client, dispatcher) = await CreateSourceClientAsync(targetClient);
+        await using (client)
+        {
+            var states = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var calls = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            void RecordStage(string stage)
+            {
+                TestContext.Progress.WriteLine(
+                    $"{stage};source-generation={client.CapabilitySession.BindingGeneration};"
+                    + $"target-generation={targetClient.CapabilitySession.BindingGeneration};"
+                    + $"source-run-failure={client.CapabilitySession.RunFailure};"
+                    + $"target-run-failure={targetClient.CapabilitySession.RunFailure};"
+                    + $"source-handled-failure={client.CapabilitySession.LastHandledFailure};"
+                    + $"target-handled-failure={targetClient.CapabilitySession.LastHandledFailure};"
+                    + $"source-pending={client.HostActionEntryContexts.HasPendingContexts};"
+                    + $"target-pending={targetClient.HostActionEntryContexts.HasPendingContexts};"
+                    + $"source-dispatcher={dispatcher.RunCalls}/{dispatcher.TerminalCalls};"
+                    + $"target-dispatcher={targetDispatcher.RunCalls}/{targetDispatcher.TerminalCalls};"
+                    + $"states={string.Join(" || ", states)};"
+                    + $"calls={string.Join(" || ", calls)}");
+            }
+
+            OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(states.Enqueue);
+            OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
+                calls.Enqueue(
+                    $"{call.Capability}:{call.CallId:N};sequence={call.Sequence};"
+                    + $"session={call.SessionId};request={call.RequestId};"
+                    + $"cancellation={call.CancellationId};nonce={call.ReplayNonce};"
+                    + $"module={call.ModuleId}"));
+            try
+            {
+                RecordStage("before-warmups");
+                for (var i = 0; i < 2; i++)
+                {
+                    var warmup = await InvokeSourceAsync(
+                        client,
+                        dispatcher,
+                        "cross-sidecar",
+                        $"warmup-{i}");
+                    warmup.Result.Succeeded.Should().BeTrue(
+                        $"Warmup failed with {warmup.Result.Error?.Code}: "
+                        + warmup.Result.Error?.Message);
+                    RecordStage($"after-warmup-{i}");
+                }
+
+                var sourceGenerationBefore = client.CapabilitySession.BindingGeneration;
+                var targetGenerationBefore = targetClient.CapabilitySession.BindingGeneration;
+                RecordStage(
+                    $"before-deny;baseline-source-generation={sourceGenerationBefore};"
+                    + $"baseline-target-generation={targetGenerationBefore}");
+                var failed = await InvokeSourceAsync(
+                    client,
+                    dispatcher,
+                    "cross-sidecar-deny",
+                    "deny");
+
+                failed.Result.Succeeded.Should().BeFalse(
+                    "The source parent must fail after the target returns its denied outcome.");
+                failed.Result.Error.Should().NotBeNull();
+                dispatcher.LastException.Should().NotBeNull();
+                targetDispatcher.LastException.Should().BeNull();
+                targetDispatcher.TerminalCalls.Should().Be(3);
+                RecordStage("after-deny");
+
+                var allowed = await InvokeSourceAsync(
+                    client,
+                    dispatcher,
+                    "cross-sidecar",
+                    "allowed");
+                allowed.Result.Succeeded.Should().BeTrue(
+                    $"Authorized parent failed with {allowed.Result.Error?.Code}: "
+                    + allowed.Result.Error?.Message);
+                RecordStage("after-allowed");
+
+                var later = await InvokeSourceAsync(
+                    client,
+                    dispatcher,
+                    "cross-sidecar",
+                    "later");
+                later.Result.Succeeded.Should().BeTrue(
+                    $"Later parent failed with {later.Result.Error?.Code}: "
+                    + later.Result.Error?.Message);
+                RecordStage("after-later");
+
+                targetDispatcher.RunCalls.Should().Be(5);
+                targetDispatcher.TerminalCalls.Should().Be(5);
+                dispatcher.RunCalls.Should().Be(5);
+                dispatcher.TerminalCalls.Should().Be(4);
+                client.CapabilitySession.RunFailure.Should().BeNull();
+                targetClient.CapabilitySession.RunFailure.Should().BeNull();
+                TestContext.Progress.WriteLine("cross-sidecar-deny-allow-later=" + string.Join(" || ", states));
+            }
+            finally
+            {
+                OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
+                OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
+            }
+        }
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CrossSidecarCancelledTargetReturnsSignedOutcomeAndKeepsSession()
     {
         _targetDispatcher.Reset();

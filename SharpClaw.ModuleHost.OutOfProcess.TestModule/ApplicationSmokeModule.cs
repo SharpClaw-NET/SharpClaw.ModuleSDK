@@ -601,6 +601,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     "cross-descriptor" => "cross-descriptor-root",
                     "cross-sidecar" => "cross-sidecar-root",
                     "cross-sidecar-fail" => "cross-sidecar-fail-root",
+                    "cross-sidecar-deny" => "cross-sidecar-deny-root",
                     "cross-sidecar-cancel" => "cross-sidecar-cancel-root",
                     "cross-sidecar-fail-observe" => "cross-sidecar-fail-observe-root",
                     "cross-sidecar-cancel-observe" => "cross-sidecar-cancel-observe-root",
@@ -839,6 +840,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"cross-sidecar:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-fail-root" => new ApplicationSmokeResult(
                     $"cross-sidecar-fail:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-deny-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-deny:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-cancel-root" => new ApplicationSmokeResult(
                     $"cross-sidecar-cancel:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-fail-observe-root" => new ApplicationSmokeResult(
@@ -900,6 +903,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                         context.Action.Mode switch
                         {
                             "cross-sidecar-fail-root" or "cross-sidecar-fail-observe-root" => "fail",
+                            "cross-sidecar-deny-root" => "deny",
                             "cross-sidecar-cancel-root" or "cross-sidecar-cancel-observe-root" => "cancel",
                             "cross-sidecar-block-observe-root" => "block",
                             "cross-sidecar-root" when context.Action.Value == "block" => "block",
@@ -920,6 +924,18 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             {
                 throw new InvalidOperationException(
                     $"The cross-sidecar action returned {outcome.Kind}.");
+            }
+
+            if (context.Action.Mode == "cross-sidecar-deny-root")
+            {
+                if (!outcome.Result.Value.StartsWith("deny:", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "The target action did not return the typed deny result.");
+                }
+
+                throw new InvalidOperationException(
+                    "The target action returned a typed deny result.");
             }
 
             return outcome.Result;
@@ -1063,6 +1079,7 @@ public sealed class CrossSidecarModule : ISharpClawModule
             return context.Action.Operation switch
             {
                 "fail" => throw new InvalidOperationException("The target action terminal failed."),
+                "deny" => new CrossSidecarResult($"deny:{context.Action.Value}"),
                 _ => new CrossSidecarResult(
                     $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"
                     + $"depth={context.Depth}|parent={context.ParentInvocationId.HasValue}|"
