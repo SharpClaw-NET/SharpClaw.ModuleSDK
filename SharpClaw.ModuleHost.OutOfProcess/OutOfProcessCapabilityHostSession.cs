@@ -2558,6 +2558,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 var import = Session.ImportHostEntryStorageContinuationAuthority(
                     storageContinuation,
                     DateTimeOffset.UtcNow);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "host-continuation-import",
+                    import.Accepted,
+                    import.Code,
+                    import.Message);
+#endif
                 if (!import.Accepted)
                 {
                     AbandonCall(request.Call.CallId, active);
@@ -2575,6 +2583,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     requestFramePayload.ByteLength,
                     DateTimeOffset.UtcNow,
                     out _);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "host-continuation-begin",
+                    begin.Accepted,
+                    begin.Code,
+                    begin.Message);
+#endif
             }
             if (!begin.Accepted)
             {
