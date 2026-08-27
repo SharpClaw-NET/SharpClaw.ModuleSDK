@@ -1212,10 +1212,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var actionReleased = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var storageBeforeComplete = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var storageAfterComplete = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var storageResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var storageFrameReceived = new TaskCompletionSource<string>(
@@ -1235,10 +1231,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             {
                 actionReleased.TrySetResult();
             }
-            if (state.StartsWith("storage-before-complete|", StringComparison.Ordinal))
-                storageBeforeComplete.TrySetResult();
-            if (state.StartsWith("storage-after-complete|", StringComparison.Ordinal))
-                storageAfterComplete.TrySetResult();
             if (state.StartsWith("storage-frame-received|", StringComparison.Ordinal))
                 storageFrameReceived.TrySetResult(state);
         });
@@ -1278,16 +1270,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
 
-            storage.BlockInvoke = true;
-            var gatedStorage = client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                ["single"],
-                IssueCliContext(
-                    client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-reader-gated-storage")).AsTask();
-            await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(async (call, ct) =>
             {
                 if (hostEntryCallId.Task.IsCompletedSuccessfully
@@ -1318,13 +1300,19 @@ public sealed class OutOfProcessApplicationProtocolTests
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
 
-            storage.InvocationRelease.TrySetResult();
-            await storage.InvocationReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Storage gateway invocation returned.");
-            await storageBeforeComplete.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Storage completion started.");
-            await storageAfterComplete.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Storage completion returned.");
+            var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
+                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                client.IssueHostActionContext(
+                    HostActionEntryIngress.Endpoint,
+                    typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                    client.Discovery.ModuleId,
+                    ApplicationSmokeModule.HostAction,
+                    new ApplicationSmokeAction("storage-heavy", "endpoint"),
+                    ApplicationSmokeModule.HostEntryCaller,
+                    ApplicationSmokeModule.HostEntryFeatures,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow.AddMinutes(1))));
             await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Storage response send started.");
             var storageFrameCompleted = await Task.WhenAny(
@@ -1346,9 +1334,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "Rebind state evidence: " + string.Join(" | ", rebindStates));
 
             actionResponseRelease.TrySetResult();
-            var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
-            trigger.Result.Succeeded.Should().BeTrue(
-                $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -1356,6 +1341,15 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
             await actionReleased.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
+            endpoint.Succeeded.Should().BeTrue(
+                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
+            endpoint.Payload.Should().NotBeNull();
+            endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
+            endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
+                ActionOutcomeKind.Completed.ToString());
+            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
+                "entry-terminal:endpoint");
 
             var afterRotation = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -1366,7 +1360,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-reader-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(4);
+            storage.InvokeCalls.Should().Be(6);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
         }
