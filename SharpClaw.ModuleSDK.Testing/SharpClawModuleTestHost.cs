@@ -72,14 +72,14 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
     internal ValueTask<IActionOutcome<TResult>> RunActionAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         CancellationToken ct) =>
         _actions.RunAsync(descriptor, action, terminal, CoreGraph.ActionSnapshot, ct);
 
     internal ValueTask<TResult> RunRequiredActionAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         CancellationToken ct) =>
         _actions.RunRequiredAsync(descriptor, action, terminal, CoreGraph.ActionSnapshot, ct);
 
@@ -105,11 +105,11 @@ public sealed class ModuleTestActionBuilder<TAction, TResult>(
     ActionDescriptor<TAction, TResult> descriptor,
     TAction action)
 {
-    private Func<TAction, CancellationToken, ValueTask<TResult>>? _terminal;
+    private Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>? _terminal;
 
     /// <summary>Sets the guarded terminal implementation.</summary>
     public ModuleTestActionBuilder<TAction, TResult> WithTerminal(
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal)
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal)
     {
         _terminal = terminal ?? throw new ArgumentNullException(nameof(terminal));
         return this;
@@ -123,7 +123,7 @@ public sealed class ModuleTestActionBuilder<TAction, TResult>(
     public ValueTask<TResult> RunRequiredAsync(CancellationToken ct = default) =>
         host.RunRequiredActionAsync(descriptor, action, RequiredTerminal(), ct);
 
-    private Func<TAction, CancellationToken, ValueTask<TResult>> RequiredTerminal() =>
+    private Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> RequiredTerminal() =>
         _terminal ?? throw new InvalidOperationException("The action test requires a terminal implementation.");
 }
 
