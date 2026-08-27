@@ -1315,7 +1315,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                     ApplicationSmokeModule.HostEntryFeatures,
                     Guid.NewGuid(),
                     Guid.NewGuid(),
-                    DateTimeOffset.UtcNow.AddMinutes(1));
+                    DateTimeOffset.UtcNow.AddMinutes(1)));
             endpoint.Succeeded.Should().BeTrue(
                 $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
             endpoint.Payload.Should().NotBeNull();
