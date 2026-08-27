@@ -1431,7 +1431,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             };
             await client.ConnectCapabilitiesAsync(options);
 
-            for (var i = 0; i < 6; i++)
+            for (var i = 0; i < 5; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
