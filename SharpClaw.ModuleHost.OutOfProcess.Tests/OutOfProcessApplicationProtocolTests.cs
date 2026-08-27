@@ -1241,7 +1241,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new OutOfProcessHostActionEntryContextRegistry(),
                 new KernelExternalAuthoritySessionRegistry()));
 
-            for (var i = 0; i < 2; i++)
+            for (var i = 0; i < 4; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1314,6 +1314,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 "the first rebind must observe the completed action response");
             rebindState.Should().Contain("incomingActions=[]");
             rebindState.Should().Contain("storage=[]");
+            rebindState.Should().Contain(
+                $"outgoing=[{expectedHostEntryCallId:N}:",
+                "the first rebind must identify the gated HostEntry call");
             var observedStates = rebindStates.ToArray();
             var responseIndex = Array.FindIndex(
                 observedStates,
