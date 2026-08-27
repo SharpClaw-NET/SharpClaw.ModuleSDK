@@ -1443,9 +1443,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             }
             catch
             {
-#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
-                tracePhase = "failure";
-#endif
                 CompleteCall(request.Call.CallId, 0);
                 throw;
             }
