@@ -1992,6 +1992,12 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordActionFailure(
+                request.Call,
+                request.Terminal?.TerminalId ?? Guid.Empty,
+                ex);
+#endif
             if (active is not null && !sessionCompleted)
             {
                 CompleteCall(request.Call.CallId, 0);

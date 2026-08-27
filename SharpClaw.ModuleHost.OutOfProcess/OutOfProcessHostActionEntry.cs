@@ -480,6 +480,12 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             transport.RecordTerminalFailure(ex);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordTerminalFailure(
+                request.Call,
+                request.TerminalId,
+                ex);
+#endif
             return new SidecarActionTerminalTransportResponse(
                 null,
                 new SidecarTerminalExecutionResult(

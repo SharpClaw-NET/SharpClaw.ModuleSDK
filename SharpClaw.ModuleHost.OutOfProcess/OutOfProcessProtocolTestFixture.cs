@@ -11,6 +11,7 @@ internal static class OutOfProcessProtocolTestFixture
         _beforeActionResponseForCallAsync;
     private static Func<CancellationToken, Task>? _beforeStorageResponseAsync;
     private static Action<string>? _rebindStateObserver;
+    private static Action<string>? _failureObserver;
     private static string? _lastActionResponseCallId;
     private static Action<SidecarCapabilityCallIdentity>? _callCreatedObserver;
     private static Func<SidecarActionCapabilityRequest, CancellationToken, Task>?
@@ -51,6 +52,9 @@ internal static class OutOfProcessProtocolTestFixture
 
     internal static void ConfigureRebindStateObserver(Action<string>? observer) =>
         Interlocked.Exchange(ref _rebindStateObserver, observer);
+
+    internal static void ConfigureFailureObserver(Action<string>? observer) =>
+        Interlocked.Exchange(ref _failureObserver, observer);
 
     internal static void ConfigureCallCreatedObserver(
         Action<SidecarCapabilityCallIdentity>? observer) =>
@@ -99,7 +103,79 @@ internal static class OutOfProcessProtocolTestFixture
                 observedState += $";lastActionResponse={lastActionResponseCallId}";
             }
 
-            Volatile.Read(ref _rebindStateObserver)?.Invoke($"{phase}|{observedState}");
+            Emit($"{phase}|{observedState}", notifyRebindObserver: true);
+        }
+        catch
+        {
+        }
+    }
+
+    internal static void RecordActionFailure(
+        SidecarCapabilityCallIdentity call,
+        Guid terminalId,
+        Exception exception) =>
+        RecordFailure("action-failure", call, terminalId, exception);
+
+    internal static void RecordTerminalFailure(
+        SidecarCapabilityCallIdentity call,
+        Guid terminalId,
+        Exception exception) =>
+        RecordFailure("terminal-failure", call, terminalId, exception);
+
+    private static void RecordFailure(
+        string phase,
+        SidecarCapabilityCallIdentity call,
+        Guid terminalId,
+        Exception exception)
+    {
+        try
+        {
+            var code = exception is OutOfProcessCapabilityException capability
+                ? capability.Code
+                : "exception";
+            var type = exception.GetType().FullName ?? exception.GetType().Name;
+            var message = exception.Message.Replace('\r', ' ').Replace('\n', ' ');
+            if (message.Length > 160
+                || message.Contains('{')
+                || message.Contains('}')
+                || message.Contains('[')
+                || message.Contains(']'))
+            {
+                message = "redacted";
+            }
+            Emit(
+                $"{phase}|call={call.CallId:N};terminal={terminalId:N};"
+                + $"type={type};code={code};message={message}",
+                notifyFailureObserver: true);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void Emit(
+        string record,
+        bool notifyRebindObserver = false,
+        bool notifyFailureObserver = false)
+    {
+        try
+        {
+            if (notifyRebindObserver)
+                Volatile.Read(ref _rebindStateObserver)?.Invoke(record);
+            if (notifyFailureObserver)
+                Volatile.Read(ref _failureObserver)?.Invoke(record);
+            var path = Environment.GetEnvironmentVariable(
+                "SHARPCLAW_MODULESDK_PROTOCOL_EVIDENCE_PATH");
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            lock (typeof(OutOfProcessProtocolTestFixture))
+            {
+                File.AppendAllText(
+                    path,
+                    record + Environment.NewLine,
+                    System.Text.Encoding.UTF8);
+            }
         }
         catch
         {
