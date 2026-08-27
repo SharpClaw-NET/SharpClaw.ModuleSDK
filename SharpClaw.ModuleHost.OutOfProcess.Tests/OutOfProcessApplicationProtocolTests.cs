@@ -1378,10 +1378,6 @@ public sealed class OutOfProcessApplicationProtocolTests
     [Test, CancelAfter(30000)]
     public async Task RebindAdmissionReservesCallBeforeRequestRegistration()
     {
-        var storageResponseEntered = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var storageResponseRelease = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
@@ -1391,16 +1387,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var requestRegistrationRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
-        var storageGateUsed = 0;
         var callObserverUsed = 0;
-        OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(async ct =>
-        {
-            if (Interlocked.Exchange(ref storageGateUsed, 1) == 0)
-            {
-                storageResponseEntered.TrySetResult();
-                await storageResponseRelease.Task.WaitAsync(ct);
-            }
-        });
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
             rebindStates.Enqueue(state);
@@ -1432,7 +1419,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 new OutOfProcessHostActionEntryContextRegistry(),
                 new KernelExternalAuthoritySessionRegistry()));
 
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 2; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1444,15 +1431,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 prior.Result.Succeeded.Should().BeTrue(
                     $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
             }
-
-            var gatedStorage = client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                ["single"],
-                IssueCliContext(
-                    client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-admission-trigger")).AsTask();
-            await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
             {
@@ -1473,7 +1451,19 @@ public sealed class OutOfProcessApplicationProtocolTests
             var expectedHostEntryCallId = await hostEntryCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
 
-            storageResponseRelease.TrySetResult();
+            var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
+                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                client.IssueHostActionContext(
+                    HostActionEntryIngress.Endpoint,
+                    typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                    client.Discovery.ModuleId,
+                    ApplicationSmokeModule.HostAction,
+                    new ApplicationSmokeAction("storage-heavy", "endpoint"),
+                    ApplicationSmokeModule.HostEntryCaller,
+                    ApplicationSmokeModule.HostEntryFeatures,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow.AddMinutes(1))));
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
@@ -1482,9 +1472,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             rebindState.Should().Contain("actions=[]");
 
             requestRegistrationRelease.TrySetResult();
-            var trigger = await gatedStorage.WaitAsync(TimeSpan.FromSeconds(5));
-            trigger.Result.Succeeded.Should().BeTrue(
-                $"CLI error {trigger.Result.Error?.Code}: {trigger.Result.Error?.Message}");
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
@@ -1494,6 +1481,15 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
             drainedState.Should().Contain("outgoing=[]");
+            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
+            endpoint.Succeeded.Should().BeTrue(
+                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
+            endpoint.Payload.Should().NotBeNull();
+            endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
+            endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
+                ActionOutcomeKind.Completed.ToString());
+            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
+                "entry-terminal:endpoint");
 
             var afterRotation = await client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
@@ -1504,18 +1500,16 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-admission-after"));
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(7);
-            dispatcher.RunCalls.Should().Be(1);
-            dispatcher.TerminalCalls.Should().Be(1);
+            storage.InvokeCalls.Should().Be(6);
+            dispatcher.RunCalls.Should().Be(2);
+            dispatcher.TerminalCalls.Should().Be(2);
             TestContext.Progress.WriteLine(
                 "Pre-registration rebind state evidence: "
                 + string.Join(" | ", rebindStates));
         }
         finally
         {
-            storageResponseRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
-            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }
