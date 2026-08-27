@@ -1383,11 +1383,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthStorageResponseEntered = new TaskCompletionSource(
+        var boundaryStorageResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthStorageResponseRelease = new TaskCompletionSource(
+        var boundaryStorageResponseRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthStorageCallId = new TaskCompletionSource<Guid>(
+        var boundaryStorageCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var hostEntryCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1430,7 +1430,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             await client.ConnectCapabilitiesAsync(options);
             TestContext.Progress.WriteLine("Admission checkpoint: capabilities-connected");
 
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 5; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1449,27 +1449,27 @@ public sealed class OutOfProcessApplicationProtocolTests
                 if (call.Capability == SidecarCapabilityKind.Storage
                     && Interlocked.Exchange(ref storageObserverUsed, 1) == 0)
                 {
-                    fifthStorageCallId.TrySetResult(call.CallId);
+                    boundaryStorageCallId.TrySetResult(call.CallId);
                 }
             });
             OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(async ct =>
             {
-                fifthStorageResponseEntered.TrySetResult();
-                await fifthStorageResponseRelease.Task.WaitAsync(ct);
+                boundaryStorageResponseEntered.TrySetResult();
+                await boundaryStorageResponseRelease.Task.WaitAsync(ct);
             });
 
-            TestContext.Progress.WriteLine("Admission checkpoint: starting-fifth");
-            var fifthPrior = client.InvokeCliAsync(
+            TestContext.Progress.WriteLine("Admission checkpoint: starting-boundary");
+            var boundaryPrior = client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
                 ["single"],
                 IssueCliContext(
                     client,
                     ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-admission-fifth")).AsTask();
-            await fifthStorageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var expectedFifthStorageCallId = await fifthStorageCallId.Task.WaitAsync(
+                    "rebind-admission-boundary")).AsTask();
+            await boundaryStorageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var expectedBoundaryStorageCallId = await boundaryStorageCallId.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Admission checkpoint: fifth-storage-response-held");
+            TestContext.Progress.WriteLine("Admission checkpoint: boundary-storage-response-held");
 
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(
                 async (request, ct) =>
@@ -1495,9 +1495,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine(
                 $"Admission checkpoint: host-entry-created-{expectedHostEntryCallId:N}");
 
-            TestContext.Progress.WriteLine("Admission checkpoint: releasing-fifth-storage-response");
-            fifthStorageResponseRelease.TrySetResult();
-            var priorResult = await fifthPrior.WaitAsync(
+            TestContext.Progress.WriteLine("Admission checkpoint: releasing-boundary-storage-response");
+            boundaryStorageResponseRelease.TrySetResult();
+            var priorResult = await boundaryPrior.WaitAsync(
                 TimeSpan.FromSeconds(5));
             priorResult.Result.Succeeded.Should().BeTrue(
                 $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
@@ -1510,7 +1510,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             rebindState.Should().Contain("actions=[]");
             rebindState.Should().Contain("storage=[]");
             rebindStates.Should().Contain(
-                $"storage-after-complete|{expectedFifthStorageCallId:N}|accepted=True",
+                $"storage-after-complete|{expectedBoundaryStorageCallId:N}|accepted=True",
                 "the storage response must complete its call before rebind drain");
 
             requestRegistrationRelease.TrySetResult();
@@ -1522,7 +1522,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
             TestContext.Progress.WriteLine("Admission checkpoint: host-entry-complete");
-            TestContext.Progress.WriteLine("Admission checkpoint: fifth-complete");
+            TestContext.Progress.WriteLine("Admission checkpoint: boundary-complete");
 
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
             drainedState.Should().Contain("outgoing=[]");
@@ -1538,7 +1538,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             afterRotation.Result.Succeeded.Should().BeTrue(
                 $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
             TestContext.Progress.WriteLine("Admission checkpoint: follow-up-complete");
-            storage.InvokeCalls.Should().Be(7);
+            storage.InvokeCalls.Should().Be(8);
             dispatcher.RunCalls.Should().Be(1);
             dispatcher.TerminalCalls.Should().Be(1);
             TestContext.Progress.WriteLine(
@@ -1547,7 +1547,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
         finally
         {
-            fifthStorageResponseRelease.TrySetResult();
+            boundaryStorageResponseRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
