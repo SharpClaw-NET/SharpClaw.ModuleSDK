@@ -590,6 +590,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         };
         try
         {
+            var terminalRecord = Session.RecordTerminal(
+                authority.TargetChildCall.CallId,
+                targetAuthority.AuthorityId,
+                receipt);
+            if (!terminalRecord.Accepted && !Session.TryGetTerminalReceipt(
+                    authority.TargetChildCall.CallId,
+                    out _))
+            {
+                throw new OutOfProcessCapabilityException(
+                    terminalRecord.Code ?? SidecarCapabilityErrors.HostFailure,
+                    terminalRecord.Message ?? "The target terminal receipt was rejected.");
+            }
+
             var dispatch = await registration.DispatchCrossSidecar(
                 this,
                 carrier,
@@ -666,18 +679,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                     "The synthetic target terminal response is not bound to the target safe failure.");
             }
 
-            var terminalRecord = Session.RecordTerminal(
-                authority.TargetChildCall.CallId,
-                targetAuthority.AuthorityId,
-                response.Receipt);
-            if (!terminalRecord.Accepted && !Session.TryGetTerminalReceipt(
-                    authority.TargetChildCall.CallId,
-                    out _))
-            {
-                throw new OutOfProcessCapabilityException(
-                    terminalRecord.Code ?? SidecarCapabilityErrors.HostFailure,
-                    terminalRecord.Message ?? "The target terminal receipt was rejected.");
-            }
             if (!Session.TryGetTerminalReceipt(authority.TargetChildCall.CallId, out _))
             {
                 throw new OutOfProcessCapabilityException(
