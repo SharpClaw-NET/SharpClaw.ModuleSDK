@@ -1499,10 +1499,6 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             TestContext.Progress.WriteLine("Admission checkpoint: releasing-boundary-storage-response");
             boundaryStorageResponseRelease.TrySetResult();
-            var priorResult = await boundaryPrior.WaitAsync(
-                TimeSpan.FromSeconds(5));
-            priorResult.Result.Succeeded.Should().BeTrue(
-                $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
@@ -1520,6 +1516,10 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             requestRegistrationRelease.TrySetResult();
             TestContext.Progress.WriteLine("Admission checkpoint: releasing-registration");
+            var priorResult = await boundaryPrior.WaitAsync(
+                TimeSpan.FromSeconds(5));
+            priorResult.Result.Succeeded.Should().BeTrue(
+                $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
                 $"CLI error {result.Result.Error?.Code}: {result.Result.Error?.Message}; "
