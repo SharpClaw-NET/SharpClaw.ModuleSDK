@@ -11,6 +11,7 @@ internal static class OutOfProcessProtocolTestFixture
         _beforeActionResponseForCallAsync;
     private static Func<CancellationToken, Task>? _beforeStorageResponseAsync;
     private static Action<string>? _rebindStateObserver;
+    private static string? _lastActionResponseCallId;
     private static Action<SidecarCapabilityCallIdentity>? _callCreatedObserver;
     private static Func<SidecarActionCapabilityRequest, CancellationToken, Task>?
         _beforeOutgoingCallRegistrationAsync;
@@ -78,16 +79,27 @@ internal static class OutOfProcessProtocolTestFixture
         }
     }
 
-    internal static void RecordActionResponseFrame(Guid callId) =>
+    internal static void RecordActionResponseFrame(Guid callId)
+    {
+        Interlocked.Exchange(ref _lastActionResponseCallId, callId.ToString("N"));
         RecordRebindState(
             "action-response-frame-received",
             callId.ToString("N"));
+    }
 
     internal static void RecordRebindState(string phase, string state)
     {
         try
         {
-            Volatile.Read(ref _rebindStateObserver)?.Invoke($"{phase}|{state}");
+            var observedState = state;
+            var lastActionResponseCallId = Volatile.Read(ref _lastActionResponseCallId);
+            if (phase.StartsWith("rebind-", StringComparison.Ordinal)
+                && lastActionResponseCallId is not null)
+            {
+                observedState += $";lastActionResponse={lastActionResponseCallId}";
+            }
+
+            Volatile.Read(ref _rebindStateObserver)?.Invoke($"{phase}|{observedState}");
         }
         catch
         {

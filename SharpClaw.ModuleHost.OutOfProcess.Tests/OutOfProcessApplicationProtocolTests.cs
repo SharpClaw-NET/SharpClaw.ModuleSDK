@@ -1287,8 +1287,11 @@ public sealed class OutOfProcessApplicationProtocolTests
 
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
-                $"actions=[{expectedHostEntryCallId:N}]",
-                "the first rebind must identify the still-pending HostEntry call");
+                $"lastActionResponse={expectedHostEntryCallId:N}",
+                "the first rebind must identify the HostEntry response that cleared the call");
+            rebindState.Should().Contain(
+                "actions=[]",
+                "the response frame must clear the HostEntry call before rebind receipt");
             rebindState.Should().Contain("incomingActions=[]");
             rebindState.Should().Contain("storage=[]");
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
