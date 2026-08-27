@@ -1413,12 +1413,6 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     {
                         var actionResponse = OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(
                             frame.Payload);
-#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
-                        var actionResponseCallId = actionResponse.ResultIdentity?.CallId
-                            ?? actionResponse.Outcome.Receipt?.CallId;
-                        if (actionResponseCallId is { } callId)
-                            OutOfProcessProtocolTestFixture.RecordActionResponseFrame(callId);
-#endif
                         CompleteAction(actionResponse);
                         break;
                     }
@@ -3014,6 +3008,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             callId = pendingCallIds[0];
         }
 
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        OutOfProcessProtocolTestFixture.RecordActionResponseFrame(callId.Value);
+#endif
         if (_actions.TryGetValue(callId.Value, out var pending))
             pending.Completion.TrySetResult(response);
         else if (!IsRetired(callId.Value))
