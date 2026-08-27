@@ -122,6 +122,37 @@ internal static class OutOfProcessProtocolTestFixture
         Exception exception) =>
         RecordFailure("terminal-failure", call, terminalId, exception);
 
+    internal static void RecordStorageStage(
+        SidecarStorageCapabilityRequest request,
+        string phase,
+        bool accepted,
+        string? code = null,
+        string? message = null,
+        Exception? exception = null)
+    {
+        try
+        {
+            var resolvedCode = code
+                ?? (exception as OutOfProcessCapabilityException)?.Code
+                ?? (exception is null ? null : "exception");
+            var exceptionType = exception?.GetType().FullName;
+            var exceptionMessage = exception?.Message;
+            Emit(
+                "storage-stage|"
+                + $"phase={Sanitize(phase)};result={(accepted ? "accepted" : "rejected")};"
+                + $"session={request.Call.SessionId};request={request.Call.RequestId};"
+                + $"cancellation={request.Call.CancellationId};call={request.Call.CallId:N};"
+                + $"nonce={request.Call.ReplayNonce};module={request.Call.ModuleId};"
+                + $"graph={request.Call.GraphId};capability={request.Call.Capability};"
+                + $"sequence={request.Call.Sequence};deadline={request.Call.Deadline:o};"
+                + $"code={Sanitize(resolvedCode)};message={Sanitize(message)};"
+                + $"exception={Sanitize(exceptionType)};exceptionMessage={Sanitize(exceptionMessage)}");
+        }
+        catch
+        {
+        }
+    }
+
     private static void RecordFailure(
         string phase,
         SidecarCapabilityCallIdentity call,
@@ -151,6 +182,28 @@ internal static class OutOfProcessProtocolTestFixture
         catch
         {
         }
+    }
+
+    private static string Sanitize(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "none";
+
+        var sanitized = value
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace(';', ',')
+            .Replace('|', ',');
+        if (sanitized.Length > 160
+            || sanitized.Contains('{')
+            || sanitized.Contains('}')
+            || sanitized.Contains('[')
+            || sanitized.Contains(']'))
+        {
+            return "redacted";
+        }
+
+        return sanitized;
     }
 
     private static void Emit(

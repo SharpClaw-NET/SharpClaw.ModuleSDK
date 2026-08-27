@@ -1255,15 +1255,35 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
     {
         var outgoingSequenceCompleted = false;
         var retainPending = false;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        var tracePhase = "create-call-handoff";
+        OutOfProcessProtocolTestFixture.RecordStorageStage(
+            request,
+            tracePhase,
+            accepted: true,
+            code: "handoff");
+#endif
         try
         {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            tracePhase = "validate";
+#endif
             ValidateStorageRequest(request);
             using var deadline = CreateCallCancellation(request.Deadline, ct);
             var callCancellation = deadline.Token;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            tracePhase = "outgoing-admission";
+#endif
             await WaitForOutgoingCallTurnAsync(
                 request.Call,
                 callCancellation,
                 _transport.ActiveCarrierCall is not null);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordStorageStage(
+                request,
+                "outgoing-admission",
+                accepted: true);
+#endif
             var payload = request.RequestPayload ?? EmptyPayload();
             var parentCall = _transport.ActiveCarrierCall;
             var usesStorageContinuation = parentCall is not null
@@ -1271,6 +1291,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     > _session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
             if (usesStorageContinuation)
             {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "continuation-issue";
+#endif
                 var issue = _session.IssueHostEntryStorageContinuation(
                     _session,
                     parentCall!,
@@ -1281,24 +1304,47 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         authority,
                         _controlToken),
                     out var authority);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "continuation-issue",
+                    issue.Accepted,
+                    issue.Code,
+                    issue.Message);
+#endif
                 ThrowIfRejected(issue);
                 var wireAuthority = SidecarCapabilityTransportCodec.Deserialize<
                     SidecarHostEntryStorageContinuationAuthority>(
                     SidecarCapabilityTransportCodec.Serialize(authority));
-                ThrowIfRejected(_session.ImportHostEntryStorageContinuationAuthority(
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "continuation-import";
+#endif
+                var import = _session.ImportHostEntryStorageContinuationAuthority(
                     wireAuthority,
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "continuation-import",
+                    import.Accepted,
+                    import.Code,
+                    import.Message);
+#endif
+                ThrowIfRejected(import);
                 request = request with
                 {
                     HostEntryContinuationAuthority = wireAuthority,
                 };
             }
 
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            tracePhase = usesStorageContinuation ? "continuation-begin" : "begin-call";
+#endif
             var begin = usesStorageContinuation
                 ? _session.BeginStorageContinuationCall(
                     request,
                     payload.ByteLength,
-                    DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
                     out _)
                 : _session.BeginCall(
                     request.Call,
@@ -1306,6 +1352,14 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     payload,
                     payload.ByteLength,
                     DateTimeOffset.UtcNow);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordStorageStage(
+                request,
+                usesStorageContinuation ? "continuation-begin" : "begin-call",
+                begin.Accepted,
+                begin.Code,
+                begin.Message);
+#endif
             ThrowIfRejected(begin);
             ObserveSequence(request.Call.Sequence);
             var completion = NewCompletion<SidecarStorageCapabilityResponse>();
@@ -1319,6 +1373,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 
             try
             {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "send";
+#endif
                 await OutOfProcessCapabilityWire.SendAsync(
                     _socket,
                     OutOfProcessCapabilityFrameKind.StorageRequest,
@@ -1326,14 +1383,42 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     _limits.ProtocolMessageBytes,
                     SendGate,
                     callCancellation);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "send",
+                    accepted: true);
+#endif
                 CompleteOutgoingCallSequence(request.Call);
                 outgoingSequenceCompleted = true;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "response";
+#endif
                 var response = await completion.Task.WaitAsync(callCancellation);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "response",
+                    accepted: true);
+                tracePhase = "response-validation";
+#endif
                 ThrowIfRejected(SidecarCapabilityTransportValidation.ValidateStorageResponse(
                     request,
                     response,
                     Binding));
-                if (!CompleteCall(request.Call.CallId, 0))
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "completion";
+#endif
+                var completed = CompleteCall(request.Call.CallId, 0);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "completion",
+                    completed,
+                    completed ? null : SidecarCapabilityErrors.HostFailure,
+                    completed ? null : "The sidecar storage call could not be completed.");
+#endif
+                if (!completed)
                 {
                     throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.HostFailure,
@@ -1344,6 +1429,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             catch (OperationCanceledException) when (callCancellation.IsCancellationRequested)
             {
                 retainPending = true;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "cancellation";
+#endif
                 await SendCancellationAsync(
                     request.Call,
                     request.Cancellation,
@@ -1355,6 +1443,9 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             }
             catch
             {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                tracePhase = "failure";
+#endif
                 CompleteCall(request.Call.CallId, 0);
                 throw;
             }
@@ -1371,6 +1462,17 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 }
             }
         }
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        catch (Exception exception)
+        {
+            OutOfProcessProtocolTestFixture.RecordStorageStage(
+                request,
+                tracePhase,
+                accepted: false,
+                exception: exception);
+            throw;
+        }
+#endif
         finally
         {
             if (!outgoingSequenceCompleted)
