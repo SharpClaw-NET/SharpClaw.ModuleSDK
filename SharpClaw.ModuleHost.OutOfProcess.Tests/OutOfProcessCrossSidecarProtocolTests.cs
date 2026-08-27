@@ -462,7 +462,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     "later");
                 RecordStage("after-later");
 
-                targetStorage.InvokeCalls.Should().Be(6);
+                targetStorage.InvokeCalls.Should().Be(12);
                 var outcomeFailures = new List<string>();
                 if (!allowed.Result.Succeeded)
                 {
