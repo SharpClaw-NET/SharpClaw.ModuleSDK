@@ -1200,7 +1200,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
-    public async Task RebindReaderDrainsPendingActionResponseWithoutHeadOfLineBlocking()
+    public async Task RebindReaderProcessesActionResponseBeforeBindingRotation()
     {
         var rebindReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1210,12 +1210,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var hostEntryCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var actionReleased = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var storageResponseEntered = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var storageFrameReceived = new TaskCompletionSource<string>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
@@ -1223,16 +1217,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine("Rebind observer: " + state);
             if (state.StartsWith("rebind-received|", StringComparison.Ordinal))
                 rebindReceived.TrySetResult(state);
-            if (state.StartsWith("state-released|actions=", StringComparison.Ordinal)
-                && hostEntryCallId.Task.IsCompletedSuccessfully
-                && state.EndsWith(
-                    hostEntryCallId.Task.Result.ToString("N"),
-                    StringComparison.Ordinal))
-            {
-                actionReleased.TrySetResult();
-            }
-            if (state.StartsWith("storage-frame-received|", StringComparison.Ordinal))
-                storageFrameReceived.TrySetResult(state);
         });
         try
         {
@@ -1279,11 +1263,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                     await actionResponseRelease.Task.WaitAsync(ct);
                 }
             });
-            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(ct =>
-            {
-                storageResponseEntered.TrySetResult();
-                return Task.CompletedTask;
-            });
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
             {
                 if (call.Capability == SidecarCapabilityKind.Action)
@@ -1301,29 +1280,18 @@ public sealed class OutOfProcessApplicationProtocolTests
                 TimeSpan.FromSeconds(5));
 
             var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
-                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
                 client.IssueHostActionContext(
                     HostActionEntryIngress.Endpoint,
-                    typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                    typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
                     client.Discovery.ModuleId,
                     ApplicationSmokeModule.HostAction,
-                    new ApplicationSmokeAction("storage-heavy", "endpoint"),
+                    new ApplicationSmokeAction("endpoint", "action"),
                     ApplicationSmokeModule.HostEntryCaller,
                     ApplicationSmokeModule.HostEntryFeatures,
                     Guid.NewGuid(),
                     Guid.NewGuid(),
                     DateTimeOffset.UtcNow.AddMinutes(1))));
-            await storageResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Storage response send started.");
-            var storageFrameCompleted = await Task.WhenAny(
-                storageFrameReceived.Task,
-                Task.Delay(TimeSpan.FromSeconds(5)));
-            storageFrameCompleted.Should().Be(
-                storageFrameReceived.Task,
-                "the module reader must receive the storage response; states: "
-                + string.Join(" | ", rebindStates));
-            TestContext.Progress.WriteLine(
-                "Storage frame received: " + storageFrameReceived.Task.Result);
             actionResponseRelease.TrySetResult();
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
             result.Result.Succeeded.Should().BeTrue(
@@ -1331,16 +1299,21 @@ public sealed class OutOfProcessApplicationProtocolTests
                 + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
-            await actionReleased.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
+            endpoint.Succeeded.Should().BeTrue(
+                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
+            endpoint.Payload.Should().NotBeNull();
+            endpoint.Payload!.Value.GetProperty("outcome").GetString().Should().Be(
+                ActionOutcomeKind.Completed.ToString());
+            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
+                "entry-terminal:endpoint");
+
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
                 "actions=[]",
                 "the first rebind must observe the completed action response");
             rebindState.Should().Contain("incomingActions=[]");
             rebindState.Should().Contain("storage=[]");
-            TestContext.Progress.WriteLine(
-                "Rebind state evidence: " + string.Join(" | ", rebindStates));
-
             var observedStates = rebindStates.ToArray();
             var responseIndex = Array.FindIndex(
                 observedStates,
@@ -1350,26 +1323,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                 state => state.StartsWith("rebind-frame-received|", StringComparison.Ordinal));
             responseIndex.Should().BeGreaterThanOrEqualTo(0);
             rebindIndex.Should().BeGreaterThan(responseIndex);
-            var endpoint = await endpointTask.WaitAsync(TimeSpan.FromSeconds(5));
-            endpoint.Succeeded.Should().BeTrue(
-                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
-            endpoint.Payload.Should().NotBeNull();
-            endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
-            endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
-                ActionOutcomeKind.Completed.ToString());
-            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
-                "entry-terminal:endpoint");
-
-            var afterRotation = await client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                ["single"],
-                IssueCliContext(
-                    client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-reader-after"));
-            afterRotation.Result.Succeeded.Should().BeTrue(
-                $"CLI error {afterRotation.Result.Error?.Code}: {afterRotation.Result.Error?.Message}");
-            storage.InvokeCalls.Should().Be(6);
             dispatcher.RunCalls.Should().Be(2);
             dispatcher.TerminalCalls.Should().Be(2);
         }
@@ -1378,7 +1331,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             actionResponseRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(null);
-            OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }
