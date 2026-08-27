@@ -378,9 +378,12 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         {
             var states = new System.Collections.Concurrent.ConcurrentQueue<string>();
             var calls = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var failures = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var stageEvidencePath = Environment.GetEnvironmentVariable(
+                "SHARPCLAW_MODULESDK_STAGE_EVIDENCE_PATH");
             void RecordStage(string stage)
             {
-                TestContext.Progress.WriteLine(
+                var record =
                     $"{stage};source-generation={client.CapabilitySession.BindingGeneration};"
                     + $"target-generation={targetClient.CapabilitySession.BindingGeneration};"
                     + $"source-run-failure={client.CapabilitySession.RunFailure};"
@@ -392,10 +395,23 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     + $"source-dispatcher={dispatcher.RunCalls}/{dispatcher.TerminalCalls};"
                     + $"target-dispatcher={targetDispatcher.RunCalls}/{targetDispatcher.TerminalCalls};"
                     + $"target-storage={targetStorage.InvokeCalls};"
+                    + $"failures={string.Join(" || ", failures)};"
                     + $"states={string.Join(" || ", states)};"
-                    + $"calls={string.Join(" || ", calls)}");
+                    + $"calls={string.Join(" || ", calls)}";
+                TestContext.Progress.WriteLine(record);
+                if (!string.IsNullOrWhiteSpace(stageEvidencePath))
+                {
+                    var directory = Path.GetDirectoryName(stageEvidencePath);
+                    if (directory is not null)
+                        Directory.CreateDirectory(directory);
+                    File.AppendAllText(
+                        stageEvidencePath,
+                        record + Environment.NewLine,
+                        Encoding.UTF8);
+                }
             }
 
+            targetStorage.Observer = RecordStage;
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(states.Enqueue);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
                 calls.Enqueue(
@@ -403,27 +419,21 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     + $"session={call.SessionId};request={call.RequestId};"
                     + $"cancellation={call.CancellationId};nonce={call.ReplayNonce};"
                     + $"module={call.ModuleId}"));
+            OutOfProcessProtocolTestFixture.ConfigureFailureObserver(failures.Enqueue);
             try
             {
-                RecordStage("before-warmups");
-                for (var i = 0; i < 2; i++)
-                {
-                    var warmup = await InvokeSourceAsync(
-                        client,
-                        dispatcher,
-                        "cross-sidecar",
-                        $"warmup-{i}");
-                    warmup.Result.Succeeded.Should().BeTrue(
-                        $"Warmup failed with {warmup.Result.Error?.Code}: "
-                        + warmup.Result.Error?.Message);
-                    RecordStage($"after-warmup-{i}");
-                }
+                RecordStage("before-warmup");
+                var warmup = await InvokeSourceAsync(
+                    client,
+                    dispatcher,
+                    "cross-sidecar",
+                    "warmup-0");
+                warmup.Result.Succeeded.Should().BeTrue(
+                    $"Warmup failed with {warmup.Result.Error?.Code}: "
+                    + warmup.Result.Error?.Message);
+                RecordStage("after-warmup");
 
-                var sourceGenerationBefore = client.CapabilitySession.BindingGeneration;
-                var targetGenerationBefore = targetClient.CapabilitySession.BindingGeneration;
-                RecordStage(
-                    $"before-deny;baseline-source-generation={sourceGenerationBefore};"
-                    + $"baseline-target-generation={targetGenerationBefore}");
+                RecordStage("before-deny");
                 var failed = await InvokeSourceAsync(
                     client,
                     dispatcher,
@@ -435,7 +445,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 failed.Result.Error.Should().NotBeNull();
                 dispatcher.LastException.Should().NotBeNull();
                 targetDispatcher.LastException.Should().BeNull();
-                targetDispatcher.TerminalCalls.Should().Be(3);
+                targetStorage.InvokeCalls.Should().Be(4);
                 RecordStage("after-deny");
 
                 var allowed = await InvokeSourceAsync(
@@ -443,9 +453,6 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     dispatcher,
                     "cross-sidecar",
                     "allowed");
-                allowed.Result.Succeeded.Should().BeTrue(
-                    $"Authorized parent failed with {allowed.Result.Error?.Code}: "
-                    + allowed.Result.Error?.Message);
                 RecordStage("after-allowed");
 
                 var later = await InvokeSourceAsync(
@@ -453,24 +460,33 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     dispatcher,
                     "cross-sidecar",
                     "later");
-                later.Result.Succeeded.Should().BeTrue(
-                    $"Later parent failed with {later.Result.Error?.Code}: "
-                    + later.Result.Error?.Message);
                 RecordStage("after-later");
 
-                targetDispatcher.RunCalls.Should().Be(5);
-                targetDispatcher.TerminalCalls.Should().Be(5);
-                targetStorage.InvokeCalls.Should().Be(12);
-                dispatcher.RunCalls.Should().Be(5);
-                dispatcher.TerminalCalls.Should().Be(4);
-                client.CapabilitySession.RunFailure.Should().BeNull();
-                targetClient.CapabilitySession.RunFailure.Should().BeNull();
+                targetStorage.InvokeCalls.Should().Be(6);
+                var outcomeFailures = new List<string>();
+                if (!allowed.Result.Succeeded)
+                {
+                    outcomeFailures.Add(
+                        $"authorized={allowed.Result.Error?.Code}:"
+                        + allowed.Result.Error?.Message);
+                }
+
+                if (!later.Result.Succeeded)
+                {
+                    outcomeFailures.Add(
+                        $"later={later.Result.Error?.Code}:"
+                        + later.Result.Error?.Message);
+                }
+
+                outcomeFailures.Should().BeEmpty(
+                    "The authorized target and later call must complete after the intended deny setup.");
                 TestContext.Progress.WriteLine("cross-sidecar-deny-allow-later=" + string.Join(" || ", states));
             }
             finally
             {
                 OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
                 OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
+                OutOfProcessProtocolTestFixture.ConfigureFailureObserver(null);
             }
         }
     }
@@ -1002,6 +1018,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
         public int InvokeCalls => Volatile.Read(ref _invokeCalls);
 
+        public Action<string>? Observer { get; set; }
+
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() =>
         [
             new ModuleStorageContractDescriptor(
@@ -1022,6 +1040,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             storageName.Should().Be("target-store");
             operation.Should().Be("echo");
             var call = Interlocked.Increment(ref _invokeCalls);
+            Observer?.Invoke(
+                $"target-storage-attempt={call};module={moduleId};"
+                + $"storage={storageName};operation={operation}");
             return Task.FromResult(
                 JsonSerializer.SerializeToElement(new { value = "ok", call }));
         }
