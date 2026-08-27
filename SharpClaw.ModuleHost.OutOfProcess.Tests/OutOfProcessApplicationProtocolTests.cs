@@ -1383,13 +1383,15 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var fifthCallId = new TaskCompletionSource<Guid>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var fifthResponseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var fifthResponseRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var hostEntryCallId = new TaskCompletionSource<Guid>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var requestRegistrationRelease = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var rotationStarted = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var rotationRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
         var registrationObserverUsed = 0;
@@ -1423,18 +1425,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                     client.Authorization.ActionGrants,
                     client.Authorization.EventGrants),
                 new OutOfProcessHostActionEntryContextRegistry(),
-                new KernelExternalAuthoritySessionRegistry())
-            {
-                BeforeRotationStartAsync = async () =>
-                {
-                    rotationStarted.TrySetResult();
-                    await rotationRelease.Task;
-                },
-            };
+                new KernelExternalAuthoritySessionRegistry());
             await client.ConnectCapabilitiesAsync(options);
             TestContext.Progress.WriteLine("Admission checkpoint: capabilities-connected");
 
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 4; i++)
             {
                 var prior = await client.InvokeCliAsync(
                     ApplicationSmokeModule.CapabilityCliName,
@@ -1448,17 +1443,32 @@ public sealed class OutOfProcessApplicationProtocolTests
                 TestContext.Progress.WriteLine($"Admission checkpoint: prior-{i}-complete");
             }
 
-            TestContext.Progress.WriteLine("Admission checkpoint: starting-sixth");
-            var sixthPrior = client.InvokeCliAsync(
+            OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
+            {
+                if (call.Capability == SidecarCapabilityKind.Action)
+                    fifthCallId.TrySetResult(call.CallId);
+            });
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(async (call, ct) =>
+            {
+                if (fifthCallId.Task.IsCompletedSuccessfully
+                    && call.CallId == fifthCallId.Task.Result)
+                {
+                    fifthResponseEntered.TrySetResult();
+                    await fifthResponseRelease.Task.WaitAsync(ct);
+                }
+            });
+
+            TestContext.Progress.WriteLine("Admission checkpoint: starting-fifth");
+            var fifthPrior = client.InvokeCliAsync(
                 ApplicationSmokeModule.CapabilityCliName,
                 ["single"],
                 IssueCliContext(
                     client,
                     ApplicationSmokeModule.CapabilityCliName,
-                    "rebind-admission-sixth")).AsTask();
-            TestContext.Progress.WriteLine("Admission checkpoint: sixth-started");
-            await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            TestContext.Progress.WriteLine("Admission checkpoint: rotation-started");
+                    "rebind-admission-fifth")).AsTask();
+            await fifthCallId.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fifthResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TestContext.Progress.WriteLine("Admission checkpoint: fifth-response-held");
 
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(
                 async (request, ct) =>
@@ -1484,8 +1494,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             TestContext.Progress.WriteLine(
                 $"Admission checkpoint: host-entry-created-{expectedHostEntryCallId:N}");
 
-            TestContext.Progress.WriteLine("Admission checkpoint: releasing-rotation");
-            rotationRelease.TrySetResult();
+            TestContext.Progress.WriteLine("Admission checkpoint: releasing-fifth-response");
+            fifthResponseRelease.TrySetResult();
             var rebindState = await rebindReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: rebind-received");
@@ -1504,10 +1514,10 @@ public sealed class OutOfProcessApplicationProtocolTests
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
             TestContext.Progress.WriteLine("Admission checkpoint: host-entry-complete");
-            var priorResult = await sixthPrior.WaitAsync(TimeSpan.FromSeconds(5));
+            var priorResult = await fifthPrior.WaitAsync(TimeSpan.FromSeconds(5));
             priorResult.Result.Succeeded.Should().BeTrue(
                 $"CLI error {priorResult.Result.Error?.Code}: {priorResult.Result.Error?.Message}");
-            TestContext.Progress.WriteLine("Admission checkpoint: sixth-complete");
+            TestContext.Progress.WriteLine("Admission checkpoint: fifth-complete");
 
             var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
             drainedState.Should().Contain("outgoing=[]");
@@ -1532,8 +1542,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         }
         finally
         {
-            rotationRelease.TrySetResult();
+            fifthResponseRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
