@@ -1383,8 +1383,6 @@ public sealed class OutOfProcessApplicationProtocolTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindDrained = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifthCallId = new TaskCompletionSource<Guid>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var fifthResponseEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var fifthResponseRelease = new TaskCompletionSource(
@@ -1443,19 +1441,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                 TestContext.Progress.WriteLine($"Admission checkpoint: prior-{i}-complete");
             }
 
-            OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
             {
-                if (call.Capability == SidecarCapabilityKind.Action)
-                    fifthCallId.TrySetResult(call.CallId);
-            });
-            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(async (call, ct) =>
-            {
-                if (fifthCallId.Task.IsCompletedSuccessfully
-                    && call.CallId == fifthCallId.Task.Result)
-                {
-                    fifthResponseEntered.TrySetResult();
-                    await fifthResponseRelease.Task.WaitAsync(ct);
-                }
+                fifthResponseEntered.TrySetResult();
+                await fifthResponseRelease.Task.WaitAsync(ct);
             });
 
             TestContext.Progress.WriteLine("Admission checkpoint: starting-fifth");
@@ -1466,7 +1455,6 @@ public sealed class OutOfProcessApplicationProtocolTests
                     client,
                     ApplicationSmokeModule.CapabilityCliName,
                     "rebind-admission-fifth")).AsTask();
-            await fifthCallId.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await fifthResponseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             TestContext.Progress.WriteLine("Admission checkpoint: fifth-response-held");
 
@@ -1544,9 +1532,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             fifthResponseRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
-            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(null);
-            OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }
     }
