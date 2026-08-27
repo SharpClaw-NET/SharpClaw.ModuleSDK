@@ -362,13 +362,16 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                 new SidecarPayloadLimits()));
 
         var targetDispatcher = new CountingActionDispatcher();
+        var targetStorage = new CountingStorageGateway();
         var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
         targetDescriptors.Add(CrossSidecarModule.OwnedAction);
         await targetClient.ConnectCapabilitiesAsync(
             CreateOptions(
                 targetClient,
                 targetDispatcher,
-                descriptors: targetDescriptors));
+                descriptors: targetDescriptors,
+                storageGateway: targetStorage,
+                ownedStorageNames: ["target-store"]));
 
         var (client, dispatcher) = await CreateSourceClientAsync(targetClient);
         await using (client)
@@ -388,6 +391,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
                     + $"target-pending={targetClient.HostActionEntryContexts.HasPendingContexts};"
                     + $"source-dispatcher={dispatcher.RunCalls}/{dispatcher.TerminalCalls};"
                     + $"target-dispatcher={targetDispatcher.RunCalls}/{targetDispatcher.TerminalCalls};"
+                    + $"target-storage={targetStorage.InvokeCalls};"
                     + $"states={string.Join(" || ", states)};"
                     + $"calls={string.Join(" || ", calls)}");
             }
@@ -456,6 +460,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
                 targetDispatcher.RunCalls.Should().Be(5);
                 targetDispatcher.TerminalCalls.Should().Be(5);
+                targetStorage.InvokeCalls.Should().Be(12);
                 dispatcher.RunCalls.Should().Be(5);
                 dispatcher.TerminalCalls.Should().Be(4);
                 client.CapabilitySession.RunFailure.Should().BeNull();
@@ -961,6 +966,65 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             JsonElement parameters,
             CancellationToken ct) =>
             throw new NotSupportedException();
+
+        public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageMutationAndOutboxRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRenewalRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
+            string moduleId,
+            string storageName,
+            ModuleStorageClaimRecoveryRequest request,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class CountingStorageGateway : IModuleStorageGateway
+    {
+        private int _invokeCalls;
+
+        public int InvokeCalls => Volatile.Read(ref _invokeCalls);
+
+        public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() =>
+        [
+            new ModuleStorageContractDescriptor(
+                CrossSidecarModule.Id,
+                "target-store",
+                [new ModuleStorageOperationDescriptor("echo")]),
+        ];
+
+        public Task<JsonElement> InvokeAsync(
+            string moduleId,
+            string storageName,
+            string operation,
+            JsonElement parameters,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            moduleId.Should().Be(CrossSidecarModule.Id);
+            storageName.Should().Be("target-store");
+            operation.Should().Be("echo");
+            var call = Interlocked.Increment(ref _invokeCalls);
+            return Task.FromResult(
+                JsonSerializer.SerializeToElement(new { value = "ok", call }));
+        }
 
         public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
             string moduleId,

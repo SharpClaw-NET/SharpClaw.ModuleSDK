@@ -1076,6 +1076,20 @@ public sealed class CrossSidecarModule : ISharpClawModule
                     ct);
             }
 
+            if (context.Action.Value is "deny" or "allowed" or "later")
+            {
+                for (var i = 0; i < 4; i++)
+                {
+                    await storage.InvokeAsync(
+                        CrossSidecarModule.Id,
+                        "target-store",
+                        "echo",
+                        JsonSerializer.SerializeToElement(
+                            new { context.Action.Value, index = i }),
+                        ct);
+                }
+            }
+
             return context.Action.Operation switch
             {
                 "fail" => throw new InvalidOperationException("The target action terminal failed."),
