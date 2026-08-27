@@ -12,6 +12,8 @@ internal static class OutOfProcessProtocolTestFixture
     private static Func<CancellationToken, Task>? _beforeStorageResponseAsync;
     private static Action<string>? _rebindStateObserver;
     private static Action<SidecarCapabilityCallIdentity>? _callCreatedObserver;
+    private static Func<SidecarActionCapabilityRequest, CancellationToken, Task>?
+        _beforeOutgoingCallRegistrationAsync;
 
     internal static void ConfigureResponseTerminalCallCountTransform(
         Func<int, int>? transform) =>
@@ -52,6 +54,18 @@ internal static class OutOfProcessProtocolTestFixture
     internal static void ConfigureCallCreatedObserver(
         Action<SidecarCapabilityCallIdentity>? observer) =>
         Interlocked.Exchange(ref _callCreatedObserver, observer);
+
+    internal static void ConfigureBeforeOutgoingCallRegistrationAsync(
+        Func<SidecarActionCapabilityRequest, CancellationToken, Task>? callback) =>
+        Interlocked.Exchange(ref _beforeOutgoingCallRegistrationAsync, callback);
+
+    internal static Task BeforeOutgoingCallRegistrationAsync(
+        SidecarActionCapabilityRequest request,
+        CancellationToken cancellationToken) =>
+        Volatile.Read(ref _beforeOutgoingCallRegistrationAsync)?.Invoke(
+            request,
+            cancellationToken)
+        ?? Task.CompletedTask;
 
     internal static void RecordCallCreated(SidecarCapabilityCallIdentity call)
     {

@@ -1391,7 +1391,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var rotationRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
-        var callObserverUsed = 0;
+        var registrationObserverUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
             rebindStates.Enqueue(state);
@@ -1453,13 +1453,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-admission-sixth")).AsTask();
             await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(call =>
+            OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(
+                async (request, ct) =>
             {
-                if (call.Capability == SidecarCapabilityKind.Action
-                    && Interlocked.Exchange(ref callObserverUsed, 1) == 0)
+                if (request.Call.Capability == SidecarCapabilityKind.Action
+                    && request.Invocation == SidecarActionInvocationKind.HostEntry
+                    && Interlocked.Exchange(ref registrationObserverUsed, 1) == 0)
                 {
-                    hostEntryCallId.TrySetResult(call.CallId);
-                    requestRegistrationRelease.Task.GetAwaiter().GetResult();
+                    hostEntryCallId.TrySetResult(request.Call.CallId);
+                    await requestRegistrationRelease.Task.WaitAsync(ct);
                 }
             });
 
@@ -1479,6 +1481,7 @@ public sealed class OutOfProcessApplicationProtocolTests
                 $"outgoing=[{expectedHostEntryCallId:N}:",
                 "the rebind must observe the pre-registration call reservation");
             rebindState.Should().Contain("actions=[]");
+            rebindState.Should().Contain("storage=[]");
 
             requestRegistrationRelease.TrySetResult();
             var result = await hostEntry.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1514,6 +1517,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             rotationRelease.TrySetResult();
             requestRegistrationRelease.TrySetResult();
+            OutOfProcessProtocolTestFixture.ConfigureBeforeOutgoingCallRegistrationAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
         }

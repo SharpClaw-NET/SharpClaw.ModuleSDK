@@ -1019,6 +1019,11 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 && request.NestedCarrier is null
                 && request.HostContext is not null;
 
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            await OutOfProcessProtocolTestFixture.BeforeOutgoingCallRegistrationAsync(
+                request,
+                callCancellation);
+#endif
             await WaitForOutgoingCallTurnAsync(
                 request.Call,
                 callCancellation,
