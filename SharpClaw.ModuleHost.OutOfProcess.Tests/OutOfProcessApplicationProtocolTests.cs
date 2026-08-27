@@ -1221,7 +1221,6 @@ public sealed class OutOfProcessApplicationProtocolTests
         var storageFrameReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var rebindStates = new ConcurrentQueue<string>();
-        var responseGateUsed = 0;
         OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
         {
             rebindStates.Enqueue(state);
@@ -1289,9 +1288,10 @@ public sealed class OutOfProcessApplicationProtocolTests
                     "rebind-reader-gated-storage")).AsTask();
             await storage.InvocationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(async ct =>
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(async (call, ct) =>
             {
-                if (Interlocked.Exchange(ref responseGateUsed, 1) == 0)
+                if (hostEntryCallId.Task.IsCompletedSuccessfully
+                    && call.CallId == hostEntryCallId.Task.Result)
                 {
                     actionResponseEntered.TrySetResult();
                     await actionResponseRelease.Task.WaitAsync(ct);
@@ -1375,6 +1375,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             actionResponseRelease.TrySetResult();
             OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureBeforeActionResponseForCallAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureBeforeStorageResponseAsync(null);
             OutOfProcessProtocolTestFixture.ConfigureCallCreatedObserver(null);
             OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
