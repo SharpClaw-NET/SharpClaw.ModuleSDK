@@ -2618,13 +2618,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 return;
             }
 
-            await OutOfProcessCapabilityWire.SendAsync(
-                _socket,
-                OutOfProcessCapabilityFrameKind.StorageResponse,
-                response,
-                _limits.ProtocolMessageBytes,
-                SendGate,
-                channelCt);
+            await SendStorageResponseAsync(request, response, channelCt);
         }
         catch (OperationCanceledException) when (
             active is not null
