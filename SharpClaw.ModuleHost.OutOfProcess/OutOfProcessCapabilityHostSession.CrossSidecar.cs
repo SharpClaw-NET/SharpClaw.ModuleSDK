@@ -588,7 +588,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             CrossSidecarActionRequest = crossSidecarActionRequest,
             CrossSidecarPeerRelay = peerRelay,
         };
-
         try
         {
             var dispatch = await registration.DispatchCrossSidecar(
