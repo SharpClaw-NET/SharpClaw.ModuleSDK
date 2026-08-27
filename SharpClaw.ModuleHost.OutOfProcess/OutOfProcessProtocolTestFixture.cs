@@ -78,10 +78,10 @@ internal static class OutOfProcessProtocolTestFixture
         }
     }
 
-    internal static void RecordActionResponseFrame(SidecarCapabilityCallIdentity call) =>
+    internal static void RecordActionResponseFrame(Guid callId) =>
         RecordRebindState(
             "action-response-frame-received",
-            call.CallId.ToString("N"));
+            callId.ToString("N"));
 
     internal static void RecordRebindState(string phase, string state)
     {

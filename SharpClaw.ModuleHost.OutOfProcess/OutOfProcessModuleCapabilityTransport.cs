@@ -1414,7 +1414,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                         var actionResponse = OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(
                             frame.Payload);
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
-                        OutOfProcessProtocolTestFixture.RecordActionResponseFrame(actionResponse.Call);
+                        var actionResponseCallId = actionResponse.ResultIdentity?.CallId
+                            ?? actionResponse.Outcome.Receipt?.CallId;
+                        if (actionResponseCallId is { } callId)
+                            OutOfProcessProtocolTestFixture.RecordActionResponseFrame(callId);
 #endif
                         CompleteAction(actionResponse);
                         break;
