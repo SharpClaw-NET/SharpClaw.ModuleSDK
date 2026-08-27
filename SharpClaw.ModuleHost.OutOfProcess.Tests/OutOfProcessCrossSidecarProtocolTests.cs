@@ -480,6 +480,11 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
 
                 outcomeFailures.Should().BeEmpty(
                     "The authorized target and later call must complete after the intended deny setup.");
+                states.Should().Contain(state =>
+                    state.StartsWith("host-rotation-blocked|", StringComparison.Ordinal)
+                    && state.Contains("terminals=1;", StringComparison.Ordinal));
+                states.Should().Contain(state =>
+                    state.StartsWith("host-rotation-start|", StringComparison.Ordinal));
                 TestContext.Progress.WriteLine("cross-sidecar-deny-allow-later=" + string.Join(" || ", states));
             }
             finally

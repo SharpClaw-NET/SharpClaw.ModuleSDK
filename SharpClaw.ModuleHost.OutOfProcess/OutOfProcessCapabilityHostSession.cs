@@ -1209,10 +1209,11 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         var scheduled = false;
         try
         {
+            var continuationCarrierId = request.HostEntryContinuationAuthority?.CarrierId;
             await WaitForRotationAsync(
                 channelCt,
-                ActiveCarrierIdFor(request.Call.CallId),
-                allowAnyActiveCarrier: true);
+                continuationCarrierId ?? ActiveCarrierIdFor(request.Call.CallId),
+                allowAnyActiveCarrier: continuationCarrierId is null);
             if (_capabilityQueue.TrySchedule(
                     ct => HandleStorageRequestAsync(request, ct),
                     channelCt,
@@ -1559,7 +1560,10 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         if (activeCarrierId is not null
             && (_options.HostActionEntryContexts.IsActive(activeCarrierId.Value)
                 || _calls.Values.Any(active =>
-                    active.HostContext?.CapabilityId == activeCarrierId.Value)))
+                    active.HostContext?.CapabilityId == activeCarrierId.Value)
+                || Session.TryGetActiveHostActionEntryCarrier(
+                    activeCarrierId.Value,
+                    out _)))
         {
             return true;
         }
