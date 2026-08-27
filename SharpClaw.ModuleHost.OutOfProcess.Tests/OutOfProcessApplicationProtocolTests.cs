@@ -1306,7 +1306,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             endpoint.Payload!.Value.GetProperty("outcome").GetString().Should().Be(
                 ActionOutcomeKind.Completed.ToString());
             endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
-                "entry-terminal:endpoint");
+                "entry-terminal:action");
 
             var rebindState = await rebindReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
             rebindState.Should().Contain(
