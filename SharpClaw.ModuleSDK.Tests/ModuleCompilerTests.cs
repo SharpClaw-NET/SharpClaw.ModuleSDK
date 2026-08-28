@@ -34,13 +34,14 @@ public sealed class ModuleCompilerTests
     {
         var graph = Compile(new CompleteModule(), ModuleHostingMode.InProcess);
         await using var services = new ServiceCollection().BuildServiceProvider();
+        var invocationId = Guid.NewGuid();
         var invocation = new ToolInvocation(
-            Guid.NewGuid(),
+            invocationId,
             null,
             "call-1",
             "sample.echo",
             JsonSerializer.SerializeToElement(new { text = "hello" }),
-            CreateToolContext());
+            CreateToolContext(invocationId));
 
         var result = await graph.ToolDispatch.InvokeAsync(
             "sample.echo",
@@ -314,23 +315,19 @@ public sealed class ModuleCompilerTests
     public sealed record EchoResult(string Text);
     public sealed record ChangedEvent(string Text);
 
-    private static HostActionEntryRequestContext CreateToolContext()
+    private static HostActionEntryRequestContext CreateToolContext(Guid invocationId)
     {
-        var action = new EchoAction("hello");
         var descriptor = CompleteModule.HostAction;
         var inputSchema = ModuleSchemaIdentity.ActionInput(
             descriptor.Key,
             descriptor.Version,
             typeof(EchoAction));
-        var payload = SidecarCapabilityTransportCodec.Serialize(action);
-        using var document = JsonDocument.Parse(payload);
-        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
         var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
         return new HostActionEntryRequestContext(
             Guid.NewGuid(),
             Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)),
             HostActionEntryIngress.Tool,
-            Guid.NewGuid(),
+            invocationId,
             Guid.NewGuid(),
             Guid.NewGuid(),
             RequestPrincipal.Anonymous,
@@ -343,8 +340,7 @@ public sealed class ModuleCompilerTests
             Contribution = new HostActionEntryContribution(
                 new HostActionEntryIngressBinding(
                     HostActionEntryIngress.Tool,
-                    "sample.echo",
-                    "sample-handler"),
+                    "sample.echo"),
                 new HostActionEntryLineage(
                     descriptor.Key,
                     descriptor.Version,
@@ -352,8 +348,8 @@ public sealed class ModuleCompilerTests
                     typeof(EchoAction).AssemblyQualifiedName!,
                     inputSchema.Version,
                     inputSchema.ContentHash,
-                    SidecarCapabilityTransportCodec.ComputeSha256(canonical),
-                    canonical.Length)),
+                    null,
+                    null)),
         };
     }
 

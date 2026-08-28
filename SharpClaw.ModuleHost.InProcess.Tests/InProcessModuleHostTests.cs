@@ -57,6 +57,68 @@ public sealed class InProcessModuleHostTests
     }
 
     [Test]
+    public async Task ToolInvokerAcceptsNullConversationIdentity()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var invocation = CreateToolInvocation(null);
+
+        var result = await fixture.Invoker.InvokeToolAsync(
+            ControlModule.ToolName,
+            invocation,
+            CancellationToken.None);
+
+        result.Content.Should().Be("captured");
+        var capture = services.GetRequiredService<ToolInvocationCapture>();
+        capture.Constructions.Should().Be(1);
+        capture.Invocations.Should().Be(1);
+        capture.LastInvocation.Should().BeSameAs(invocation);
+    }
+
+    [TestCase("empty-conversation")]
+    [TestCase("missing-conversation")]
+    [TestCase("changed-secondary-identity")]
+    [TestCase("noncanonical-secondary-identity")]
+    [TestCase("mismatched-tool-name")]
+    [TestCase("expired-context")]
+    [TestCase("invalid-caller-context")]
+    [TestCase("empty-invocation-identity")]
+    public async Task ToolInvokerRejectsInvalidInvocationBeforeHandlerCreation(string mutation)
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var invocation = CreateInvalidToolInvocation(mutation);
+
+        var act = async () => await fixture.Invoker.InvokeToolAsync(
+            ControlModule.ToolName,
+            invocation,
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        var capture = services.GetRequiredService<ToolInvocationCapture>();
+        capture.Constructions.Should().Be(0);
+        capture.Invocations.Should().Be(0);
+    }
+
+    [Test]
+    public async Task ToolInvokerRejectsPreCancellationBeforeHandlerCreation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var invocation = CreateToolInvocation(null);
+
+        var act = async () => await fixture.Invoker.InvokeToolAsync(
+            ControlModule.ToolName,
+            invocation,
+            new CancellationToken(canceled: true));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        var capture = services.GetRequiredService<ToolInvocationCapture>();
+        capture.Constructions.Should().Be(0);
+        capture.Invocations.Should().Be(0);
+    }
+
+    [Test]
     public async Task HostLoadsStartsAndStopsOneInProcessModule()
     {
         var moduleDirectory = Path.Combine(
@@ -155,6 +217,122 @@ public sealed class InProcessModuleHostTests
                 new ModuleManifestHookRequest("inprocess.control", ["replaceResult"]),
             ]);
 
+    private static ToolFixture CreateToolFixture()
+    {
+        var graph = SharpClawModuleCompiler.Compile(
+            new ControlModule(),
+            ControlManifest(),
+            new ModuleCompilationOptions { HostingMode = ModuleHostingMode.InProcess });
+        IServiceCollection serviceCollection = new ServiceCollection();
+        foreach (var descriptor in graph.Services)
+            serviceCollection.Add(descriptor);
+        var services = serviceCollection.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        return new ToolFixture(graph, services, new InProcessModuleInvoker(graph, services));
+    }
+
+    private static ToolInvocation CreateToolInvocation(Guid? conversationId)
+    {
+        var invocationId = Guid.NewGuid();
+        return new ToolInvocation(
+            invocationId,
+            conversationId,
+            "tool-call",
+            ControlModule.ToolName,
+            JsonSerializer.SerializeToElement(new { value = "input" }),
+            CreateToolContext(invocationId, conversationId));
+    }
+
+    private static ToolInvocation CreateInvalidToolInvocation(string mutation)
+    {
+        var valid = CreateToolInvocation(Guid.NewGuid());
+        return mutation switch
+        {
+            "empty-conversation" => valid with { ConversationId = Guid.Empty },
+            "missing-conversation" => valid with { ConversationId = null },
+            "changed-secondary-identity" => valid with
+            {
+                HostActionContext = WithConversationIdentity(
+                    valid.HostActionContext,
+                    Guid.NewGuid().ToString("D")),
+            },
+            "noncanonical-secondary-identity" => valid with
+            {
+                HostActionContext = WithConversationIdentity(
+                    valid.HostActionContext,
+                    $"{{{valid.ConversationId!.Value:D}}}"),
+            },
+            "mismatched-tool-name" => valid with { ToolName = "inprocess.other" },
+            "expired-context" => valid with
+            {
+                HostActionContext = valid.HostActionContext with
+                {
+                    Deadline = DateTimeOffset.UtcNow.AddSeconds(-2),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1),
+                },
+            },
+            "invalid-caller-context" => valid with
+            {
+                HostActionContext = valid.HostActionContext with { Caller = null! },
+            },
+            "empty-invocation-identity" => valid with { InvocationId = Guid.Empty },
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation), mutation, null),
+        };
+    }
+
+    private static HostActionEntryRequestContext CreateToolContext(
+        Guid invocationId,
+        Guid? conversationId)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        return new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            "tool-capability",
+            HostActionEntryIngress.Tool,
+            invocationId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new RequestPrincipal("tool-user"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            deadline)
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(
+                    HostActionEntryIngress.Tool,
+                    ControlModule.ToolName,
+                    conversationId?.ToString("D")),
+                new HostActionEntryLineage(
+                    new SharpClawActionKey("inprocess.tool"),
+                    1,
+                    "tool-descriptor-hash",
+                    typeof(ToolInvocation).AssemblyQualifiedName!,
+                    1,
+                    "tool-input-schema-hash",
+                    null,
+                    null)),
+        };
+    }
+
+    private static HostActionEntryRequestContext WithConversationIdentity(
+        HostActionEntryRequestContext context,
+        string? conversationIdentity) =>
+        context with
+        {
+            Contribution = context.Contribution! with
+            {
+                IngressBinding = context.Contribution.IngressBinding with
+                {
+                    SecondaryIdentity = conversationIdentity,
+                },
+            },
+        };
+
     private static ActionContext<TestAction> Context() =>
         new(
             Guid.NewGuid(),
@@ -197,6 +375,11 @@ public sealed class InProcessModuleHostTests
 
     private sealed class ControlModule : ISharpClawModule
     {
+        public const string ToolName = "inprocess.tool";
+
+        public static ToolDescriptor Tool { get; } =
+            new(ToolName, "Captures one tool invocation.", ToolSchemas.EmptyObject);
+
         public static ActionDescriptor<TestAction, TestResult> Action { get; } =
             new(
                 new SharpClawActionKey("inprocess.control"),
@@ -219,8 +402,10 @@ public sealed class InProcessModuleHostTests
         public void Configure(ISharpClawModuleBuilder module)
         {
             module.Services.AddSingleton<ControlCapture>();
+            module.Services.AddSingleton<ToolInvocationCapture>();
             module.Services.AddTransient<CapturingActionHook>();
             module.Actions.Add(Action);
+            module.Tools.Add<CapturingTool>(Tool);
             module.Hooks.For(Action).Use<CapturingActionHook>(
                 ActionInterceptionCapabilities.ReplaceResult,
                 new HookOrdering("inprocess.control.capture"));
@@ -244,6 +429,40 @@ public sealed class InProcessModuleHostTests
     {
         public IActionControl<TestAction, TestResult>? Control { get; set; }
     }
+
+    private sealed class CapturingTool : IToolHandler
+    {
+        private readonly ToolInvocationCapture _capture;
+
+        public CapturingTool(ToolInvocationCapture capture)
+        {
+            _capture = capture;
+            _capture.Constructions++;
+        }
+
+        public ValueTask<ToolResult> InvokeAsync(
+            ToolInvocation invocation,
+            CancellationToken ct)
+        {
+            _capture.Invocations++;
+            _capture.LastInvocation = invocation;
+            return ValueTask.FromResult(ToolResult.Text("captured"));
+        }
+    }
+
+    private sealed class ToolInvocationCapture
+    {
+        public int Constructions { get; set; }
+
+        public int Invocations { get; set; }
+
+        public ToolInvocation? LastInvocation { get; set; }
+    }
+
+    private sealed record ToolFixture(
+        ModuleContributionGraph Graph,
+        ServiceProvider Services,
+        InProcessModuleInvoker Invoker);
 
     private sealed class StubActionControl : IActionControl<TestAction, TestResult>
     {

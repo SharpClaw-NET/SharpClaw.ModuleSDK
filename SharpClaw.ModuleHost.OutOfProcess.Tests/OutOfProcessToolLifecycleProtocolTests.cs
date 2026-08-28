@@ -385,10 +385,9 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         using var document = JsonDocument.Parse(bytes);
         var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
         var contribution = new HostActionEntryContribution(
-            new HostActionEntryIngressBinding(
-                HostActionEntryIngress.Tool,
-                ToolLifecycleSmokeModule.ToolName,
-                "in-process"),
+                new HostActionEntryIngressBinding(
+                    HostActionEntryIngress.Tool,
+                    ToolLifecycleSmokeModule.ToolName),
             new HostActionEntryLineage(
                 identity.Key,
                 identity.Version,

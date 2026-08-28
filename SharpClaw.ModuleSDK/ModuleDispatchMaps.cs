@@ -135,6 +135,8 @@ public sealed class ModuleToolDispatchMap
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(invocation);
+        ct.ThrowIfCancellationRequested();
+        ValidateInvocation(toolName, invocation);
 
         if (!_tools.TryGetValue(toolName, out var registration))
             throw new KeyNotFoundException($"Tool '{toolName}' is not registered.");
@@ -143,5 +145,36 @@ public sealed class ModuleToolDispatchMap
             services,
             registration.HandlerType);
         return await handler.InvokeAsync(invocation, ct);
+    }
+
+    private static void ValidateInvocation(
+        string toolName,
+        ToolInvocation invocation)
+    {
+        if (!string.Equals(toolName, invocation.ToolName, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "The requested tool name does not match the invocation tool name.");
+
+        if (invocation.ConversationId == Guid.Empty)
+            throw new InvalidOperationException(
+                "The tool conversation identity must not be empty.");
+
+        if (!invocation.IsWellFormed(DateTimeOffset.UtcNow))
+            throw new InvalidOperationException(
+                "The tool invocation context is not valid for handler execution.");
+
+        var secondaryIdentity = invocation.HostActionContext
+            .Contribution!
+            .IngressBinding
+            .SecondaryIdentity;
+        var expectedConversationIdentity = invocation.ConversationId?.ToString("D");
+        if (!string.Equals(
+                secondaryIdentity,
+                expectedConversationIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The tool conversation identity does not match the host action context.");
+        }
     }
 }
