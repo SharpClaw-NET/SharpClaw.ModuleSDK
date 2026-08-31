@@ -42,4 +42,23 @@ public sealed class HostOperationContractTests
         (valid with { ConversationId = Guid.Empty }).IsWellFormed.Should().BeFalse();
         (valid with { ToolName = "sample/tool" }).IsWellFormed.Should().BeFalse();
     }
+
+    [Test]
+    public void ModuleSummaryPreservesCanonicalExportedContractNames()
+    {
+        var state = new ModuleStateResponse(
+            "sample_module",
+            "Sample Module",
+            "sm",
+            true,
+            "0.1.0",
+            true,
+            true,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+        new HostModuleSummary(state, ["sample.contract"])
+            .IsWellFormed.Should().BeTrue();
+        new HostModuleSummary(state, ["sample.contract", "sample.contract"])
+            .IsWellFormed.Should().BeFalse();
+    }
 }

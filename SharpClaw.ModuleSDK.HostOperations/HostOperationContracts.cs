@@ -7,10 +7,25 @@ namespace SharpClaw.ModuleSDK.HostOperations;
 /// <summary>Requests the current neutral host module roster.</summary>
 public sealed record HostModuleListAction;
 
+/// <summary>Describes one module in the active host graph.</summary>
+public sealed record HostModuleSummary(
+    ModuleStateResponse State,
+    IReadOnlyList<string> ExportedContractNames)
+{
+    /// <summary>Gets whether the summary contains canonical module metadata.</summary>
+    public bool IsWellFormed =>
+        State is not null &&
+        HostOperationContractValidation.IsCanonicalIdentifier(State.ModuleId) &&
+        HostOperationContractValidation.IsCanonicalIdentifier(State.ToolPrefix) &&
+        ExportedContractNames is not null &&
+        ExportedContractNames.All(HostOperationContractValidation.IsCanonicalIdentifier) &&
+        ExportedContractNames.Distinct(StringComparer.Ordinal).Count() == ExportedContractNames.Count;
+}
+
 /// <summary>Contains the current external module root and module roster.</summary>
 public sealed record HostModuleListResult(
     string ExternalModulesDirectory,
-    IReadOnlyList<ModuleStateResponse> Modules);
+    IReadOnlyList<HostModuleSummary> Modules);
 
 /// <summary>Identifies one host module lifecycle operation.</summary>
 public enum HostModuleLifecycleOperation
