@@ -14,5 +14,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SharpClaw.ModuleSDK\SharpClaw.ModuleSDK.csproj" />
+    <ProjectReference Include="..\SharpClaw.ModuleSDK.HostOperations\SharpClaw.ModuleSDK.HostOperations.csproj" />
   </ItemGroup>
 </Project>

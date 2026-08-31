@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>SharpClaw.ModuleSDK.HostOperations</PackageId>
+    <Version>0.5.0-beta.1</Version>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
+    <InformationalVersion>0.5.0-beta.1</InformationalVersion>
+    <Title>SharpClaw Module SDK Host Operations</Title>
+    <Description>Neutral typed contracts for host module and Tool operations.</Description>
+    <Authors>SharpClaw-NET</Authors>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.33]" />
+    <PackageReference Include="SharpClaw.ModuleSDK" Version="[0.5.0-beta.14]" />
+  </ItemGroup>
+
+</Project>
