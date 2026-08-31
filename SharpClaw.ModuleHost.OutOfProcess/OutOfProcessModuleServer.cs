@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -449,12 +450,19 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
         }
 
-        HostEndpointInvocation? request;
+        var bodyResult = await ReadEndpointBodyAsync(
+            context.Request.Body,
+            maximumBytes,
+            ct);
+        if (bodyResult.TooLarge)
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+
+        HostEndpointRouteRequest? request;
         try
         {
-            request = await context.Request.ReadFromJsonAsync<HostEndpointInvocation>(
-                OutOfProcessProtocolCodec.JsonOptions,
-                ct);
+            request = JsonSerializer.Deserialize<HostEndpointRouteRequest>(
+                bodyResult.Body!,
+                OutOfProcessProtocolCodec.JsonOptions);
         }
         catch (JsonException)
         {
@@ -468,8 +476,9 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
         if (request is null)
             return Results.BadRequest();
 
-        if (string.IsNullOrWhiteSpace(request.Endpoint)
-            || !string.Equals(request.Endpoint, request.Endpoint.Trim(), StringComparison.Ordinal)
+        if (!request.IsWellFormed(DateTimeOffset.UtcNow)
+            || request.Route.Transport is not (
+                HostEndpointTransport.Http or HostEndpointTransport.WebSocket)
             || !string.Equals(
                 _runtime.Graph.Identity.Id,
                 Volatile.Read(ref _authorization)?.ModuleId,
@@ -481,84 +490,172 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             });
         }
 
-        var endpointType = _runtime.Graph.Application.EndpointTypes.SingleOrDefault(type =>
-            string.Equals(type.FullName, request.Endpoint, StringComparison.Ordinal));
-        if (endpointType is null)
+        var now = DateTimeOffset.UtcNow;
+        var endpoint = _runtime.Graph.Application.Endpoints.SingleOrDefault(item =>
+            item.Descriptor.ToRouteIdentity() == request.Route);
+        if (endpoint is null)
         {
+            _capabilityTransport.RejectImportedEndpointRoute(
+                request.Invocation.InvocationId,
+                DateTimeOffset.UtcNow);
             return Results.NotFound(new
             {
                 error = SidecarProtocolErrors.UnknownHostDescriptor,
             });
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var hostActionContext = request.HostActionContext;
-        if (!request.IsWellFormed(now)
-            || hostActionContext is null
-            || !hostActionContext.IsWellFormed(now)
-            || hostActionContext.Ingress != HostActionEntryIngress.Endpoint
-            || hostActionContext.InvocationId != request.InvocationId
-            || hostActionContext.Contribution is null
-            || !string.Equals(
-                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
-                request.Endpoint,
-                StringComparison.Ordinal))
+        var routeValidation = _capabilityTransport.BeginImportedEndpointRoute(
+            request,
+            now,
+            out var routeLease);
+        if (!routeValidation.Accepted || routeLease is null)
         {
+            _capabilityTransport.RejectImportedEndpointRoute(
+                request.Invocation.InvocationId,
+                DateTimeOffset.UtcNow);
             return Results.BadRequest(new
             {
-                error = SidecarProtocolErrors.MalformedMessage,
+                error = routeValidation.Code ?? SidecarProtocolErrors.MalformedMessage,
+                message = routeValidation.Message,
             });
         }
 
+        using var carrierScope = _runtime.PushActiveCarrier(
+            routeLease.Context.CapabilityId,
+            routeLease.Call);
         await using var scope = _runtime.Services.CreateAsyncScope();
-        using var carrierScope = _runtime.PushActiveCarrier(hostActionContext.CapabilityId);
-        IModuleEndpointHandler handler;
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
         try
         {
-            handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                    scope.ServiceProvider,
-                    endpointType) as IModuleEndpointHandler
-                ?? throw new InvalidOperationException(
-                    $"Endpoint '{request.Endpoint}' does not implement "
-                    + $"'{typeof(IModuleEndpointHandler).FullName}'.");
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var remaining = routeLease.Context.Deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                linked.Cancel();
+            else
+                linked.CancelAfter(remaining);
+
+            ModuleHttpEndpointResponse result;
+            if (request.Route.Transport == HostEndpointTransport.Http)
+            {
+                IModuleHttpEndpointHandler handler;
+                try
+                {
+                    handler = ActivatorUtilities.GetServiceOrCreateInstance(
+                            scope.ServiceProvider,
+                            endpoint.HandlerType) as IModuleHttpEndpointHandler
+                        ?? throw new InvalidOperationException(
+                            $"Endpoint '{request.Route.HandlerIdentity}' does not implement "
+                            + $"'{typeof(IModuleHttpEndpointHandler).FullName}'.");
+                }
+                catch (InvalidOperationException)
+                {
+                    return InvalidEndpointHandlerResult();
+                }
+
+                result = await handler.InvokeAsync(
+                    request,
+                    scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
+                    linked.Token);
+            }
+            else
+            {
+                IModuleWebSocketEndpointHandler handler;
+                try
+                {
+                    handler = ActivatorUtilities.GetServiceOrCreateInstance(
+                            scope.ServiceProvider,
+                            endpoint.HandlerType) as IModuleWebSocketEndpointHandler
+                        ?? throw new InvalidOperationException(
+                            $"Endpoint '{request.Route.HandlerIdentity}' does not implement "
+                            + $"'{typeof(IModuleWebSocketEndpointHandler).FullName}'.");
+                }
+                catch (InvalidOperationException)
+                {
+                    return InvalidEndpointHandlerResult();
+                }
+
+                await using var channel = _capabilityTransport
+                    .OpenImportedEndpointWebSocketChannel(routeLease);
+                await channel.AnnounceReadyAsync(linked.Token);
+                await handler.InvokeAsync(
+                    request,
+                    channel,
+                    scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
+                    linked.Token);
+                result = ModuleHttpEndpointResponse.Empty(StatusCodes.Status204NoContent);
+            }
+
+            if (!result.IsWellFormed)
+                throw new InvalidOperationException("The endpoint handler returned an invalid response.");
+
+            completion = HostActionEntryCarrierCompletionKind.Succeeded;
+            return JsonResult(new SidecarEndpointExecutionResponse(
+                _runtime.Graph.Identity.Id,
+                _runtime.Graph.ContractHash,
+                result));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
         }
         catch (Exception)
         {
             return JsonResult(new SidecarEndpointExecutionResponse(
                 _runtime.Graph.Identity.Id,
                 _runtime.Graph.ContractHash,
-                ModuleEndpointResult.Failure(
-                    "module_endpoint_handler_invalid",
-                    "The endpoint handler does not implement the public module endpoint contract.")));
+                ModuleHttpEndpointResponse.Json(
+                    StatusCodes.Status500InternalServerError,
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        error = "module_endpoint_failed",
+                    }))));
         }
+        finally
+        {
+            _capabilityTransport.CompleteImportedEndpointRoute(
+                routeLease,
+                completion,
+                DateTimeOffset.UtcNow);
+        }
+    }
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linked.CancelAfter(hostActionContext.Deadline - now);
-        ModuleEndpointResult result;
-        try
-        {
-            result = await handler.InvokeAsync(
-                request,
-                scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
-                linked.Token);
-        }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested)
-        {
-            result = ModuleEndpointResult.Failure(
-                "cancelled",
-                "The endpoint invocation was cancelled.");
-        }
-        catch (Exception)
-        {
-            result = ModuleEndpointResult.Failure(
-                "module_endpoint_failed",
-                "The module endpoint handler failed.");
-        }
-
-        return JsonResult(new SidecarEndpointExecutionResponse(
+    private IResult InvalidEndpointHandlerResult() =>
+        JsonResult(new SidecarEndpointExecutionResponse(
             _runtime.Graph.Identity.Id,
             _runtime.Graph.ContractHash,
-            result));
+            ModuleHttpEndpointResponse.Json(
+                StatusCodes.Status500InternalServerError,
+                JsonSerializer.SerializeToElement(new
+                {
+                    error = "module_endpoint_handler_invalid",
+                }))));
+
+    private static async ValueTask<(byte[]? Body, bool TooLarge)> ReadEndpointBodyAsync(
+        Stream body,
+        int maximumBytes,
+        CancellationToken ct)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(Math.Max(maximumBytes, 1), 81_920));
+        try
+        {
+            using var content = new MemoryStream();
+            while (true)
+            {
+                var read = await body.ReadAsync(buffer.AsMemory(), ct);
+                if (read == 0)
+                    return (content.ToArray(), false);
+
+                if (content.Length + read > maximumBytes)
+                    return (null, true);
+
+                content.Write(buffer, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     private IResult JsonResult(SidecarEndpointExecutionResponse response)

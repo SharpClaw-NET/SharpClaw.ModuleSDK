@@ -77,6 +77,10 @@ internal static class OutOfProcessProtocolTestFixture
         try
         {
             Volatile.Read(ref _callCreatedObserver)?.Invoke(call);
+            Emit(
+                "call-created|"
+                + $"call={call.CallId:N};sequence={call.Sequence};"
+                + $"capability={call.Capability};module={call.ModuleId};graph={call.GraphId}");
         }
         catch
         {
@@ -178,6 +182,60 @@ internal static class OutOfProcessProtocolTestFixture
                 + $"requestDeadline={request.Deadline:O};targetContextDeadline={deadline};"
                 + $"module={request.Call.ModuleId};graph={request.Call.GraphId};"
                 + $"capability={request.Call.Capability}");
+        }
+        catch
+        {
+        }
+    }
+
+    internal static void RecordRootRelayImport(
+        SidecarHostActionEntryRootRelay relay,
+        SidecarCapabilitySession session,
+        SidecarCapabilityValidationResult result,
+        DateTimeOffset now)
+    {
+        try
+        {
+            var peerCall = relay.PeerCall;
+            var binding = session.Binding;
+            var context = relay.Context;
+            var authority = relay.Authority;
+            var authorityHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority);
+            var authorityDomain = authority.CancellationState
+                == SidecarHostTerminalCancellationState.None
+                && authority.CancellationAt == DateTimeOffset.MinValue;
+            var authorityHashMatch = string.Equals(
+                authority.CanonicalBindingHash,
+                authorityHash,
+                StringComparison.OrdinalIgnoreCase);
+            Emit(
+                "root-relay-import|"
+                + $"result={(result.Accepted ? "accepted" : "rejected")};"
+                + $"code={Sanitize(result.Code)};message={Sanitize(result.Message)};"
+                + $"call={peerCall.CallId:N};sequence={peerCall.Sequence};"
+                + $"sessionMatch={peerCall.SessionId == binding.SessionId};"
+                + $"requestMatch={peerCall.RequestId == binding.RequestId};"
+                + $"cancellationMatch={peerCall.CancellationId == binding.CancellationId};"
+                + $"moduleMatch={string.Equals(peerCall.ModuleId, binding.ModuleId, StringComparison.Ordinal)};"
+                + $"graphMatch={string.Equals(peerCall.GraphId, binding.GraphId, StringComparison.Ordinal)};"
+                + $"peerGeneration={relay.PeerBindingGeneration};"
+                + $"bindingGeneration={session.BindingGeneration};"
+                + $"lastSequence={session.LastSequence};"
+                + $"sequenceIsNext={peerCall.Sequence == session.LastSequence + 1};"
+                + $"deadline={peerCall.Deadline:O};now={now:O};"
+                + $"bindingExpires={binding.ExpiresAt:O};"
+                + $"contextDeadline={context.Deadline:O};"
+                + $"deadlineValid={peerCall.Deadline > now};"
+                + $"deadlineWithinBinding={peerCall.Deadline <= binding.ExpiresAt};"
+                + $"deadlineWithinContext={peerCall.Deadline <= context.Deadline};"
+                + $"relayWellFormed={relay.IsWellFormed};"
+                + $"rootBudgetPresent={relay.RootBudgetId != Guid.Empty};"
+                + $"authorityDomain={authorityDomain};"
+                + $"authorityHashMatch={authorityHashMatch};"
+                + $"activeCarriers={session.ActiveHostActionEntryCarrierCount};"
+                + $"issuedContexts={session.IssuedHostActionEntryContextCount};"
+                + $"completedTombstones={session.CompletedHostActionEntryTombstoneCount}");
         }
         catch
         {

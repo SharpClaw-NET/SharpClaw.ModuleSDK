@@ -85,6 +85,19 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         }
         if (ingress == HostActionEntryIngress.CrossModule)
             ArgumentException.ThrowIfNullOrWhiteSpace(secondaryIdentity);
+        if (ingress == HostActionEntryIngress.Tool
+            && secondaryIdentity is not null
+            && (!Guid.TryParseExact(secondaryIdentity, "D", out var conversationId)
+                || conversationId == Guid.Empty
+                || !string.Equals(
+                    secondaryIdentity,
+                    conversationId.ToString("D"),
+                    StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(
+                "The tool conversation identity must use canonical D formatting.",
+                nameof(secondaryIdentity));
+        }
 
         var binding = Volatile.Read(ref _binding)
             ?? throw new InvalidOperationException(
@@ -129,7 +142,7 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         var ingressBinding = new HostActionEntryIngressBinding(
             ingress,
             primaryIdentity,
-            ingress == HostActionEntryIngress.CrossModule
+            ingress is HostActionEntryIngress.CrossModule or HostActionEntryIngress.Tool
                 ? secondaryIdentity
                 : null);
         var payloadBoundLineage = new HostActionEntryLineage(

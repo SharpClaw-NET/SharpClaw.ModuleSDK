@@ -301,6 +301,50 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
         return await connection.InvokeStorageAsync(request, ct);
     }
 
+    internal SidecarCapabilityValidationResult BeginImportedEndpointRoute(
+        HostEndpointRouteRequest request,
+        DateTimeOffset now,
+        out OutOfProcessModuleCapabilityConnection.ImportedEndpointRouteLease? lease) =>
+        GetRequiredConnection().BeginImportedEndpointRoute(request, now, out lease);
+
+    internal void RejectImportedEndpointRoute(Guid invocationId, DateTimeOffset now) =>
+        GetRequiredConnection().RejectImportedEndpointRoute(invocationId, now);
+
+    internal void CompleteImportedEndpointRoute(
+        OutOfProcessModuleCapabilityConnection.ImportedEndpointRouteLease lease,
+        HostActionEntryCarrierCompletionKind completion,
+        DateTimeOffset now) =>
+        GetRequiredConnection().CompleteImportedEndpointRoute(lease, completion, now);
+
+    internal OutOfProcessModuleCapabilityConnection.ImportedEndpointWebSocketChannel
+        OpenImportedEndpointWebSocketChannel(
+            OutOfProcessModuleCapabilityConnection.ImportedEndpointRouteLease lease) =>
+        GetRequiredConnection().OpenImportedEndpointWebSocketChannel(lease);
+
+    internal bool TryGetActiveEndpointRoute(
+        HostActionEntryRequestContext sourceContext,
+        out OutOfProcessModuleCapabilityConnection.ImportedEndpointRouteLease? lease) =>
+        GetRequiredConnection().TryGetActiveEndpointRoute(sourceContext, out lease);
+
+    internal ValueTask<SidecarActionCapabilityResponse>
+        InvokeEndpointTypedActionChildAsync(
+            OutOfProcessModuleCapabilityConnection.ImportedEndpointRouteLease routeLease,
+            SidecarActionDescriptorIdentity descriptor,
+            SidecarSerializedPayload action,
+            SidecarActionTerminalRegistration terminal,
+            Func<
+                SidecarActionTerminalTransportRequest,
+                CancellationToken,
+                ValueTask<SidecarActionTerminalTransportResponse>>? terminalCallback,
+            CancellationToken ct) =>
+        GetRequiredConnection().InvokeEndpointTypedActionChildAsync(
+            routeLease,
+            descriptor,
+            action,
+            terminal,
+            terminalCallback,
+            ct);
+
     internal SidecarCapabilityCallIdentity CreateCall(
         SidecarCapabilityKind capability,
         DateTimeOffset deadline,
@@ -431,13 +475,99 @@ internal sealed class OutOfProcessModuleCapabilityTransport : ISidecarCapability
                                 && OutOfProcessCapabilitySecurity.ValidateStorageContinuationProof(
                                     authority,
                                     controlToken));
+                    var authenticateEndpointRouteAuthority =
+                        new Func<HostEndpointRouteAuthority, string, bool>(
+                            (authority, canonicalBindingHash) =>
+                                string.Equals(
+                                    authority.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity.CreateEndpointRouteAuthorityProof(
+                                        authority,
+                                        controlToken),
+                                    authority.Proof,
+                                    StringComparison.Ordinal));
+                    var authenticateEndpointRouteRelay =
+                        new Func<SidecarHostEndpointRouteRelay, string, bool>(
+                            (relay, canonicalBindingHash) =>
+                                string.Equals(
+                                    relay.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity.CreateEndpointRouteRelayProof(
+                                        relay,
+                                        controlToken),
+                                    relay.Proof,
+                                    StringComparison.Ordinal));
+                    var authenticateEndpointTypedActionChildReservation =
+                        new Func<SidecarEndpointTypedActionChildReservation, string, bool>(
+                            (reservation, canonicalBindingHash) =>
+                                string.Equals(
+                                    reservation.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildReservationProof(
+                                        reservation,
+                                        controlToken),
+                                    reservation.Proof,
+                                    StringComparison.Ordinal));
+                    var authenticateEndpointTypedActionChildRelay =
+                        new Func<SidecarEndpointTypedActionChildRelay, string, bool>(
+                            (relay, canonicalBindingHash) =>
+                                string.Equals(
+                                    relay.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildRelayProof(
+                                        relay,
+                                        controlToken),
+                                    relay.Proof,
+                                    StringComparison.Ordinal));
+                    var authenticateEndpointTypedActionChildImportAcknowledgment =
+                        new Func<SidecarEndpointTypedActionChildImportAcknowledgment, string, bool>(
+                            (acknowledgment, canonicalBindingHash) =>
+                                string.Equals(
+                                    acknowledgment.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity
+                                        .CreateEndpointTypedActionChildImportAcknowledgmentProof(
+                                            acknowledgment,
+                                            controlToken),
+                                    acknowledgment.Proof,
+                                    StringComparison.Ordinal));
+                    var authenticateEndpointTypedActionChildImportAbort =
+                        new Func<SidecarEndpointTypedActionChildImportAbort, string, bool>(
+                            (abort, canonicalBindingHash) =>
+                                string.Equals(
+                                    abort.CanonicalBindingHash,
+                                    canonicalBindingHash,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(
+                                    OutOfProcessCapabilitySecurity
+                                        .CreateEndpointTypedActionChildImportAbortProof(
+                                            abort,
+                                            controlToken),
+                                    abort.Proof,
+                                    StringComparison.Ordinal));
                     var session = new SidecarCapabilitySession(
                         binding,
                         authenticate,
                         _ => true,
                         DateTimeOffset.UtcNow,
                         authenticateHostTerminalAuthority,
-                        authenticateStorageContinuationAuthority);
+                        authenticateStorageContinuationAuthority,
+                        authenticateEndpointRouteAuthority,
+                        authenticateEndpointRouteRelay,
+                        authenticateEndpointTypedActionChildReservation,
+                        authenticateEndpointTypedActionChildRelay,
+                        authenticateEndpointTypedActionChildImportAcknowledgment,
+                        authenticateEndpointTypedActionChildImportAbort);
                     connection = new OutOfProcessModuleCapabilityConnection(
                         socket,
                         session,
@@ -564,7 +694,7 @@ internal sealed record ModuleNestedActionMetadata(
     string InputTypeIdentity,
     string ResultTypeIdentity);
 
-internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
+internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
 {
     private sealed record PendingAction(
         SidecarActionCapabilityRequest Request,
@@ -1576,6 +1706,67 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
                         CompleteTerminal(OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
                         break;
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteReservationRequest:
+                    {
+                        var reservationRequest = OutOfProcessCapabilityWire
+                            .Deserialize<HostEndpointRouteRequest>(frame.Payload);
+                        _ = ObserveEndpointRouteCompletionAsync(
+                            HandleEndpointRouteReservationRequestAsync(
+                                reservationRequest,
+                                linked.Token));
+                        break;
+                    }
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteReservationRelease:
+                    {
+                        var reservation = OutOfProcessCapabilityWire
+                            .Deserialize<SidecarHostEndpointRouteReservation>(frame.Payload);
+                        _ = ObserveEndpointRouteCompletionAsync(
+                            HandleEndpointRouteReservationReleaseAsync(
+                                reservation,
+                                linked.Token));
+                        break;
+                    }
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteRelay:
+                    {
+                        var relay = OutOfProcessCapabilityWire
+                            .Deserialize<SidecarHostEndpointRouteRelay>(frame.Payload);
+                        _ = ObserveEndpointRouteCompletionAsync(
+                            HandleEndpointRouteRelayAsync(relay, linked.Token));
+                        break;
+                    }
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostMessage:
+                        HandleEndpointWebSocketHostMessage(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketMessage>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostCompleted:
+                        HandleEndpointWebSocketHostCompleted(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketCompleted>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleReady:
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleMessage:
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleCompleted:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The module received unsupported endpoint WebSocket frame '{frame.Kind}'.");
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteReservationResponse:
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteRelayResponse:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The module received unsupported endpoint response frame '{frame.Kind}'.");
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationResponse:
+                        CompleteEndpointTypedActionChildReservationResponse(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointTypedActionChildReservationResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildRelayResponse:
+                        CompleteEndpointTypedActionChildRelayResponse(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointTypedActionChildRelayResponse>(
+                                frame.Payload));
+                        break;
                     case OutOfProcessCapabilityFrameKind.CapabilityCancellation:
                         CancelIncomingAction(
                             OutOfProcessCapabilityWire.Deserialize<OutOfProcessCapabilityCancellation>(frame.Payload));
@@ -1636,6 +1827,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
             incoming.Cancellation.Cancel();
         foreach (var incoming in _incomingTerminals.Values)
             incoming.Cancellation.Cancel();
+        await DisposeEndpointWebSocketChannelsAsync();
         lock (_rotationSync)
         {
             _rebindReady?.TrySetException(
@@ -1683,6 +1875,17 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                 && request.CrossSidecarActionRequest is not null)
             {
                 await HandleCrossSidecarTerminalRequestAsync(request, incoming, ct);
+                return;
+            }
+
+            if (_endpointTypedActionChildren.TryGetValue(
+                    request.Call.CallId,
+                    out var endpointChild))
+            {
+                await HandleEndpointTypedActionChildTerminalRequestAsync(
+                    request,
+                    endpointChild,
+                    ct);
                 return;
             }
 
@@ -1965,10 +2168,18 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
                     effectiveHostEntry.Authority,
                     effectiveHostEntry.Authority.ReceivingPeerBindingGeneration,
                     effectiveHostEntry.Authority.ReceivingRootBudgetId);
+                var rootRelayImportNow = DateTimeOffset.UtcNow;
                 var import = _session.ImportHostActionEntryPeerRootRelay(
                     rootRelay,
-                    DateTimeOffset.UtcNow,
+                    rootRelayImportNow,
                     out var importedHostContext);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordRootRelayImport(
+                    rootRelay,
+                    _session,
+                    import,
+                    rootRelayImportNow);
+#endif
                 if (!import.Accepted || importedHostContext is null)
                 {
                     AbandonIncomingCall(request.Call.CallId, active);
@@ -2104,6 +2315,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            _ = ex;
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
             OutOfProcessProtocolTestFixture.RecordActionFailure(
                 request.Call,
@@ -2822,6 +3034,7 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         || !_storage.IsEmpty
         || !_terminals.IsEmpty
         || !_incomingTerminals.IsEmpty
+        || HasPendingEndpointRouteWork()
         || HasOutgoingCallReservations();
 
     private async Task HandleRebindAsync(
@@ -3293,6 +3506,10 @@ internal sealed class OutOfProcessModuleCapabilityConnection : IAsyncDisposable
         foreach (var pending in _storage.Values)
             pending.TrySetException(error);
         foreach (var pending in _terminals.Values)
+            pending.TrySetException(error);
+        foreach (var pending in _endpointTypedActionChildReservationResponses.Values)
+            pending.TrySetException(error);
+        foreach (var pending in _endpointTypedActionChildRelayResponses.Values)
             pending.TrySetException(error);
     }
 

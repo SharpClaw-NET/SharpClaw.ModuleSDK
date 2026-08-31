@@ -304,7 +304,7 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         var hostActionContext = client.IssueHostActionContext(
             HostActionEntryIngress.Tool,
             definition.ToolName,
-            definition.HandlerId,
+            null,
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("tool", mode),
             new RequestPrincipal("test-user"),
@@ -328,7 +328,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
                     OutOfProcessProtocolCodec.JsonOptions),
                 definition.InputSchema,
                 new RequestPrincipal("test-user"),
-                hostActionContext));
+                hostActionContext,
+                null));
     }
 
     private static SidecarLifecycleHandlerInvokeStart CreateLifecycleStart(

@@ -33,6 +33,34 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string NestedHostEntryCliName = "application.host-entry-nested";
     public const string HostEntryToolName = "application.host-entry-tool";
     public const string SelfOwnedEntryCliName = "application.self-owned-entry";
+    public const string ApplicationEndpointId = "application.endpoint";
+    public const string StorageHeavyEndpointId = "application.storage-heavy";
+    public const string ScopedEndpointId = "application.scoped";
+    public const string WebSocketEndpointId = "application.websocket";
+
+    public static ModuleEndpointRouteDescriptor ApplicationEndpointRoute { get; } = new(
+        ApplicationEndpointId,
+        "/application/endpoint",
+        "POST",
+        HostEndpointTransport.Http);
+
+    public static ModuleEndpointRouteDescriptor StorageHeavyEndpointRoute { get; } = new(
+        StorageHeavyEndpointId,
+        "/application/storage-heavy",
+        "POST",
+        HostEndpointTransport.Http);
+
+    public static ModuleEndpointRouteDescriptor ScopedEndpointRoute { get; } = new(
+        ScopedEndpointId,
+        "/application/scoped",
+        "GET",
+        HostEndpointTransport.Http);
+
+    public static ModuleEndpointRouteDescriptor WebSocketEndpointRoute { get; } = new(
+        WebSocketEndpointId,
+        "/application/websocket",
+        "GET",
+        HostEndpointTransport.WebSocket);
     public const string ScopedEndpointProbeEnvironmentVariable =
         "SHARPCLAW_MODULESDK_SCOPED_ENDPOINT_PROBE";
     public const string ScopedTerminalProbeEnvironmentVariable =
@@ -233,9 +261,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
-        application.Endpoints.Add<ApplicationEndpoint>();
-        application.Endpoints.Add<StorageHeavyEndpoint>();
-        application.Endpoints.Add<ScopedEndpoint>();
+        application.Endpoints.AddHttp<ApplicationEndpoint>(ApplicationEndpointRoute);
+        application.Endpoints.AddHttp<StorageHeavyEndpoint>(StorageHeavyEndpointRoute);
+        application.Endpoints.AddHttp<ScopedEndpoint>(ScopedEndpointRoute);
+        application.Endpoints.AddWebSocket<EchoWebSocketEndpoint>(WebSocketEndpointRoute);
         application.Cli.Add<ApplicationCliHandler>(new ModuleCliCommandDescriptor(
             CliName,
             ["app-inspect"],
@@ -312,10 +341,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                     $"{module.Identity.Id}|{graph.Identity.Id}|{graph.ContractHash}|{invocation.Command}")]));
     }
 
-    public sealed class ApplicationEndpoint : IModuleEndpointHandler
+    public sealed class ApplicationEndpoint : IModuleHttpEndpointHandler
     {
-        public async ValueTask<ModuleEndpointResult> InvokeAsync(
-            HostEndpointInvocation invocation,
+        public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+            HostEndpointRouteRequest request,
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken)
         {
@@ -323,10 +352,11 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                     HostAction,
                     new ApplicationSmokeAction("endpoint", "action"),
-                    invocation.HostActionContext),
+                    request.Invocation.HostActionContext),
                 new HostActionTerminal(),
                 cancellationToken);
-            return ModuleEndpointResult.Success(
+            return ModuleHttpEndpointResponse.Json(
+                200,
                 JsonSerializer.SerializeToElement(new
                 {
                     outcome = outcome.Kind.ToString(),
@@ -335,10 +365,10 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class StorageHeavyEndpoint(IModuleStorageGateway storage) : IModuleEndpointHandler
+    public sealed class StorageHeavyEndpoint(IModuleStorageGateway storage) : IModuleHttpEndpointHandler
     {
-        public async ValueTask<ModuleEndpointResult> InvokeAsync(
-            HostEndpointInvocation invocation,
+        public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+            HostEndpointRouteRequest request,
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken)
         {
@@ -356,10 +386,11 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 new HostActionEntryRequest<ApplicationSmokeAction, ApplicationSmokeResult>(
                     HostAction,
                     new ApplicationSmokeAction("storage-heavy", "endpoint"),
-                    invocation.HostActionContext),
+                    request.Invocation.HostActionContext),
                 new HostActionTerminal(),
                 cancellationToken);
-            return ModuleEndpointResult.Success(
+            return ModuleHttpEndpointResponse.Json(
+                200,
                 JsonSerializer.SerializeToElement(new
                 {
                     storageReads = 3,
@@ -369,14 +400,42 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
         }
     }
 
-    public sealed class ScopedEndpoint(ScopedEndpointResource resource) : IModuleEndpointHandler
+    public sealed class ScopedEndpoint(ScopedEndpointResource resource) : IModuleHttpEndpointHandler
     {
-        public ValueTask<ModuleEndpointResult> InvokeAsync(
-            HostEndpointInvocation invocation,
+        public ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+            HostEndpointRouteRequest request,
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken) =>
-            ValueTask.FromResult(ModuleEndpointResult.Success(
+            ValueTask.FromResult(ModuleHttpEndpointResponse.Json(
+                200,
                 JsonSerializer.SerializeToElement(new { state = resource.State })));
+    }
+
+    public sealed class EchoWebSocketEndpoint : IModuleWebSocketEndpointHandler
+    {
+        public async ValueTask InvokeAsync(
+            HostEndpointRouteRequest request,
+            IModuleWebSocketChannel channel,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                var message = await channel.ReceiveAsync(cancellationToken);
+                if (message is null)
+                    return;
+                if (message.Type == ModuleWebSocketMessageType.Close)
+                {
+                    await channel.CloseAsync(
+                        message.CloseStatus!.Value,
+                        message.CloseDescription,
+                        cancellationToken);
+                    return;
+                }
+
+                await channel.SendAsync(message, cancellationToken);
+            }
+        }
     }
 
     public sealed class ScopedEndpointResource : IDisposable
@@ -725,6 +784,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 : string.Join(",", context.Caller.Roles.OrderBy(role => role, StringComparer.Ordinal));
             return ToolResult.Text(
                 $"host-tool:{outcome.Kind}:{outcome.Result?.Value}"
+                + $":conversation={invocation.ConversationId?.ToString("D") ?? "null"}"
                 + $":caller={context.Caller.SubjectId}:roles={roles}"
                 + $":trace={context.TraceId}:idempotency={context.IdempotencyKey}"
                 + $":deadline={context.Deadline:O}");

@@ -933,7 +933,75 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     StringComparison.OrdinalIgnoreCase)
                 && OutOfProcessCapabilitySecurity.ValidateStorageContinuationProof(
                     authority,
-                    controlToken));
+                    controlToken),
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointRouteAuthorityProof(
+                        authority,
+                        controlToken),
+                    authority.Proof,
+                    StringComparison.Ordinal),
+            (relay, canonicalBindingHash) =>
+                string.Equals(
+                    relay.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointRouteRelayProof(
+                        relay,
+                        controlToken),
+                    relay.Proof,
+                    StringComparison.Ordinal),
+            (reservation, canonicalBindingHash) =>
+                string.Equals(
+                    reservation.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildReservationProof(
+                        reservation,
+                        controlToken),
+                    reservation.Proof,
+                    StringComparison.Ordinal),
+            (relay, canonicalBindingHash) =>
+                string.Equals(
+                    relay.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildRelayProof(
+                        relay,
+                        controlToken),
+                    relay.Proof,
+                    StringComparison.Ordinal),
+            (acknowledgment, canonicalBindingHash) =>
+                string.Equals(
+                    acknowledgment.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity
+                        .CreateEndpointTypedActionChildImportAcknowledgmentProof(
+                            acknowledgment,
+                            controlToken),
+                    acknowledgment.Proof,
+                    StringComparison.Ordinal),
+            (abort, canonicalBindingHash) =>
+                string.Equals(
+                    abort.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity
+                        .CreateEndpointTypedActionChildImportAbortProof(
+                            abort,
+                            controlToken),
+                    abort.Proof,
+                    StringComparison.Ordinal));
 
     private void RegisterExternalAuthoritySession()
     {
@@ -1032,6 +1100,71 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         CompleteTerminal(
                             OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
                         break;
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteReservationResponse:
+                        CompleteEndpointRouteReservationResponse(
+                            OutOfProcessCapabilityWire.Deserialize<OutOfProcessEndpointRouteReservationResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteRelayResponse:
+                        CompleteEndpointRouteRelayResponse(
+                            OutOfProcessCapabilityWire.Deserialize<OutOfProcessEndpointRouteRelayResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleReady:
+                        HandleEndpointWebSocketModuleReady(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketReady>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleMessage:
+                        HandleEndpointWebSocketModuleMessage(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketMessage>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleCompleted:
+                        HandleEndpointWebSocketModuleCompleted(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketCompleted>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostMessage:
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostCompleted:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The host received unsupported endpoint WebSocket frame '{frame.Kind}'.");
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationRequest:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildReservationRequestAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    OutOfProcessEndpointTypedActionChildReservationRequest>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationRelease:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildReservationReleaseAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    SidecarEndpointTypedActionChildReservation>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildRelay:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildRelayAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    SidecarEndpointTypedActionChildRelay>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildImportAbortResponse:
+                        CompleteEndpointTypedActionChildImportAbortResponse(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointTypedActionChildImportAbortResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationResponse:
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildRelayResponse:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The host received unsupported endpoint child response frame '{frame.Kind}'.");
                     case OutOfProcessCapabilityFrameKind.Error:
                         throw ReadError(frame.Payload);
                     default:
@@ -1111,6 +1244,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             action.Completion.TrySetException(
                 new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
         }
+        await DisposeEndpointWebSocketBridgesAsync();
 
         try
         {
@@ -1608,7 +1742,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         || !_pendingStorageRequests.IsEmpty
                         || !_calls.IsEmpty
                         || !_outgoingCapabilityCalls.IsEmpty
-                        || !_terminals.IsEmpty)
+                        || !_terminals.IsEmpty
+                        || HasPendingEndpointTypedActionChildWork)
                     {
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
                         if (_rotationReady is not null)

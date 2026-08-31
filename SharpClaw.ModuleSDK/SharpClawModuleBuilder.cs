@@ -57,7 +57,7 @@ internal sealed class ModuleBuilderState(ModuleIdentity identity)
     public List<Type> ProfileResolvers { get; } = [];
     public List<ExclusiveRegistration> ProfileResolverRegistrations { get; } = [];
     public List<Type> ContextContributors { get; } = [];
-    public List<Type> Endpoints { get; } = [];
+    public List<ModuleEndpointContribution> Endpoints { get; } = [];
     public List<ModuleCliContribution> CliCommands { get; } = [];
     public List<Type> UiContributions { get; } = [];
 }
@@ -531,7 +531,13 @@ internal sealed class ModuleChatLifecycleBuilder(ModuleBuilderState state) : ICh
 
 internal sealed class ModuleEndpointContributionBuilder(ModuleBuilderState state) : IEndpointContributionBuilder
 {
-    public void Add<TContribution>() => state.Endpoints.Add(typeof(TContribution));
+    public void AddHttp<THandler>(ModuleEndpointRouteDescriptor descriptor)
+        where THandler : class, IModuleHttpEndpointHandler =>
+        state.Endpoints.Add(new ModuleEndpointContribution(descriptor, typeof(THandler)));
+
+    public void AddWebSocket<THandler>(ModuleEndpointRouteDescriptor descriptor)
+        where THandler : class, IModuleWebSocketEndpointHandler =>
+        state.Endpoints.Add(new ModuleEndpointContribution(descriptor, typeof(THandler)));
 }
 
 internal sealed class ModuleCliContributionBuilder(ModuleBuilderState state) : ICliContributionBuilder

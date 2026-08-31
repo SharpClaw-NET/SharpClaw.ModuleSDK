@@ -116,9 +116,14 @@ public sealed record ModuleCliContribution(
     ModuleCliCommandDescriptor Descriptor,
     Type HandlerType);
 
+/// <summary>Describes one module endpoint route and its handler.</summary>
+public sealed record ModuleEndpointContribution(
+    ModuleEndpointRouteDescriptor Descriptor,
+    Type HandlerType);
+
 /// <summary>Contains application-level module contributions.</summary>
 public sealed record ModuleApplicationContributions(
-    IReadOnlyList<Type> EndpointTypes,
+    IReadOnlyList<ModuleEndpointContribution> Endpoints,
     IReadOnlyList<ModuleCliContribution> CliCommands,
     IReadOnlyList<Type> UiContributionTypes,
     IReadOnlyList<ModuleActionEntryRegistration> ActionEntries)
@@ -128,7 +133,7 @@ public sealed record ModuleApplicationContributions(
 
     /// <summary>Gets whether the module declares an application contribution.</summary>
     public bool IsEmpty =>
-        EndpointTypes.Count == 0
+        Endpoints.Count == 0
         && CliCommands.Count == 0
         && UiContributionTypes.Count == 0
         && ActionEntries.Count == 0;

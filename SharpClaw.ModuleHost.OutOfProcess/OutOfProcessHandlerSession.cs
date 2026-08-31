@@ -43,7 +43,7 @@ internal static class OutOfProcessHandlerSession
             using var carrierScope = runtime.PushActiveCarrier(start.HostActionContext.CapabilityId);
             var invocation = new ToolInvocation(
                 start.InvocationId,
-                null,
+                start.ConversationId,
                 start.InvocationId.ToString("D"),
                 start.ToolName,
                 start.Input,

@@ -398,6 +398,45 @@ public static class SharpClawModuleCompiler
         ModuleCompilationOptions options,
         ICollection<GraphCompilationError> errors)
     {
+        foreach (var endpoint in state.Endpoints)
+        {
+            if (endpoint.Descriptor is null || !endpoint.Descriptor.IsWellFormed)
+            {
+                errors.Add(Error(
+                    ModuleGraphErrorCodes.InvalidApplication,
+                    state.Identity.Id,
+                    endpoint.Descriptor?.Id ?? string.Empty,
+                    "endpoint",
+                    "Each endpoint requires one valid route descriptor."));
+            }
+        }
+
+        foreach (var duplicate in state.Endpoints
+                     .GroupBy(endpoint => endpoint.Descriptor.Id, StringComparer.Ordinal)
+                     .Where(group => group.Count() > 1))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.InvalidApplication,
+                state.Identity.Id,
+                duplicate.Key,
+                "endpoint",
+                $"Endpoint id '{duplicate.Key}' is registered more than once."));
+        }
+
+        foreach (var duplicate in state.Endpoints
+                     .GroupBy(
+                         endpoint => endpoint.Descriptor.ToRouteIdentity(),
+                         EqualityComparer<HostEndpointRouteIdentity>.Default)
+                     .Where(group => group.Count() > 1))
+        {
+            errors.Add(Error(
+                ModuleGraphErrorCodes.InvalidApplication,
+                state.Identity.Id,
+                duplicate.Key.Path,
+                "endpoint",
+                $"Endpoint route '{duplicate.Key.Method} {duplicate.Key.Path}' is registered more than once."));
+        }
+
         foreach (var duplicate in state.CliCommands
                      .SelectMany(command => command.Descriptor.Aliases.Prepend(command.Descriptor.Name))
                      .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -1165,7 +1204,9 @@ public static class SharpClawModuleCompiler
         records.AddRange(tools.OrderBy(value => value.Descriptor.Name, StringComparer.Ordinal)
             .Select(value => $"tool|{value.Descriptor.Name}|{value.Descriptor.Version}|{value.HandlerType.AssemblyQualifiedName}|{value.InputSchema.ContentHash}|{value.ResultSchema.ContentHash}"));
         records.Add($"chat|{chat.ConversationResolver?.AssemblyQualifiedName}|{chat.ProfileResolver?.AssemblyQualifiedName}|{string.Join(',', chat.ContextContributors.Select(type => type.AssemblyQualifiedName))}");
-        records.Add($"application|{string.Join(',', application.EndpointTypes.Select(type => type.AssemblyQualifiedName))}|{string.Join(',', application.CliCommands.Select(value => value.Descriptor.Name))}|{string.Join(',', application.UiContributionTypes.Select(type => type.AssemblyQualifiedName))}");
+        records.Add($"application|{string.Join(',', application.Endpoints
+            .OrderBy(value => value.Descriptor.Id, StringComparer.Ordinal)
+            .Select(value => $"{value.Descriptor.Id}:{value.Descriptor.Method}:{value.Descriptor.Path}:{value.Descriptor.Transport}:{value.HandlerType.AssemblyQualifiedName}"))}|{string.Join(',', application.CliCommands.Select(value => value.Descriptor.Name))}|{string.Join(',', application.UiContributionTypes.Select(type => type.AssemblyQualifiedName))}");
         records.AddRange(actionEntries.OrderBy(value => value.Descriptor.Key.Value, StringComparer.Ordinal)
             .Select(value => $"action-entry|{value.OwnerModuleId}|{value.Descriptor.Key.Value}|{value.Descriptor.Version}|{value.Descriptor.DescriptorHash}|{value.TerminalId:D}|{value.TerminalType.AssemblyQualifiedName}"));
         records.AddRange(features.OrderBy(value => value.ContractName, StringComparer.Ordinal)

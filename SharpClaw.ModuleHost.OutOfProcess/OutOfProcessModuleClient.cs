@@ -74,7 +74,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     public HostActionEntryRequestContext IssueHostActionContext<TAction, TResult>(
         HostActionEntryIngress ingress,
         string primaryIdentity,
-        string secondaryIdentity,
+        string? secondaryIdentity,
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
         RequestPrincipal caller,
@@ -434,49 +434,43 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     }
 
     /// <summary>Invokes one explicitly registered module endpoint.</summary>
-    public async ValueTask<ModuleEndpointResult> InvokeEndpointAsync(
-        string endpoint,
-        HostActionEntryRequestContext hostActionContext,
+    public async ValueTask<ModuleHttpEndpointResponse> InvokeEndpointAsync(
+        HostEndpointRouteRequest request,
         CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
-        ArgumentNullException.ThrowIfNull(hostActionContext);
+        ArgumentNullException.ThrowIfNull(request);
         var now = DateTimeOffset.UtcNow;
-        if (!hostActionContext.IsWellFormed(now)
-            || hostActionContext.Ingress != HostActionEntryIngress.Endpoint
-            || hostActionContext.Contribution is null
-            || !string.Equals(
-                hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
-                endpoint,
-                StringComparison.Ordinal)
-            || hostActionContext.InvocationId == Guid.Empty)
+        if (!request.IsWellFormed(now)
+            || request.Route.Transport != HostEndpointTransport.Http)
         {
             throw new OutOfProcessProtocolException(
                 SidecarProtocolErrors.MalformedMessage,
-                "The endpoint host action context is invalid for the requested endpoint.");
+                "The endpoint route request is invalid.");
         }
 
         if (!Application.Endpoints.Any(item =>
-                string.Equals(item.TypeName, endpoint, StringComparison.Ordinal)))
+                item.Descriptor.ToRouteIdentity() == request.Route))
         {
             throw new OutOfProcessProtocolException(
                 SidecarProtocolErrors.UnknownHostDescriptor,
-                $"Endpoint '{endpoint}' is not declared by the sidecar.");
+                $"Endpoint route '{request.Route.Method} {request.Route.Path}' is not declared by the sidecar.");
         }
 
-        var carrierAuthority = CapabilitySession
-            .BeginHostActionEntryCarrier(hostActionContext);
+        var hostActionContext = request.Invocation.HostActionContext;
+        var routeLease = await CapabilitySession.BeginEndpointRouteAsync(
+            request,
+            hostActionContext,
+            ct);
         var completion = HostActionEntryCarrierCompletionKind.Failed;
         try
         {
-            var request = new HostEndpointInvocation(
-                hostActionContext.InvocationId,
-                endpoint,
-                hostActionContext);
-            using var response = await _httpClient.PostAsJsonAsync(
+            var body = SidecarCapabilityTransportCodec.Serialize(request);
+            using var content = new ByteArrayContent(body);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+                "application/json");
+            using var response = await _httpClient.PostAsync(
                 OutOfProcessModuleHostProtocol.ApplicationEndpointPath,
-                request,
-                OutOfProcessProtocolCodec.JsonOptions,
+                content,
                 ct);
             if (!response.IsSuccessStatusCode)
             {
@@ -501,10 +495,15 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     "The endpoint response does not match the authorized module graph.");
             }
 
-            completion = result.Result.Succeeded
-                ? HostActionEntryCarrierCompletionKind.Succeeded
-                : HostActionEntryCarrierCompletionKind.Failed;
-            return result.Result;
+            if (!result.Response.IsWellFormed)
+            {
+                throw new OutOfProcessProtocolException(
+                    SidecarProtocolErrors.MalformedMessage,
+                    "The sidecar returned an invalid endpoint response.");
+            }
+
+            completion = HostActionEntryCarrierCompletionKind.Succeeded;
+            return result.Response;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -513,9 +512,123 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         }
         finally
         {
-            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
-                carrierAuthority,
-                completion);
+            await CapabilitySession.CompleteEndpointRouteAsync(
+                routeLease,
+                completion,
+                CancellationToken.None);
+        }
+    }
+
+    /// <summary>Invokes one explicitly registered module WebSocket endpoint.</summary>
+    public async ValueTask InvokeWebSocketEndpointAsync(
+        HostEndpointRouteRequest request,
+        IModuleWebSocketChannel channel,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(channel);
+        var now = DateTimeOffset.UtcNow;
+        if (!request.IsWellFormed(now)
+            || request.Route.Transport != HostEndpointTransport.WebSocket)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The endpoint WebSocket route request is invalid.");
+        }
+
+        if (!Application.Endpoints.Any(item =>
+                item.Descriptor.ToRouteIdentity() == request.Route))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"Endpoint route '{request.Route.Method} {request.Route.Path}' is not declared by the sidecar.");
+        }
+
+        var hostActionContext = request.Invocation.HostActionContext;
+        var routeLease = await CapabilitySession.BeginEndpointRouteAsync(
+            request,
+            hostActionContext,
+            ct);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        try
+        {
+            await using var bridge = CapabilitySession.OpenEndpointWebSocketBridge(
+                routeLease,
+                channel,
+                ct);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var inputPump = bridge.RunHostInputAsync(linked.Token);
+            try
+            {
+                var body = SidecarCapabilityTransportCodec.Serialize(request);
+                using var content = new ByteArrayContent(body);
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    "application/json");
+                using var response = await _httpClient.PostAsync(
+                    OutOfProcessModuleHostProtocol.ApplicationEndpointPath,
+                    content,
+                    ct);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var failure = await response.Content.ReadAsStringAsync(ct);
+                    throw new OutOfProcessProtocolException(
+                        "module_endpoint_http_failed",
+                        $"The sidecar rejected the endpoint WebSocket request with HTTP "
+                        + $"{(int)response.StatusCode}: {failure}");
+                }
+
+                var result = await response.Content.ReadFromJsonAsync<
+                        SidecarEndpointExecutionResponse>(
+                        OutOfProcessProtocolCodec.JsonOptions,
+                        ct)
+                    ?? throw new OutOfProcessProtocolException(
+                        SidecarProtocolErrors.MalformedMessage,
+                        "The sidecar returned no endpoint WebSocket response.");
+                if (!string.Equals(result.ModuleId, Discovery.ModuleId, StringComparison.Ordinal)
+                    || !string.Equals(
+                        result.ContractHash,
+                        Discovery.ContractHash,
+                        StringComparison.Ordinal)
+                    || !result.Response.IsWellFormed)
+                {
+                    throw new OutOfProcessProtocolException(
+                        SidecarProtocolErrors.ExchangeIdentityMismatch,
+                        "The endpoint WebSocket response does not match the authorized module graph.");
+                }
+
+                await bridge.WaitForModuleOutputAsync(ct);
+                completion = HostActionEntryCarrierCompletionKind.Succeeded;
+            }
+            finally
+            {
+                linked.Cancel();
+                try
+                {
+                    await inputPump;
+                }
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                {
+                }
+
+                if (ct.IsCancellationRequested)
+                {
+                    using var moduleCompletionTimeout = new CancellationTokenSource(
+                        TimeSpan.FromSeconds(5));
+                    await bridge.WaitForModuleCompletionAsync(moduleCompletionTimeout.Token);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
+        }
+        finally
+        {
+            await CapabilitySession.CompleteEndpointRouteAsync(
+                routeLease,
+                completion,
+                CancellationToken.None);
         }
     }
 
@@ -723,6 +836,19 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 HostActionContext = OutOfProcessHostActionEntryContextRegistry
                     .WithoutPayloadBinding(hostActionContext),
             };
+        var expectedConversationIdentity = hostActionContext?
+            .Contribution?
+            .IngressBinding
+            .SecondaryIdentity;
+        var conversationIdentityMatches = start.ConversationId switch
+        {
+            null => expectedConversationIdentity is null,
+            Guid value when value == Guid.Empty => false,
+            Guid value => string.Equals(
+                expectedConversationIdentity,
+                value.ToString("D"),
+                StringComparison.Ordinal),
+        };
         if (!validationStart.IsWellFormed(now)
             || hostActionContext is null
             || !hostActionContext.IsWellFormed(now)
@@ -734,6 +860,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 hostActionContext.Contribution.IngressBinding.PrimaryIdentity,
                 start.ToolName,
                 StringComparison.Ordinal)
+            || !conversationIdentityMatches
             || !OutOfProcessHostActionEntryContextRegistry.MatchesCaller(
                 hostActionContext.Caller,
                 start.Caller))

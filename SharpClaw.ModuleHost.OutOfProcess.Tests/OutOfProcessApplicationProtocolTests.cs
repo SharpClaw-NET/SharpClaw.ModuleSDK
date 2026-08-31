@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
@@ -178,11 +179,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry(),
             registry));
 
-        var endpoint = await client.InvokeEndpointAsync(
-            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+        var endpoint = await client.InvokeEndpointAsync(CreateEndpointRequest(
+            ApplicationSmokeModule.ApplicationEndpointRoute,
             client.IssueHostActionContext(
                 HostActionEntryIngress.Endpoint,
-                typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+                ApplicationSmokeModule.ApplicationEndpointId,
                 client.Discovery.ModuleId,
                 ApplicationSmokeModule.HostAction,
                 new ApplicationSmokeAction("endpoint", "action"),
@@ -190,13 +191,13 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ApplicationSmokeModule.HostEntryFeatures,
                 Guid.NewGuid(),
                 Guid.NewGuid(),
-                DateTimeOffset.UtcNow.AddMinutes(1)));
+                DateTimeOffset.UtcNow.AddMinutes(1))));
 
-        endpoint.Succeeded.Should().BeTrue();
-        endpoint.Payload.Should().NotBeNull();
-        endpoint.Payload!.Value.GetProperty("outcome").GetString().Should().Be(
+        endpoint.StatusCode.Should().Be(200);
+        var endpointPayload = ReadJsonResponse(endpoint);
+        endpointPayload.GetProperty("outcome").GetString().Should().Be(
             ActionOutcomeKind.Completed.ToString());
-        endpoint.Payload.Value.GetProperty("value").GetString().Should().Be("entry-terminal:action");
+        endpointPayload.GetProperty("value").GetString().Should().Be("entry-terminal:action");
 
         var action = new AgentsJobImportAction("real-core");
         var typed = await client.InvokeModuleActionEntryAsync(
@@ -276,7 +277,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry(),
             new KernelExternalAuthoritySessionRegistry()));
 
-        var endpointTypeName = typeof(ApplicationSmokeModule.ScopedEndpoint).FullName!;
+        var endpointTypeName = ApplicationSmokeModule.ScopedEndpointId;
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Endpoint,
             endpointTypeName,
@@ -289,13 +290,196 @@ public sealed class OutOfProcessApplicationProtocolTests
             Guid.NewGuid(),
             DateTimeOffset.UtcNow.AddMinutes(1));
 
-        var response = await client.InvokeEndpointAsync(endpointTypeName, context);
+        var response = await client.InvokeEndpointAsync(CreateEndpointRequest(
+            ApplicationSmokeModule.ScopedEndpointRoute,
+            context));
 
-        response.Succeeded.Should().BeTrue();
-        response.Payload.Should().NotBeNull();
-        response.Payload!.Value.GetProperty("state").GetString().Should().Be("active");
+        response.StatusCode.Should().Be(200);
+        ReadJsonResponse(response).GetProperty("state").GetString().Should().Be("active");
         File.Exists(_scopeProbePath).Should().BeTrue();
         File.ReadAllText(_scopeProbePath).Should().Be("disposed");
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task WebSocketEndpointUsesOneCapabilitySessionAndRejectsReplay()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var request = CreateEndpointRequest(
+            ApplicationSmokeModule.WebSocketEndpointRoute,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Endpoint,
+                ApplicationSmokeModule.WebSocketEndpointId,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.HostAction,
+                new ApplicationSmokeAction("websocket", "echo"),
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+        var text = new ModuleWebSocketMessage(
+            ModuleWebSocketMessageType.Text,
+            "sidecar-echo"u8.ToArray());
+        var channel = new RecordingWebSocketChannel();
+        channel.Enqueue(text);
+        channel.Enqueue(new ModuleWebSocketMessage(
+            ModuleWebSocketMessageType.Close,
+            [],
+            1000,
+            "complete"));
+
+        await client.InvokeWebSocketEndpointAsync(request, channel);
+
+        var sent = channel.Sent.Should().ContainSingle().Which;
+        sent.Type.Should().Be(text.Type);
+        sent.Payload.Should().Equal(text.Payload);
+        channel.CloseStatus.Should().Be(1000);
+        channel.CloseDescription.Should().Be("complete");
+
+        var replayChannel = new RecordingWebSocketChannel();
+        replayChannel.Enqueue(new ModuleWebSocketMessage(
+            ModuleWebSocketMessageType.Close,
+            [],
+            1000,
+            "replay"));
+        var replay = async () => await client.InvokeWebSocketEndpointAsync(
+            request,
+            replayChannel);
+        (await replay.Should().ThrowAsync<OutOfProcessCapabilityException>())
+            .Which.Code.Should().Be(SidecarCapabilityErrors.Replay);
+        replayChannel.ReceiveCalls.Should().Be(0);
+
+        var later = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "websocket-later-use"));
+        later.Result.Succeeded.Should().BeTrue(
+            $"CLI error {later.Result.Error?.Code}: {later.Result.Error?.Message}");
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task WebSocketEndpointRejectsChangedRouteBeforeChannelUse()
+    {
+        await using var client = await CreateClientAsync();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new CountingStorageGateway(),
+            new CountingActionDispatcher(),
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+        var channel = new RecordingWebSocketChannel();
+        var request = CreateEndpointRequest(
+            ApplicationSmokeModule.WebSocketEndpointRoute,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Endpoint,
+                ApplicationSmokeModule.WebSocketEndpointId,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.HostAction,
+                new ApplicationSmokeAction("websocket", "changed-route"),
+                ApplicationSmokeModule.HostEntryCaller,
+                ApplicationSmokeModule.HostEntryFeatures,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1))) with
+        {
+            Route = ApplicationSmokeModule.WebSocketEndpointRoute.ToRouteIdentity() with
+            {
+                Path = "/application/changed-websocket",
+            },
+        };
+
+        var act = async () => await client.InvokeWebSocketEndpointAsync(request, channel);
+
+        (await act.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be(SidecarProtocolErrors.UnknownHostDescriptor);
+        channel.ReceiveCalls.Should().Be(0);
+        channel.Sent.Should().BeEmpty();
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task WebSocketEndpointCancellationReleasesTheRouteAndPreservesLaterUse()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var channel = new RecordingWebSocketChannel();
+        using var cancellation = new CancellationTokenSource();
+        var invocation = client.InvokeWebSocketEndpointAsync(
+            CreateEndpointRequest(
+                ApplicationSmokeModule.WebSocketEndpointRoute,
+                client.IssueHostActionContext(
+                    HostActionEntryIngress.Endpoint,
+                    ApplicationSmokeModule.WebSocketEndpointId,
+                    client.Discovery.ModuleId,
+                    ApplicationSmokeModule.HostAction,
+                    new ApplicationSmokeAction("websocket", "cancel"),
+                    ApplicationSmokeModule.HostEntryCaller,
+                    ApplicationSmokeModule.HostEntryFeatures,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow.AddMinutes(1))),
+            channel,
+            cancellation.Token).AsTask();
+        await channel.ReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        cancellation.Cancel();
+
+        var act = async () => await invocation;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        channel.Sent.Should().BeEmpty();
+
+        var later = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "websocket-cancel-later-use"));
+        later.Result.Succeeded.Should().BeTrue(
+            $"CLI error {later.Result.Error?.Code}: {later.Result.Error?.Message}");
     }
 
     [Test, CancelAfter(15000)]
@@ -375,7 +559,7 @@ public sealed class OutOfProcessApplicationProtocolTests
 
         var endpointContext = client.IssueHostActionContext(
             HostActionEntryIngress.Endpoint,
-            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+            ApplicationSmokeModule.ApplicationEndpointId,
             client.Discovery.ModuleId,
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("endpoint", "action"),
@@ -384,13 +568,12 @@ public sealed class OutOfProcessApplicationProtocolTests
             Guid.NewGuid(),
             Guid.NewGuid(),
             DateTimeOffset.UtcNow.AddMinutes(1));
-        var endpoint = await client.InvokeEndpointAsync(
-            typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
-            endpointContext);
+        var endpoint = await client.InvokeEndpointAsync(CreateEndpointRequest(
+            ApplicationSmokeModule.ApplicationEndpointRoute,
+            endpointContext));
 
-        endpoint.Succeeded.Should().BeTrue();
-        endpoint.Payload.Should().NotBeNull();
-        endpoint.Payload!.Value.GetProperty("value").GetString().Should().Be("entry-terminal:action");
+        endpoint.StatusCode.Should().Be(200);
+        ReadJsonResponse(endpoint).GetProperty("value").GetString().Should().Be("entry-terminal:action");
 
         var importAction = new AgentsJobImportAction("job-123");
         var importContext = client.IssueHostActionContext(
@@ -1160,11 +1343,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             + string.Join(" | ", cli.Result.Output.Select(item => item.Text)));
         storage.InvokeCalls.Should().Be(5);
 
-        var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(
-            typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+        var endpointTask = Task.Run(async () => await client.InvokeEndpointAsync(CreateEndpointRequest(
+            ApplicationSmokeModule.StorageHeavyEndpointRoute,
             client.IssueHostActionContext(
                 HostActionEntryIngress.Endpoint,
-                typeof(ApplicationSmokeModule.StorageHeavyEndpoint).FullName!,
+                ApplicationSmokeModule.StorageHeavyEndpointId,
                 client.Discovery.ModuleId,
                 ApplicationSmokeModule.HostAction,
                 new ApplicationSmokeAction("storage-heavy", "endpoint"),
@@ -1172,19 +1355,18 @@ public sealed class OutOfProcessApplicationProtocolTests
                 ApplicationSmokeModule.HostEntryFeatures,
                 Guid.NewGuid(),
                 Guid.NewGuid(),
-                DateTimeOffset.UtcNow.AddMinutes(1))));
+                DateTimeOffset.UtcNow.AddMinutes(1)))));
         await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         endpointTask.IsCompleted.Should().BeFalse();
         rotationRelease.TrySetResult();
         var endpoint = await endpointTask;
 
-        endpoint.Succeeded.Should().BeTrue(
-            $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
-        endpoint.Payload.Should().NotBeNull();
-        endpoint.Payload!.Value.GetProperty("storageReads").GetInt32().Should().Be(3);
-        endpoint.Payload.Value.GetProperty("outcome").GetString().Should().Be(
+        endpoint.StatusCode.Should().Be(200);
+        var endpointPayload = ReadJsonResponse(endpoint);
+        endpointPayload.GetProperty("storageReads").GetInt32().Should().Be(3);
+        endpointPayload.GetProperty("outcome").GetString().Should().Be(
             ActionOutcomeKind.Completed.ToString());
-        endpoint.Payload.Value.GetProperty("value").GetString().Should().Be("entry-terminal:endpoint");
+        endpointPayload.GetProperty("value").GetString().Should().Be("entry-terminal:endpoint");
         storage.InvokeCalls.Should().Be(8);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
@@ -1306,11 +1488,11 @@ public sealed class OutOfProcessApplicationProtocolTests
                 + string.Join(" | ", result.Result.Output.Select(item => item.Text)));
             result.Result.Output.Single().Text.Should().Be(
                 "host-entry:Completed:entry-terminal:action");
-            var endpoint = await client.InvokeEndpointAsync(
-                typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+            var endpoint = await client.InvokeEndpointAsync(CreateEndpointRequest(
+                ApplicationSmokeModule.ApplicationEndpointRoute,
                 client.IssueHostActionContext(
                     HostActionEntryIngress.Endpoint,
-                    typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName!,
+                    ApplicationSmokeModule.ApplicationEndpointId,
                     client.Discovery.ModuleId,
                     ApplicationSmokeModule.HostAction,
                     new ApplicationSmokeAction("endpoint", "action"),
@@ -1318,13 +1500,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                     ApplicationSmokeModule.HostEntryFeatures,
                     Guid.NewGuid(),
                     Guid.NewGuid(),
-                    DateTimeOffset.UtcNow.AddMinutes(1)));
-            endpoint.Succeeded.Should().BeTrue(
-                $"Endpoint error {endpoint.Error?.Code}: {endpoint.Error?.Message}");
-            endpoint.Payload.Should().NotBeNull();
-            endpoint.Payload!.Value.GetProperty("outcome").GetString().Should().Be(
+                    DateTimeOffset.UtcNow.AddMinutes(1))));
+            endpoint.StatusCode.Should().Be(200);
+            var endpointPayload = ReadJsonResponse(endpoint);
+            endpointPayload.GetProperty("outcome").GetString().Should().Be(
                 ActionOutcomeKind.Completed.ToString());
-            endpoint.Payload.Value.GetProperty("value").GetString().Should().Be(
+            endpointPayload.GetProperty("value").GetString().Should().Be(
                 "entry-terminal:action");
             var observedStates = rebindStates.ToArray();
             var responseIndex = Array.FindIndex(
@@ -2377,13 +2558,14 @@ public sealed class OutOfProcessApplicationProtocolTests
         var definition = client.Discovery.ToolHandlers.Single(item =>
             item.ToolName == ApplicationSmokeModule.HostEntryToolName);
         var invocationId = Guid.NewGuid();
+        var conversationId = Guid.NewGuid();
         var traceId = Guid.NewGuid();
         var idempotencyKey = Guid.NewGuid();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Tool,
             definition.ToolName,
-            definition.HandlerId,
+            conversationId.ToString("D"),
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("host-tool", "tool-value"),
             ApplicationSmokeModule.HostEntryCaller,
@@ -2399,7 +2581,8 @@ public sealed class OutOfProcessApplicationProtocolTests
             invocationId,
             deadline,
             context,
-            ApplicationSmokeModule.HostEntryCaller);
+            ApplicationSmokeModule.HostEntryCaller,
+            conversationId);
 
         start.HostActionContext.Should().BeEquivalentTo(context);
         start.HostActionContext!.Caller.Should().BeEquivalentTo(ApplicationSmokeModule.HostEntryCaller);
@@ -2410,11 +2593,15 @@ public sealed class OutOfProcessApplicationProtocolTests
         start.HostActionContext.Contribution!.Lineage.ActionKey.Should().Be(
             ApplicationSmokeModule.HostAction.Key);
         start.HostActionContext.Contribution.Lineage.IsPayloadBound.Should().BeTrue();
+        start.HostActionContext.Contribution.IngressBinding.SecondaryIdentity.Should().Be(
+            conversationId.ToString("D"));
+        start.ConversationId.Should().Be(conversationId);
         start.InputSchema.Should().Be(definition.InputSchema);
 
         var result = await client.InvokeToolAsync(start);
         var tool = result.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!;
         tool.Content.Should().Contain("host-tool:Completed:entry-terminal:tool-value");
+        tool.Content.Should().Contain($"conversation={conversationId:D}");
         tool.Content.Should().Contain("caller=module-agent");
         tool.Content.Should().Contain("roles=module-agent,module-operator");
         tool.Content.Should().Contain($"trace={context.TraceId}");
@@ -2428,6 +2615,154 @@ public sealed class OutOfProcessApplicationProtocolTests
             .Which.Code.Should().Be(SidecarCapabilityErrors.Replay);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
+    }
+
+    [Test, CancelAfter(15000)]
+    public async Task ToolHostActionEntryPreservesNullConversationIdentity()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var definition = client.Discovery.ToolHandlers.Single(item =>
+            item.ToolName == ApplicationSmokeModule.HostEntryToolName);
+        var invocationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            null,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-tool", "tool-stateless"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            invocationId);
+        var start = CreateHostEntryToolStart(
+            client,
+            definition,
+            invocationId,
+            deadline,
+            context,
+            ApplicationSmokeModule.HostEntryCaller,
+            null,
+            "tool-stateless");
+
+        start.ConversationId.Should().BeNull();
+        start.HostActionContext!.Contribution!.IngressBinding.SecondaryIdentity.Should().BeNull();
+        var result = await client.InvokeToolAsync(start);
+        var tool = result.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!;
+        tool.Content.Should().Contain("entry-terminal:tool-stateless")
+            .And.Contain("conversation=null");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        storage.InvokeCalls.Should().Be(0);
+    }
+
+    [TestCase("empty")]
+    [TestCase("changed")]
+    [CancelAfter(15000)]
+    public async Task ToolHostActionEntryRejectsConversationIdentityBeforeDispatch(string mutation)
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        var grantExpiresAt = DateTimeOffset.UtcNow.AddMinutes(2);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(grantExpiresAt),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var definition = client.Discovery.ToolHandlers.Single(item =>
+            item.ToolName == ApplicationSmokeModule.HostEntryToolName);
+        var invocationId = Guid.NewGuid();
+        var conversationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            conversationId.ToString("D"),
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-tool", "conversation-mutation"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            invocationId);
+        var invalidConversationId = mutation == "empty" ? Guid.Empty : Guid.NewGuid();
+        var start = CreateHostEntryToolStart(
+            client,
+            definition,
+            invocationId,
+            deadline,
+            context,
+            ApplicationSmokeModule.HostEntryCaller,
+            invalidConversationId,
+            "conversation-mutation");
+        start.ConversationId.Should().Be(invalidConversationId);
+        start.HostActionContext!.Contribution!.IngressBinding.SecondaryIdentity.Should().Be(
+            conversationId.ToString("D"));
+
+        var act = async () => await client.InvokeToolAsync(start);
+        (await act.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be(SidecarProtocolErrors.MalformedMessage);
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+        storage.InvokeCalls.Should().Be(0);
+
+        var laterInvocationId = Guid.NewGuid();
+        var laterContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Tool,
+            definition.ToolName,
+            conversationId.ToString("D"),
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("host-tool", "conversation-mutation-later"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            laterInvocationId);
+        var later = await client.InvokeToolAsync(
+            CreateHostEntryToolStart(
+                client,
+                definition,
+                laterInvocationId,
+                deadline,
+                laterContext,
+                ApplicationSmokeModule.HostEntryCaller,
+                conversationId,
+                "conversation-mutation-later"));
+        later.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Content.Should().Contain("entry-terminal:conversation-mutation-later")
+            .And.Contain($"conversation={conversationId:D}");
     }
 
     [Test, CancelAfter(15000)]
@@ -2459,7 +2794,7 @@ public sealed class OutOfProcessApplicationProtocolTests
         var context = client.IssueHostActionContext(
             HostActionEntryIngress.Tool,
             definition.ToolName,
-            definition.HandlerId,
+            null,
             ApplicationSmokeModule.HostAction,
             new ApplicationSmokeAction("host-tool", "tool-value"),
             ApplicationSmokeModule.HostEntryCaller,
@@ -2756,6 +3091,93 @@ public sealed class OutOfProcessApplicationProtocolTests
             _controlToken,
             _catalog);
 
+    private static HostEndpointRouteRequest CreateEndpointRequest(
+        ModuleEndpointRouteDescriptor descriptor,
+        HostActionEntryRequestContext context,
+        byte[]? body = null)
+    {
+        var routeContext = OutOfProcessHostActionEntryContextRegistry.WithoutPayloadBinding(context);
+        return new HostEndpointRouteRequest(
+            new HostEndpointInvocation(
+                routeContext.InvocationId,
+                descriptor.Id,
+                routeContext),
+            descriptor.ToRouteIdentity(),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            body ?? []);
+    }
+
+    private static JsonElement ReadJsonResponse(ModuleHttpEndpointResponse response)
+    {
+        using var document = JsonDocument.Parse(response.Body);
+        return document.RootElement.Clone();
+    }
+
+    private sealed class RecordingWebSocketChannel : IModuleWebSocketChannel
+    {
+        private readonly Channel<ModuleWebSocketMessage> _incoming =
+            Channel.CreateUnbounded<ModuleWebSocketMessage>(
+                new UnboundedChannelOptions
+                {
+                    SingleReader = true,
+                    SingleWriter = true,
+                    AllowSynchronousContinuations = false,
+                });
+
+        public TaskCompletionSource ReceiveStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConcurrentQueue<ModuleWebSocketMessage> Sent { get; } = new();
+
+        public int ReceiveCalls { get; private set; }
+
+        public int? CloseStatus { get; private set; }
+
+        public string? CloseDescription { get; private set; }
+
+        public void Enqueue(ModuleWebSocketMessage message)
+        {
+            if (!_incoming.Writer.TryWrite(message))
+                throw new InvalidOperationException("The test WebSocket input is closed.");
+        }
+
+        public async ValueTask<ModuleWebSocketMessage?> ReceiveAsync(
+            CancellationToken cancellationToken)
+        {
+            ReceiveCalls++;
+            ReceiveStarted.TrySetResult();
+            try
+            {
+                return await _incoming.Reader.ReadAsync(cancellationToken);
+            }
+            catch (ChannelClosedException)
+            {
+                return null;
+            }
+        }
+
+        public ValueTask SendAsync(
+            ModuleWebSocketMessage message,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Sent.Enqueue(message);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask CloseAsync(
+            int closeStatus,
+            string? description,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CloseStatus = closeStatus;
+            CloseDescription = description;
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static HostActionEntryRequestContext IssueCliContext(
         OutOfProcessModuleClient client,
         string command,
@@ -2831,7 +3253,9 @@ public sealed class OutOfProcessApplicationProtocolTests
         Guid invocationId,
         DateTimeOffset deadline,
         HostActionEntryRequestContext context,
-        RequestPrincipal caller) =>
+        RequestPrincipal caller,
+        Guid? conversationId = null,
+        string value = "tool-value") =>
         SidecarMessageHeaderFactory.CreateMeasured(
             OutOfProcessModuleHostProtocol.Version,
             sequence: 1,
@@ -2843,11 +3267,12 @@ public sealed class OutOfProcessApplicationProtocolTests
                 definition.ToolName,
                 definition.HandlerId,
                 JsonSerializer.SerializeToElement(
-                    new { value = "tool-value" },
+                    new { value },
                     OutOfProcessProtocolCodec.JsonOptions),
                 definition.InputSchema,
                 caller,
-                context));
+                context,
+                conversationId));
 
     private void AssertDiscoveryRejected(
         SidecarDiscoveryEnvelope discovery,

@@ -21,6 +21,22 @@ internal static class OutOfProcessCapabilityFrameKind
     public const string CapabilityCancellation = "capability_cancellation";
     public const string CapabilityRebind = "capability_rebind";
     public const string CapabilityRebindAccepted = "capability_rebind_accepted";
+    public const string EndpointRouteReservationRequest = "endpoint_route_reservation_request";
+    public const string EndpointRouteReservationResponse = "endpoint_route_reservation_response";
+    public const string EndpointRouteReservationRelease = "endpoint_route_reservation_release";
+    public const string EndpointRouteRelay = "endpoint_route_relay";
+    public const string EndpointRouteRelayResponse = "endpoint_route_relay_response";
+    public const string EndpointWebSocketHostMessage = "endpoint_websocket_host_message";
+    public const string EndpointWebSocketHostCompleted = "endpoint_websocket_host_completed";
+    public const string EndpointWebSocketModuleReady = "endpoint_websocket_module_ready";
+    public const string EndpointWebSocketModuleMessage = "endpoint_websocket_module_message";
+    public const string EndpointWebSocketModuleCompleted = "endpoint_websocket_module_completed";
+    public const string EndpointTypedActionChildReservationRequest = "endpoint_typed_action_child_reservation_request";
+    public const string EndpointTypedActionChildReservationResponse = "endpoint_typed_action_child_reservation_response";
+    public const string EndpointTypedActionChildReservationRelease = "endpoint_typed_action_child_reservation_release";
+    public const string EndpointTypedActionChildRelay = "endpoint_typed_action_child_relay";
+    public const string EndpointTypedActionChildRelayResponse = "endpoint_typed_action_child_relay_response";
+    public const string EndpointTypedActionChildImportAbortResponse = "endpoint_typed_action_child_import_abort_response";
     public const string Error = "error";
 }
 
@@ -35,6 +51,49 @@ internal sealed record OutOfProcessCapabilityCancellation(
     string Reason,
     DateTimeOffset SentAt,
     SidecarCrossSidecarActionEntryPeerCancellation? PeerCancellation = null);
+
+internal sealed record OutOfProcessEndpointRouteReservationResponse(
+    Guid InvocationId,
+    SidecarCapabilityValidationResult Validation,
+    SidecarHostEndpointRouteReservation? Reservation);
+
+internal sealed record OutOfProcessEndpointRouteRelayResponse(
+    Guid InvocationId,
+    SidecarCapabilityValidationResult Validation);
+
+internal sealed record OutOfProcessEndpointWebSocketMessage(
+    Guid InvocationId,
+    long Sequence,
+    ModuleWebSocketMessage Message);
+
+internal sealed record OutOfProcessEndpointWebSocketReady(Guid InvocationId);
+
+internal sealed record OutOfProcessEndpointWebSocketCompleted(
+    Guid InvocationId,
+    long LastSequence);
+
+internal sealed record OutOfProcessEndpointTypedActionChildReservationRequest(
+    Guid InvocationId,
+    HostEndpointRouteAuthority ParentRouteAuthority,
+    SidecarActionDescriptorIdentity Descriptor,
+    SidecarSerializedPayload Action,
+    SidecarActionTerminalRegistration Terminal);
+
+internal sealed record OutOfProcessEndpointTypedActionChildReservationResponse(
+    Guid InvocationId,
+    SidecarCapabilityValidationResult Validation,
+    SidecarEndpointTypedActionChildReservation? Reservation);
+
+internal sealed record OutOfProcessEndpointTypedActionChildRelayResponse(
+    Guid ReservationId,
+    SidecarCapabilityValidationResult Validation,
+    SidecarActionCapabilityResponse? Response,
+    SidecarEndpointTypedActionChildImportAcknowledgment? Acknowledgment,
+    SidecarEndpointTypedActionChildImportAbort? Abort);
+
+internal sealed record OutOfProcessEndpointTypedActionChildImportAbortResponse(
+    SidecarEndpointTypedActionChildImportAbort Abort,
+    SidecarCapabilityValidationResult Validation);
 
 internal static class OutOfProcessCapabilityWire
 {
@@ -389,6 +448,99 @@ internal static class OutOfProcessCapabilitySecurity
         return CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(expected),
             Encoding.UTF8.GetBytes(authority.Proof));
+    }
+
+    public static string CreateEndpointRouteReservationProof(
+        SidecarHostEndpointRouteReservation reservation,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-route-reservation|"
+            + SidecarCapabilityTransportValidation.ComputeEndpointRouteReservationBindingHash(
+                reservation);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointRouteAuthorityProof(
+        HostEndpointRouteAuthority authority,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-route-authority|"
+            + HostEndpointRouteAuthorityValidator.ComputeBindingHash(authority);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointRouteRelayProof(
+        SidecarHostEndpointRouteRelay relay,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(relay);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-route-relay|"
+            + SidecarCapabilityTransportValidation.ComputeEndpointRouteRelayBindingHash(relay);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointTypedActionChildReservationProof(
+        SidecarEndpointTypedActionChildReservation reservation,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-typed-action-child-reservation|"
+            + SidecarEndpointTypedActionChildValidation.ComputeReservationHash(reservation);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointTypedActionChildRelayProof(
+        SidecarEndpointTypedActionChildRelay relay,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(relay);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-typed-action-child-relay|"
+            + SidecarEndpointTypedActionChildValidation.ComputeRelayHash(relay);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointTypedActionChildImportAcknowledgmentProof(
+        SidecarEndpointTypedActionChildImportAcknowledgment acknowledgment,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(acknowledgment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-typed-action-child-import-acknowledgment|"
+            + SidecarEndpointTypedActionChildValidation.ComputeImportAcknowledgmentHash(
+                acknowledgment);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateEndpointTypedActionChildImportAbortProof(
+        SidecarEndpointTypedActionChildImportAbort abort,
+        string controlToken)
+    {
+        ArgumentNullException.ThrowIfNull(abort);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
+        var value = "host-endpoint-typed-action-child-import-abort|"
+            + SidecarEndpointTypedActionChildValidation.ComputeImportAbortHash(abort);
+        return Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(controlToken),
+            Encoding.UTF8.GetBytes(value)));
     }
 
     private static string ComputeAuthenticationSignature(

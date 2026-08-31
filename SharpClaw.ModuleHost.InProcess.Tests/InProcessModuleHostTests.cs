@@ -75,6 +75,25 @@ public sealed class InProcessModuleHostTests
         capture.LastInvocation.Should().BeSameAs(invocation);
     }
 
+    [Test]
+    public async Task ToolInvokerAcceptsNonNullConversationIdentity()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var invocation = CreateToolInvocation(Guid.NewGuid());
+
+        var result = await fixture.Invoker.InvokeToolAsync(
+            ControlModule.ToolName,
+            invocation,
+            CancellationToken.None);
+
+        result.Content.Should().Be("captured");
+        var capture = services.GetRequiredService<ToolInvocationCapture>();
+        capture.Constructions.Should().Be(1);
+        capture.Invocations.Should().Be(1);
+        capture.LastInvocation.Should().BeSameAs(invocation);
+    }
+
     [TestCase("empty-conversation")]
     [TestCase("missing-conversation")]
     [TestCase("changed-secondary-identity")]
@@ -116,6 +135,139 @@ public sealed class InProcessModuleHostTests
         var capture = services.GetRequiredService<ToolInvocationCapture>();
         capture.Constructions.Should().Be(0);
         capture.Invocations.Should().Be(0);
+    }
+
+    [Test]
+    public async Task HttpEndpointInvokerUsesTheDeclaredRouteAndOneInvocationScope()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.EndpointRoute);
+
+        var response = await fixture.Invoker.InvokeHttpEndpointAsync(
+            request,
+            new StubHostActionEntry(),
+            CancellationToken.None);
+
+        response.StatusCode.Should().Be(200);
+        using var payload = JsonDocument.Parse(response.Body);
+        payload.RootElement.GetProperty("path").GetString().Should().Be("/inprocess/control");
+        var capture = services.GetRequiredService<EndpointInvocationCapture>();
+        capture.Constructions.Should().Be(1);
+        capture.Invocations.Should().Be(1);
+        capture.Disposals.Should().Be(1);
+    }
+
+    [Test]
+    public async Task HttpEndpointInvokerRejectsChangedRouteBeforeHandlerCreation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.EndpointRoute) with
+        {
+            Route = ControlModule.EndpointRoute.ToRouteIdentity() with
+            {
+                Path = "/inprocess/changed",
+            },
+        };
+
+        var act = async () => await fixture.Invoker.InvokeHttpEndpointAsync(
+            request,
+            new StubHostActionEntry(),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        services.GetRequiredService<EndpointInvocationCapture>().Constructions.Should().Be(0);
+    }
+
+    [Test]
+    public async Task HttpEndpointInvokerRejectsCancellationBeforeHandlerCreation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.EndpointRoute);
+
+        var act = async () => await fixture.Invoker.InvokeHttpEndpointAsync(
+            request,
+            new StubHostActionEntry(),
+            new CancellationToken(canceled: true));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        services.GetRequiredService<EndpointInvocationCapture>().Constructions.Should().Be(0);
+    }
+
+    [Test]
+    public async Task WebSocketEndpointInvokerUsesTheDeclaredRouteAndOneInvocationScope()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.WebSocketEndpointRoute);
+        var text = new ModuleWebSocketMessage(
+            ModuleWebSocketMessageType.Text,
+            "in-process"u8.ToArray());
+        var channel = new RecordingWebSocketChannel(
+        [
+            text,
+            new ModuleWebSocketMessage(
+                ModuleWebSocketMessageType.Close,
+                [],
+                1000,
+                "complete"),
+        ]);
+
+        await fixture.Invoker.InvokeWebSocketEndpointAsync(
+            request,
+            channel,
+            new StubHostActionEntry(),
+            CancellationToken.None);
+
+        channel.Sent.Should().ContainSingle().Which.Should().Be(text);
+        channel.CloseStatus.Should().Be(1000);
+        channel.CloseDescription.Should().Be("complete");
+        var capture = services.GetRequiredService<WebSocketInvocationCapture>();
+        capture.Constructions.Should().Be(1);
+        capture.Invocations.Should().Be(1);
+        capture.Disposals.Should().Be(1);
+    }
+
+    [Test]
+    public async Task WebSocketEndpointInvokerRejectsChangedRouteBeforeHandlerCreation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.WebSocketEndpointRoute) with
+        {
+            Route = ControlModule.WebSocketEndpointRoute.ToRouteIdentity() with
+            {
+                Path = "/inprocess/changed-websocket",
+            },
+        };
+
+        var act = async () => await fixture.Invoker.InvokeWebSocketEndpointAsync(
+            request,
+            new RecordingWebSocketChannel([]),
+            new StubHostActionEntry(),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        services.GetRequiredService<WebSocketInvocationCapture>().Constructions.Should().Be(0);
+    }
+
+    [Test]
+    public async Task WebSocketEndpointInvokerRejectsCancellationBeforeHandlerCreation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var request = CreateEndpointRequest(ControlModule.WebSocketEndpointRoute);
+
+        var act = async () => await fixture.Invoker.InvokeWebSocketEndpointAsync(
+            request,
+            new RecordingWebSocketChannel([]),
+            new StubHostActionEntry(),
+            new CancellationToken(canceled: true));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        services.GetRequiredService<WebSocketInvocationCapture>().Constructions.Should().Be(0);
     }
 
     [Test]
@@ -319,6 +471,47 @@ public sealed class InProcessModuleHostTests
         };
     }
 
+    private static HostEndpointRouteRequest CreateEndpointRequest(
+        ModuleEndpointRouteDescriptor descriptor)
+    {
+        var invocationId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        var context = new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            "endpoint-capability",
+            HostActionEntryIngress.Endpoint,
+            invocationId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new RequestPrincipal("endpoint-user"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            deadline)
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(
+                    HostActionEntryIngress.Endpoint,
+                    descriptor.Id),
+                new HostActionEntryLineage(
+                    ControlModule.Action.Key,
+                    ControlModule.Action.Version,
+                    "inprocess-control-descriptor-hash",
+                    typeof(TestAction).AssemblyQualifiedName!,
+                    1,
+                    "inprocess-control-input-schema-hash",
+                    null,
+                    null)),
+        };
+        return new HostEndpointRouteRequest(
+            new HostEndpointInvocation(invocationId, descriptor.Id, context),
+            descriptor.ToRouteIdentity(),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            []);
+    }
+
     private static HostActionEntryRequestContext WithConversationIdentity(
         HostActionEntryRequestContext context,
         string? conversationIdentity) =>
@@ -373,9 +566,21 @@ public sealed class InProcessModuleHostTests
         }
     }
 
-    private sealed class ControlModule : ISharpClawModule
+    private sealed class ControlModule : ISharpClawModule, ISharpClawApplicationModule
     {
         public const string ToolName = "inprocess.tool";
+
+        public static ModuleEndpointRouteDescriptor EndpointRoute { get; } = new(
+            "inprocess.control.endpoint",
+            "/inprocess/control",
+            "GET",
+            HostEndpointTransport.Http);
+
+        public static ModuleEndpointRouteDescriptor WebSocketEndpointRoute { get; } = new(
+            "inprocess.control.websocket",
+            "/inprocess/control/ws",
+            "GET",
+            HostEndpointTransport.WebSocket);
 
         public static ToolDescriptor Tool { get; } =
             new(ToolName, "Captures one tool invocation.", ToolSchemas.EmptyObject);
@@ -403,12 +608,23 @@ public sealed class InProcessModuleHostTests
         {
             module.Services.AddSingleton<ControlCapture>();
             module.Services.AddSingleton<ToolInvocationCapture>();
+            module.Services.AddSingleton<EndpointInvocationCapture>();
+            module.Services.AddSingleton<WebSocketInvocationCapture>();
+            module.Services.AddScoped<CapturingEndpoint>();
+            module.Services.AddScoped<CapturingWebSocketEndpoint>();
             module.Services.AddTransient<CapturingActionHook>();
             module.Actions.Add(Action);
             module.Tools.Add<CapturingTool>(Tool);
             module.Hooks.For(Action).Use<CapturingActionHook>(
                 ActionInterceptionCapabilities.ReplaceResult,
                 new HookOrdering("inprocess.control.capture"));
+        }
+
+        public void ConfigureApplication(ISharpClawApplicationBuilder application)
+        {
+            application.Endpoints.AddHttp<CapturingEndpoint>(EndpointRoute);
+            application.Endpoints.AddWebSocket<CapturingWebSocketEndpoint>(
+                WebSocketEndpointRoute);
         }
     }
 
@@ -457,6 +673,143 @@ public sealed class InProcessModuleHostTests
         public int Invocations { get; set; }
 
         public ToolInvocation? LastInvocation { get; set; }
+    }
+
+    private sealed class CapturingEndpoint : IModuleHttpEndpointHandler, IDisposable
+    {
+        private readonly EndpointInvocationCapture _capture;
+
+        public CapturingEndpoint(EndpointInvocationCapture capture)
+        {
+            _capture = capture;
+            _capture.Constructions++;
+        }
+
+        public ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+            HostEndpointRouteRequest request,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken)
+        {
+            _capture.Invocations++;
+            return ValueTask.FromResult(ModuleHttpEndpointResponse.Json(
+                200,
+                JsonSerializer.SerializeToElement(new { path = request.Route.Path })));
+        }
+
+        public void Dispose() => _capture.Disposals++;
+    }
+
+    private sealed class EndpointInvocationCapture
+    {
+        public int Constructions { get; set; }
+
+        public int Invocations { get; set; }
+
+        public int Disposals { get; set; }
+    }
+
+    private sealed class CapturingWebSocketEndpoint :
+        IModuleWebSocketEndpointHandler,
+        IDisposable
+    {
+        private readonly WebSocketInvocationCapture _capture;
+
+        public CapturingWebSocketEndpoint(WebSocketInvocationCapture capture)
+        {
+            _capture = capture;
+            _capture.Constructions++;
+        }
+
+        public async ValueTask InvokeAsync(
+            HostEndpointRouteRequest request,
+            IModuleWebSocketChannel channel,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken)
+        {
+            _capture.Invocations++;
+            while (true)
+            {
+                var message = await channel.ReceiveAsync(cancellationToken);
+                if (message is null)
+                    return;
+                if (message.Type == ModuleWebSocketMessageType.Close)
+                {
+                    await channel.CloseAsync(
+                        message.CloseStatus!.Value,
+                        message.CloseDescription,
+                        cancellationToken);
+                    return;
+                }
+
+                await channel.SendAsync(message, cancellationToken);
+            }
+        }
+
+        public void Dispose() => _capture.Disposals++;
+    }
+
+    private sealed class WebSocketInvocationCapture
+    {
+        public int Constructions { get; set; }
+
+        public int Invocations { get; set; }
+
+        public int Disposals { get; set; }
+    }
+
+    private sealed class RecordingWebSocketChannel(
+        IEnumerable<ModuleWebSocketMessage> incoming) : IModuleWebSocketChannel
+    {
+        private readonly Queue<ModuleWebSocketMessage> _incoming = new(incoming);
+
+        public List<ModuleWebSocketMessage> Sent { get; } = [];
+
+        public int? CloseStatus { get; private set; }
+
+        public string? CloseDescription { get; private set; }
+
+        public ValueTask<ModuleWebSocketMessage?> ReceiveAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<ModuleWebSocketMessage?>(
+                _incoming.Count == 0 ? null : _incoming.Dequeue());
+        }
+
+        public ValueTask SendAsync(
+            ModuleWebSocketMessage message,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Sent.Add(message);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask CloseAsync(
+            int closeStatus,
+            string? description,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CloseStatus = closeStatus;
+            CloseDescription = description;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class StubHostActionEntry : IHostActionEntry
+    {
+        public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+            HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed record ToolFixture(

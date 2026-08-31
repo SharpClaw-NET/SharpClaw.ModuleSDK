@@ -1,40 +1,12 @@
-using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleSDK;
 
 /// <summary>Identifies one typed endpoint contribution across the sidecar boundary.</summary>
 public sealed record SidecarApplicationEndpoint(
+    ModuleEndpointRouteDescriptor Descriptor,
     string TypeName,
     string AssemblyName);
-
-/// <summary>Returns one authenticated endpoint execution result.</summary>
-public sealed record ModuleEndpointResult(
-    bool Succeeded,
-    JsonElement? Payload,
-    ExecutionError? Error)
-{
-    /// <summary>Creates a successful endpoint result.</summary>
-    public static ModuleEndpointResult Success(JsonElement payload) =>
-        new(true, payload, null);
-
-    /// <summary>Creates a failed endpoint result.</summary>
-    public static ModuleEndpointResult Failure(string code, string message) =>
-        new(
-            false,
-            null,
-            new ExecutionError(code, message));
-}
-
-/// <summary>Executes one explicitly registered module endpoint contribution.</summary>
-public interface IModuleEndpointHandler
-{
-    /// <summary>Executes the endpoint with host-authenticated action authority.</summary>
-    ValueTask<ModuleEndpointResult> InvokeAsync(
-        HostEndpointInvocation invocation,
-        IHostActionEntry hostActionEntry,
-        CancellationToken cancellationToken);
-}
 
 /// <summary>Describes one CLI handler contribution across the sidecar boundary.</summary>
 public sealed record SidecarApplicationCliCommand(
@@ -82,7 +54,7 @@ public sealed record SidecarCliExecutionResponse(
 public sealed record SidecarEndpointExecutionResponse(
     string ModuleId,
     string ContractHash,
-    ModuleEndpointResult Result);
+    ModuleHttpEndpointResponse Response);
 
 /// <summary>Extends the flat sidecar discovery document with application metadata.</summary>
 public sealed record SidecarDiscoveryDocument(
@@ -128,7 +100,7 @@ public static class ModuleContributionGraphApplicationExtensions
         return new SidecarApplicationDiscovery(
             graph.Identity.Id,
             graph.ContractHash,
-            Array.AsReadOnly(graph.Application.EndpointTypes
+            Array.AsReadOnly(graph.Application.Endpoints
                 .Select(CreateEndpoint)
                 .ToArray()),
             Array.AsReadOnly(graph.Application.CliCommands
@@ -149,14 +121,16 @@ public static class ModuleContributionGraphApplicationExtensions
                 .ToArray()));
     }
 
-    private static SidecarApplicationEndpoint CreateEndpoint(Type type) =>
+    private static SidecarApplicationEndpoint CreateEndpoint(
+        ModuleEndpointContribution contribution) =>
         new(
-            type.FullName
+            contribution.Descriptor,
+            contribution.HandlerType.FullName
                 ?? throw new InvalidOperationException(
-                    "An endpoint contribution type must have a full name."),
-            type.Assembly.GetName().Name
+                    "An endpoint handler type must have a full name."),
+            contribution.HandlerType.Assembly.GetName().Name
                 ?? throw new InvalidOperationException(
-                    "An endpoint contribution type must have an assembly name."));
+                    "An endpoint handler type must have an assembly name."));
 
     private static SidecarApplicationCliCommand CreateCliCommand(
         ModuleCliContribution contribution) =>

@@ -128,7 +128,12 @@ public sealed class ModuleCompilerTests
     {
         var graph = Compile(new ApplicationModule(), ModuleHostingMode.OutOfProcess);
 
-        graph.Application.EndpointTypes.Should().ContainSingle(value => value == typeof(SampleEndpoints));
+        graph.Application.Endpoints.Should().ContainSingle(value =>
+            value.HandlerType == typeof(SampleEndpoints)
+            && value.Descriptor.Id == "sample.endpoint"
+            && value.Descriptor.Path == "/sample"
+            && value.Descriptor.Method == "GET"
+            && value.Descriptor.Transport == HostEndpointTransport.Http);
         graph.Application.CliCommands.Should().ContainSingle(item =>
             item.Descriptor.Name == "sample.inspect"
             && item.HandlerType == typeof(SampleCli));
@@ -136,6 +141,7 @@ public sealed class ModuleCompilerTests
             discovery => discovery.ModuleId == graph.Identity.Id
                 && discovery.ContractHash == graph.ContractHash
                 && discovery.Endpoints.Single().TypeName == typeof(SampleEndpoints).FullName
+                && discovery.Endpoints.Single().Descriptor.Id == "sample.endpoint"
                 && discovery.CliCommands.Single().Descriptor.Name == "sample.inspect");
     }
 
@@ -531,7 +537,11 @@ public sealed class ModuleCompilerTests
 
         public void ConfigureApplication(ISharpClawApplicationBuilder application)
         {
-            application.Endpoints.Add<SampleEndpoints>();
+            application.Endpoints.AddHttp<SampleEndpoints>(new ModuleEndpointRouteDescriptor(
+                "sample.endpoint",
+                "/sample",
+                "GET",
+                HostEndpointTransport.Http));
             application.Cli.Add<SampleCli>(new ModuleCliCommandDescriptor(
                 "sample.inspect",
                 ["sample-i"],
@@ -612,7 +622,14 @@ public sealed class ModuleCompilerTests
             ValueTask.FromResult(ToolResult.Text(invocation.Arguments.GetProperty("text").GetString()!));
     }
 
-    private sealed class SampleEndpoints;
+    private sealed class SampleEndpoints : IModuleHttpEndpointHandler
+    {
+        public ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+            HostEndpointRouteRequest request,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(ModuleHttpEndpointResponse.Empty(204));
+    }
 
     private sealed class SampleUi;
 

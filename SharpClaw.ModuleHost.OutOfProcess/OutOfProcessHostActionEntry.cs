@@ -123,14 +123,66 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 "The host action entry request context does not match the typed host authority.");
         }
 
-        using var rootActionExchange = _parentTerminalRequest is null
-            ? await _transport.EnterRootActionExchangeAsync(cancellationToken)
-            : null;
         var identity = OutOfProcessActionDescriptorIdentity.Create(request.Descriptor);
         var terminalBinding = _transport.ResolveActionEntryTerminal(
             identity,
             terminal.TerminalId,
             terminal.GetType());
+        var actionPayload = OutOfProcessActionDispatcher.Payload(
+            request.Action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+
+        if (_parentTerminalRequest is null
+            && context!.Ingress == HostActionEntryIngress.Endpoint)
+        {
+            if (!terminalBinding.IsAuthorized)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The endpoint action terminal does not match its registered implementation.");
+            }
+
+            var activeCarrierId = _transport.ActiveCarrierId;
+            if (activeCarrierId is not { } carrierId
+                || !_transport.TryGetActiveEndpointRoute(
+                    context,
+                    out var routeLease)
+                || routeLease is null
+                || routeLease.Context.CapabilityId != carrierId)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.SpoofedIdentity,
+                    "The endpoint action has no matching authenticated route carrier.");
+            }
+
+            var childTerminal = new SidecarActionTerminalRegistration(
+                terminalBinding.TerminalId,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.ResultTypeIdentity,
+                identity.ResultSchemaVersion,
+                identity.DescriptorHash);
+            var childResponse = await _transport.InvokeEndpointTypedActionChildAsync(
+                routeLease,
+                identity,
+                actionPayload,
+                childTerminal,
+                (terminalRequest, terminalCancellation) => ExecuteTerminalAsync(
+                    terminal,
+                    terminalRequest,
+                    _transport.Binding.SafeFailure,
+                    terminalCancellation,
+                    _transport,
+                    context.Contribution),
+                cancellationToken);
+            ThrowIfHostEntryFailed(childResponse);
+            return OutOfProcessActionDispatcher.CreateOutcome<TResult>(childResponse);
+        }
+
+        using var rootActionExchange = _parentTerminalRequest is null
+            ? await _transport.EnterRootActionExchangeAsync(cancellationToken)
+            : null;
         var call = _transport.CreateCall(
             SidecarCapabilityKind.Action,
             request.Deadline,
@@ -143,10 +195,6 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 RequestId = call.RequestId,
                 CancellationId = call.CancellationId,
             };
-            var actionPayload = OutOfProcessActionDispatcher.Payload(
-                request.Action,
-                identity.InputTypeIdentity,
-                identity.InputSchemaVersion);
             var cancellation = new SidecarCancellationIdentity(
                 call.CancellationId,
                 SidecarCapabilitySessionValidator.ComputeBindingHash(_transport.Binding),

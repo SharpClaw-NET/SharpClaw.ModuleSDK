@@ -50,6 +50,11 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
     internal IDisposable PushActiveCarrier(Guid capabilityId) =>
         _capabilityTransport.PushActiveCarrier(capabilityId);
 
+    internal IDisposable PushActiveCarrier(
+        Guid capabilityId,
+        SidecarCapabilityCallIdentity parentCall) =>
+        _capabilityTransport.PushActiveCarrier(capabilityId, parentCall);
+
     public static Task<OutOfProcessModuleRuntime> LoadAsync(
         string moduleDirectory,
         CancellationToken ct = default) =>
