@@ -152,9 +152,11 @@ public sealed class InProcessModuleHostTests
         response.StatusCode.Should().Be(200);
         using var payload = JsonDocument.Parse(response.Body);
         payload.RootElement.GetProperty("path").GetString().Should().Be("/inprocess/control");
+        payload.RootElement.GetProperty("routeValue").GetString().Should().Be("inprocess-route-value");
         var capture = services.GetRequiredService<EndpointInvocationCapture>();
         capture.Constructions.Should().Be(1);
         capture.Invocations.Should().Be(1);
+        capture.RouteValue.Should().Be("inprocess-route-value");
         capture.Disposals.Should().Be(1);
     }
 
@@ -509,7 +511,13 @@ public sealed class InProcessModuleHostTests
             descriptor.ToRouteIdentity(),
             new Dictionary<string, string[]>(StringComparer.Ordinal),
             new Dictionary<string, string[]>(StringComparer.Ordinal),
-            []);
+            [])
+        {
+            RouteValues = new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                ["id"] = ["inprocess-route-value"],
+            },
+        };
     }
 
     private static HostActionEntryRequestContext WithConversationIdentity(
@@ -691,9 +699,14 @@ public sealed class InProcessModuleHostTests
             CancellationToken cancellationToken)
         {
             _capture.Invocations++;
+            _capture.RouteValue = request.RouteValues["id"].Single();
             return ValueTask.FromResult(ModuleHttpEndpointResponse.Json(
                 200,
-                JsonSerializer.SerializeToElement(new { path = request.Route.Path })));
+                JsonSerializer.SerializeToElement(new
+                {
+                    path = request.Route.Path,
+                    routeValue = request.RouteValues["id"].Single(),
+                })));
         }
 
         public void Dispose() => _capture.Disposals++;
@@ -704,6 +717,8 @@ public sealed class InProcessModuleHostTests
         public int Constructions { get; set; }
 
         public int Invocations { get; set; }
+
+        public string? RouteValue { get; set; }
 
         public int Disposals { get; set; }
     }
@@ -727,6 +742,7 @@ public sealed class InProcessModuleHostTests
             CancellationToken cancellationToken)
         {
             _capture.Invocations++;
+            _capture.RouteValue = request.RouteValues["id"].Single();
             while (true)
             {
                 var message = await channel.ReceiveAsync(cancellationToken);
@@ -755,6 +771,8 @@ public sealed class InProcessModuleHostTests
         public int Invocations { get; set; }
 
         public int Disposals { get; set; }
+
+        public string? RouteValue { get; set; }
     }
 
     private sealed class RecordingWebSocketChannel(

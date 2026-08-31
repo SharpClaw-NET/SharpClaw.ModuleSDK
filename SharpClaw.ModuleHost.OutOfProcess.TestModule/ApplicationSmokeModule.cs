@@ -37,6 +37,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
     public const string StorageHeavyEndpointId = "application.storage-heavy";
     public const string ScopedEndpointId = "application.scoped";
     public const string WebSocketEndpointId = "application.websocket";
+    public const string EndpointRouteValue = "outofprocess-route-value";
 
     public static ModuleEndpointRouteDescriptor ApplicationEndpointRoute { get; } = new(
         ApplicationEndpointId,
@@ -361,6 +362,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
                 {
                     outcome = outcome.Kind.ToString(),
                     value = outcome.Result?.Value,
+                    routeValue = request.RouteValues["id"].Single(),
                 }));
         }
     }
@@ -419,6 +421,13 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken)
         {
+            if (!StringComparer.Ordinal.Equals(
+                    request.RouteValues["id"].Single(),
+                    EndpointRouteValue))
+            {
+                throw new InvalidOperationException("The endpoint route value is invalid.");
+            }
+
             while (true)
             {
                 var message = await channel.ReceiveAsync(cancellationToken);

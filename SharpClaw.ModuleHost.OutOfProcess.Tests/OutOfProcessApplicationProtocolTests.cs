@@ -198,6 +198,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         endpointPayload.GetProperty("outcome").GetString().Should().Be(
             ActionOutcomeKind.Completed.ToString());
         endpointPayload.GetProperty("value").GetString().Should().Be("entry-terminal:action");
+        endpointPayload.GetProperty("routeValue").GetString().Should().Be(
+            ApplicationSmokeModule.EndpointRouteValue);
 
         var action = new AgentsJobImportAction("real-core");
         var typed = await client.InvokeModuleActionEntryAsync(
@@ -3105,7 +3107,13 @@ public sealed class OutOfProcessApplicationProtocolTests
             descriptor.ToRouteIdentity(),
             new Dictionary<string, string[]>(StringComparer.Ordinal),
             new Dictionary<string, string[]>(StringComparer.Ordinal),
-            body ?? []);
+            body ?? [])
+        {
+            RouteValues = new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                ["id"] = [ApplicationSmokeModule.EndpointRouteValue],
+            },
+        };
     }
 
     private static JsonElement ReadJsonResponse(ModuleHttpEndpointResponse response)
