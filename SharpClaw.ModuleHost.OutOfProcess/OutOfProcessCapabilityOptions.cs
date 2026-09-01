@@ -388,10 +388,6 @@ public sealed class OutOfProcessCapabilityHostOptions
         OwnedStorageNames = new HashSet<string>(
             ownedStorageNames.Where(value => !string.IsNullOrWhiteSpace(value)),
             StringComparer.Ordinal);
-        if (OwnedStorageNames.Count == 0)
-            throw new ArgumentException(
-                "At least one owned storage name is required.",
-                nameof(ownedStorageNames));
     }
 
     /// <summary>Gets the exact host storage gateway singleton.</summary>

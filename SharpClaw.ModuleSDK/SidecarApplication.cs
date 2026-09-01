@@ -29,10 +29,12 @@ public sealed record SidecarApplicationDiscovery(
     string ContractHash,
     IReadOnlyList<SidecarApplicationEndpoint> Endpoints,
     IReadOnlyList<SidecarApplicationCliCommand> CliCommands,
-    IReadOnlyList<SidecarApplicationActionEntry> ActionEntries)
+    IReadOnlyList<SidecarApplicationActionEntry> ActionEntries,
+    IReadOnlyList<SidecarChatContributionDefinition> Chat)
 {
     /// <summary>Gets whether the graph has no application contribution.</summary>
-    public bool IsEmpty => Endpoints.Count == 0 && CliCommands.Count == 0 && ActionEntries.Count == 0;
+    public bool IsEmpty =>
+        Endpoints.Count == 0 && CliCommands.Count == 0 && ActionEntries.Count == 0 && Chat.Count == 0;
 }
 
 /// <summary>Invokes one discovered module CLI command.</summary>
@@ -119,7 +121,79 @@ public static class ModuleContributionGraphApplicationExtensions
                     entry.TerminalType.Assembly.GetName().Name
                         ?? throw new InvalidOperationException(
                             "An action entry terminal type must have an assembly name.")))
-                .ToArray()));
+                .ToArray()),
+            CreateChat(graph));
+    }
+
+    private static IReadOnlyList<SidecarChatContributionDefinition> CreateChat(
+        ModuleContributionGraph graph)
+    {
+        var contributions = new List<SidecarChatContributionDefinition>();
+        if (graph.Chat.ConversationResolver is not null)
+        {
+            contributions.Add(CreateChatContribution(
+                graph,
+                SidecarChatContributionKind.ConversationResolver,
+                graph.Chat.ConversationResolverRegistration?.Id
+                    ?? throw new InvalidOperationException(
+                        "A sidecar conversation resolver requires one registration identity."),
+                SidecarChatActionDescriptors.ConversationResolver,
+                SidecarChatActionDescriptors.ConversationResolverTerminalId));
+        }
+        if (graph.Chat.ProfileResolver is not null)
+        {
+            contributions.Add(CreateChatContribution(
+                graph,
+                SidecarChatContributionKind.ProfileResolver,
+                graph.Chat.ProfileResolverRegistration?.Id
+                    ?? throw new InvalidOperationException(
+                        "A sidecar profile resolver requires one registration identity."),
+                SidecarChatActionDescriptors.ProfileResolver,
+                SidecarChatActionDescriptors.ProfileResolverTerminalId));
+        }
+        if (graph.Services.Any(item => item.ServiceType == typeof(IConversationStore)))
+        {
+            var registrationId = $"{graph.Identity.Id}.conversation-store";
+            contributions.Add(CreateChatContribution(
+                graph,
+                SidecarChatContributionKind.HistoryLoad,
+                registrationId,
+                SidecarChatActionDescriptors.HistoryLoad,
+                SidecarChatActionDescriptors.HistoryLoadTerminalId));
+            contributions.Add(CreateChatContribution(
+                graph,
+                SidecarChatContributionKind.ExchangeCommit,
+                registrationId,
+                SidecarChatActionDescriptors.ExchangeCommit,
+                SidecarChatActionDescriptors.ExchangeCommitTerminalId));
+        }
+        if (graph.Chat.ContextContributors.Count > 0)
+        {
+            contributions.Add(CreateChatContribution(
+                graph,
+                SidecarChatContributionKind.ContextContributor,
+                $"{graph.Identity.Id}.context-contributor",
+                SidecarChatActionDescriptors.ContextContributor,
+                SidecarChatActionDescriptors.ContextContributorTerminalId));
+        }
+        return Array.AsReadOnly(contributions.ToArray());
+    }
+
+    private static SidecarChatContributionDefinition CreateChatContribution<TAction, TResult>(
+        ModuleContributionGraph graph,
+        SidecarChatContributionKind kind,
+        string registrationId,
+        ActionDescriptor<TAction, TResult> descriptor,
+        Guid terminalId)
+    {
+        var entry = graph.ActionEntries.SingleOrDefault(item => item.TerminalId == terminalId)
+            ?? throw new InvalidOperationException(
+                $"The sidecar chat contribution '{kind}' has no action entry.");
+        return new SidecarChatContributionDefinition(
+            kind,
+            registrationId,
+            entry.Descriptor,
+            terminalId);
     }
 
     private static SidecarApplicationEndpoint CreateEndpoint(

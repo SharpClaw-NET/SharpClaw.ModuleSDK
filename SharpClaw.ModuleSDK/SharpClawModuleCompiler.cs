@@ -38,6 +38,8 @@ public static class SharpClawModuleCompiler
         }
 
         var state = builder.State;
+        if (options.HostingMode == ModuleHostingMode.OutOfProcess)
+            SidecarChatActionEntryFactory.Add(builder);
         ValidateActions(state, errors);
         ValidateEvents(state, errors);
         ValidateTools(state, errors);

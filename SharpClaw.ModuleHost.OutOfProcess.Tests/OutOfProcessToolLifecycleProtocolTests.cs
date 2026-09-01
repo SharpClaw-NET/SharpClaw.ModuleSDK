@@ -111,6 +111,21 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         terminal.ResultSchema.Should().Be(client.Discovery.ToolHandlers.Single().ResultSchema);
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task SidecarWithoutStorageContractsUsesTheActionCapabilitySession()
+    {
+        await using var client = await CreateClientAsync([]);
+
+        var terminal = await client.InvokeToolAsync(CreateToolStart(
+            client,
+            "echo",
+            "no-storage"));
+
+        client.StorageContracts.Should().BeEmpty();
+        terminal.Result.Deserialize<ToolResult>(OutOfProcessProtocolCodec.JsonOptions)!
+            .Content.Should().Be("no-storage");
+    }
+
     [TestCase("fail", "module_tool_failed")]
     [TestCase("cancel", "tool_cancelled")]
     [CancelAfter(15000)]
@@ -270,7 +285,8 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
         await _inProcessModule.StopAsync(CancellationToken.None);
     }
 
-    private async Task<OutOfProcessModuleClient> CreateClientAsync()
+    private async Task<OutOfProcessModuleClient> CreateClientAsync(
+        IReadOnlyList<string>? ownedStorageNames = null)
     {
         var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
             _controlAddress,
@@ -282,7 +298,7 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             new EmptyStorageGateway(),
             new EmptyActionDispatcher(),
             client.CreateCapabilityGrant(),
-            ["tool-store"],
+            ownedStorageNames ?? ["tool-store"],
             descriptors,
             new ActionPipelineSnapshot(
                 client.Discovery.ContractHash,

@@ -77,6 +77,24 @@ public sealed class ModuleCompilerTests
     }
 
     [Test]
+    public void OutOfProcessCompilationPublishesExactToolMetadata()
+    {
+        var graph = Compile(new CompleteModule(), ModuleHostingMode.OutOfProcess);
+        var tool = SidecarDiscoveryFactory.CreateDocument(
+                graph,
+                protocolVersion: 1,
+                sequence: 1,
+                DateTimeOffset.UtcNow.AddMinutes(1))
+            .ToolHandlers.Single();
+
+        tool.ToolName.Should().Be("sample.echo");
+        tool.Version.Should().Be(1);
+        tool.ContainsSensitiveData.Should().BeFalse();
+        tool.ParametersSchema.GetProperty("type").GetString().Should().Be("object");
+        tool.ParametersSchema.GetProperty("required")[0].GetString().Should().Be("text");
+    }
+
+    [Test]
     public void OutOfProcessCompilationRetainsTypedDescriptorBeforeHostAuthorization()
     {
         var module = new CompleteModule();

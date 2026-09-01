@@ -188,6 +188,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     SidecarProtocolErrors.MalformedMessage,
                     "The sidecar returned no discovery envelope.");
             var discovery = document.ToDiscovery();
+            ValidateApplicationDiscovery(discovery, document.Application);
             var authorization = SidecarAuthorizationFactory.Create(discovery, hostCatalog);
             var decision = SidecarMessageHeaderFactory.CreateMeasured(
                 hostCatalog.NegotiatedProtocolVersion,
@@ -221,6 +222,177 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             throw;
         }
     }
+
+    internal static void ValidateApplicationDiscovery(
+        SidecarDiscoveryEnvelope discovery,
+        SidecarApplicationDiscovery application)
+    {
+        ArgumentNullException.ThrowIfNull(discovery);
+        ArgumentNullException.ThrowIfNull(application);
+        if (!string.Equals(application.ModuleId, discovery.ModuleId, StringComparison.Ordinal)
+            || !string.Equals(application.ContractHash, discovery.ContractHash, StringComparison.Ordinal))
+        {
+            throw MalformedApplication("The application discovery identity does not match module discovery.");
+        }
+
+        if (application.Endpoints is null
+            || application.CliCommands is null
+            || application.ActionEntries is null
+            || application.Chat is null)
+        {
+            throw MalformedApplication("The application discovery contribution sets are required.");
+        }
+
+        if (application.ActionEntries.Any(entry => entry is null
+                || !string.Equals(entry.ModuleId, discovery.ModuleId, StringComparison.Ordinal)
+                || !string.Equals(entry.ContractHash, discovery.ContractHash, StringComparison.Ordinal)
+                || entry.TerminalId == Guid.Empty
+                || entry.Descriptor is null
+                || !entry.Descriptor.IsWellFormed
+                || string.IsNullOrWhiteSpace(entry.TerminalTypeName)
+                || string.IsNullOrWhiteSpace(entry.AssemblyName)))
+        {
+            throw MalformedApplication("An application action entry has invalid graph authority.");
+        }
+
+        if (application.ActionEntries
+            .GroupBy(entry => entry.TerminalId)
+            .Any(group => group.Count() != 1))
+        {
+            throw MalformedApplication("Application action terminal identities must be unique.");
+        }
+
+        if (application.Chat.Any(item => item is null))
+            throw MalformedApplication("A sidecar chat contribution is required.");
+
+        foreach (var duplicate in application.Chat.GroupBy(item => item.Kind))
+        {
+            if (duplicate.Count() != 1)
+                throw MalformedApplication("Each sidecar chat contribution kind must be unique.");
+        }
+
+        foreach (var contribution in application.Chat)
+            ValidateChatContribution(discovery, application, contribution);
+
+        var historyLoad = application.Chat.SingleOrDefault(item =>
+            item.Kind == SidecarChatContributionKind.HistoryLoad);
+        var exchangeCommit = application.Chat.SingleOrDefault(item =>
+            item.Kind == SidecarChatContributionKind.ExchangeCommit);
+        if ((historyLoad is null) != (exchangeCommit is null)
+            || (historyLoad is not null
+                && !string.Equals(
+                    historyLoad.RegistrationId,
+                    exchangeCommit!.RegistrationId,
+                    StringComparison.Ordinal)))
+        {
+            throw MalformedApplication(
+                "A sidecar conversation store requires one matching history read and exchange commit pair.");
+        }
+    }
+
+    private static void ValidateChatContribution(
+        SidecarDiscoveryEnvelope discovery,
+        SidecarApplicationDiscovery application,
+        SidecarChatContributionDefinition contribution)
+    {
+        if (string.IsNullOrWhiteSpace(contribution.RegistrationId)
+            || contribution.TerminalId == Guid.Empty
+            || contribution.Descriptor is null
+            || !contribution.Descriptor.IsWellFormed)
+        {
+            throw MalformedApplication("A sidecar chat contribution is malformed.");
+        }
+
+        var expected = GetExpectedChatContribution(contribution.Kind);
+        if (contribution.TerminalId != expected.TerminalId
+            || !OutOfProcessActionDescriptorIdentity.Matches(
+                expected.Descriptor,
+                contribution.Descriptor))
+        {
+            throw MalformedApplication("A sidecar chat contribution does not match its neutral descriptor.");
+        }
+
+        var entries = application.ActionEntries.Where(entry =>
+            entry.TerminalId == contribution.TerminalId
+            && OutOfProcessActionDescriptorIdentity.Matches(
+                contribution.Descriptor,
+                entry.Descriptor)).ToArray();
+        if (entries.Length != 1)
+            throw MalformedApplication("A sidecar chat contribution has no unique action entry.");
+
+        var definitions = discovery.ActionDefinitions.Where(definition =>
+            definition.ActionKey == contribution.Descriptor.Key
+            && definition.Version == contribution.Descriptor.Version).ToArray();
+        if (definitions.Length != 1 || !Matches(definitions[0], expected.Action))
+            throw MalformedApplication("A sidecar chat contribution has no exact action definition.");
+    }
+
+    private static ExpectedChatContribution GetExpectedChatContribution(
+        SidecarChatContributionKind kind) => kind switch
+        {
+            SidecarChatContributionKind.ConversationResolver => Expected(
+                SidecarChatActionDescriptors.ConversationResolver,
+                SidecarChatActionDescriptors.ConversationResolverTerminalId),
+            SidecarChatContributionKind.ProfileResolver => Expected(
+                SidecarChatActionDescriptors.ProfileResolver,
+                SidecarChatActionDescriptors.ProfileResolverTerminalId),
+            SidecarChatContributionKind.HistoryLoad => Expected(
+                SidecarChatActionDescriptors.HistoryLoad,
+                SidecarChatActionDescriptors.HistoryLoadTerminalId),
+            SidecarChatContributionKind.ExchangeCommit => Expected(
+                SidecarChatActionDescriptors.ExchangeCommit,
+                SidecarChatActionDescriptors.ExchangeCommitTerminalId),
+            SidecarChatContributionKind.ContextContributor => Expected(
+                SidecarChatActionDescriptors.ContextContributor,
+                SidecarChatActionDescriptors.ContextContributorTerminalId),
+            _ => throw MalformedApplication("The sidecar chat contribution kind is not supported."),
+        };
+
+    private static ExpectedChatContribution Expected<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        Guid terminalId) => new(
+            OutOfProcessActionDescriptorIdentity.Create(descriptor),
+            terminalId,
+            new SidecarActionDefinition(
+                descriptor.Key,
+                descriptor.Version,
+                descriptor.Category,
+                descriptor.InputSchema!,
+                descriptor.ResultSchema!,
+                descriptor.Capabilities,
+                descriptor.ContainsSensitiveData,
+                descriptor.HasIrreversibleEffects,
+                descriptor.RepeatPolicy,
+                descriptor.ContinuationPolicy,
+                descriptor.DefaultTimeout,
+                descriptor.SafePoints,
+                descriptor.ProtocolVersionRange));
+
+    private static bool Matches(
+        SidecarActionDefinition actual,
+        SidecarActionDefinition expected) =>
+        actual.ActionKey == expected.ActionKey
+        && actual.Version == expected.Version
+        && string.Equals(actual.Category, expected.Category, StringComparison.Ordinal)
+        && actual.InputSchema == expected.InputSchema
+        && actual.ResultSchema == expected.ResultSchema
+        && actual.Capabilities == expected.Capabilities
+        && actual.ContainsSensitiveData == expected.ContainsSensitiveData
+        && actual.HasIrreversibleEffects == expected.HasIrreversibleEffects
+        && actual.RepeatPolicy == expected.RepeatPolicy
+        && actual.ContinuationPolicy == expected.ContinuationPolicy
+        && actual.DefaultTimeout == expected.DefaultTimeout
+        && actual.SafePoints is not null
+        && actual.SafePoints.SequenceEqual(expected.SafePoints)
+        && actual.ProtocolVersionRange == expected.ProtocolVersionRange;
+
+    private static OutOfProcessProtocolException MalformedApplication(string message) =>
+        new(SidecarProtocolErrors.MalformedMessage, message);
+
+    private sealed record ExpectedChatContribution(
+        SidecarActionDescriptorIdentity Descriptor,
+        Guid TerminalId,
+        SidecarActionDefinition Action);
 
     /// <summary>Connects one host-owned dispatcher and storage gateway to the sidecar.</summary>
     public async Task ConnectCapabilitiesAsync(
