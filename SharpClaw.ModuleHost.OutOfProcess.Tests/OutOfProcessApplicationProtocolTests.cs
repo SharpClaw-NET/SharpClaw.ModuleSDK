@@ -179,19 +179,28 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry(),
             registry));
 
-        var endpoint = await client.InvokeEndpointAsync(CreateEndpointRequest(
+        var endpointContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Endpoint,
+            ApplicationSmokeModule.ApplicationEndpointId,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("endpoint", "action"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var endpointInvocation = client.CreateEndpointInvocation(
             ApplicationSmokeModule.ApplicationEndpointRoute,
-            client.IssueHostActionContext(
-                HostActionEntryIngress.Endpoint,
-                ApplicationSmokeModule.ApplicationEndpointId,
-                client.Discovery.ModuleId,
-                ApplicationSmokeModule.HostAction,
-                new ApplicationSmokeAction("endpoint", "action"),
-                ApplicationSmokeModule.HostEntryCaller,
-                ApplicationSmokeModule.HostEntryFeatures,
-                Guid.NewGuid(),
-                Guid.NewGuid(),
-                DateTimeOffset.UtcNow.AddMinutes(1))));
+            endpointContext);
+        endpointInvocation.HostActionContext.Contribution!.Lineage.IsPayloadBound.Should().BeFalse();
+        var endpointRequest = CreateEndpointRequest(
+            ApplicationSmokeModule.ApplicationEndpointRoute,
+            endpointContext) with
+        {
+            Invocation = endpointInvocation,
+        };
+        var endpoint = await client.InvokeEndpointAsync(endpointRequest);
 
         endpoint.StatusCode.Should().Be(200);
         var endpointPayload = ReadJsonResponse(endpoint);

@@ -100,6 +100,28 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         return context;
     }
 
+    /// <summary>Creates one endpoint invocation from a context issued by this client.</summary>
+    public HostEndpointInvocation CreateEndpointInvocation(
+        ModuleEndpointRouteDescriptor descriptor,
+        HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!Application.Endpoints.Any(item => item.Descriptor == descriptor))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"Endpoint route '{descriptor.Method} {descriptor.Path}' is not declared by the sidecar.");
+        }
+
+        var routeContext = OutOfProcessHostActionEntryContextRegistry
+            .WithoutPayloadBinding(context);
+        return new HostEndpointInvocation(
+            routeContext.InvocationId,
+            descriptor.Id,
+            routeContext);
+    }
+
     /// <summary>Discovers and authorizes one sidecar against immutable host descriptors.</summary>
     public static async Task<OutOfProcessModuleClient> CreateAuthorizedAsync(
         Uri controlAddress,
