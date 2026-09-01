@@ -479,6 +479,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             var storageCallCount = context.Action.JobId switch
             {
                 "storage-heavy" => 3,
+                "storage-continuation" => 8,
                 "storage" or "permission-nested" => 1,
                 _ => 0,
             };

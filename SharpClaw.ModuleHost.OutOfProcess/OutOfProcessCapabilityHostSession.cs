@@ -512,6 +512,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 effectiveDispatcherContext,
                 terminalId),
         };
+        var effectiveHostEntry = request.EffectiveHostEntryContext
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.HostFailure,
+                "The module action entry has no effective terminal authority.");
+        var terminalRecord = Session.RecordTerminal(
+            call.CallId,
+            effectiveHostEntry.Authority.AuthorityId,
+            effectiveHostEntry.EffectiveContext.Receipt);
+        if (!terminalRecord.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                terminalRecord.Code ?? SidecarCapabilityErrors.InvalidBinding,
+                terminalRecord.Message ?? "The module action terminal receipt was rejected.");
+        }
+
         var pending = new PendingOutgoingAction(linked)
         {
             Request = request,
@@ -3157,6 +3172,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
         try
         {
+            var record = _session.RecordTerminal(
+                request.Call.CallId,
+                authority.AuthorityId,
+                receipt);
+            if (!record.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    record.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                    record.Message ?? "The terminal receipt was rejected.");
+            }
+
             var terminalResponse = await SendTerminalAsync(
                 terminalRequest,
                 ct,
@@ -3176,20 +3202,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 throw new OutOfProcessCapabilityException(
                     responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
                     responseValidation.Message ?? "The terminal response was rejected.");
-            }
-
-            if (!Session.TryGetTerminalReceipt(request.Call.CallId, out _))
-            {
-                var record = _session.RecordTerminal(
-                    request.Call.CallId,
-                    authority.AuthorityId,
-                    receipt);
-                if (!record.Accepted)
-                {
-                    throw new OutOfProcessCapabilityException(
-                        record.Code ?? SidecarCapabilityErrors.MalformedMessage,
-                        record.Message ?? "The terminal receipt was rejected.");
-                }
             }
 
             if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)

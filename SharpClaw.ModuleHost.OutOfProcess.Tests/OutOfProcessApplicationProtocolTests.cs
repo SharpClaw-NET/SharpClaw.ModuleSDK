@@ -1004,7 +1004,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
-    public async Task IncomingHostActionKeepsTerminalAuthorityAcrossStorageContinuationBoundary()
+    public async Task IncomingPeerRootActionKeepsTerminalAuthorityAcrossStorageContinuationBoundary()
     {
         await using var client = await CreateClientAsync();
         var storage = new CountingStorageGateway();
@@ -1032,20 +1032,7 @@ public sealed class OutOfProcessApplicationProtocolTests
             new OutOfProcessHostActionEntryContextRegistry(),
             new KernelExternalAuthoritySessionRegistry()));
 
-        for (var i = 0; i < 5; i++)
-        {
-            var prior = await client.InvokeCliAsync(
-                ApplicationSmokeModule.CapabilityCliName,
-                ["single"],
-                IssueCliContext(
-                    client,
-                    ApplicationSmokeModule.CapabilityCliName,
-                    $"storage-continuation-prior-{i}"));
-            prior.Result.Succeeded.Should().BeTrue(
-                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
-        }
-
-        var action = new AgentsJobImportAction("storage-heavy");
+        var action = new AgentsJobImportAction("storage-continuation");
         var result = await client.InvokeModuleActionEntryAsync(
             ApplicationSmokeModule.AgentsJobImportAction,
             action,
@@ -1061,7 +1048,9 @@ public sealed class OutOfProcessApplicationProtocolTests
                 Guid.NewGuid(),
                 DateTimeOffset.UtcNow.AddMinutes(1)));
 
-        result.Kind.Should().Be(ActionOutcomeKind.Completed);
+        result.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"action error {result.Error?.Code}: {result.Error?.Message}");
         storage.InvokeCalls.Should().Be(8);
         dispatcher.RunCalls.Should().Be(1);
         dispatcher.TerminalCalls.Should().Be(1);
