@@ -2235,6 +2235,13 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                 effectiveContext.Attempt,
                 effectiveContext.IdempotencyKey.ToString("N"),
                 request.Action.ContentHash);
+            if (request.EffectiveHostEntryContext is { } authenticatedHostEntry)
+            {
+                ThrowIfRejected(_session.RecordTerminal(
+                    sessionRequest.Call.CallId,
+                    authenticatedHostEntry.Authority.AuthorityId,
+                    receipt));
+            }
             var terminalContext = effectiveTerminalContext
                 ?? new SidecarActionTerminalExecutionContext(
                     request.Call,

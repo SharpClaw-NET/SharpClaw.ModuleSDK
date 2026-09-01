@@ -476,13 +476,19 @@ public sealed class ApplicationSmokeModule : ISharpClawModule, ISharpClawApplica
             ActionContext<AgentsJobImportAction> context,
             CancellationToken cancellationToken)
         {
-            if (context.Action.JobId is "storage" or "permission-nested")
+            var storageCallCount = context.Action.JobId switch
+            {
+                "storage-heavy" => 3,
+                "storage" or "permission-nested" => 1,
+                _ => 0,
+            };
+            for (var i = 0; i < storageCallCount; i++)
             {
                 await storage.InvokeAsync(
                     Id,
                     "application-store",
                     "echo",
-                    JsonSerializer.SerializeToElement(new { value = "terminal" }),
+                    JsonSerializer.SerializeToElement(new { value = $"terminal-{i}" }),
                     cancellationToken);
             }
 

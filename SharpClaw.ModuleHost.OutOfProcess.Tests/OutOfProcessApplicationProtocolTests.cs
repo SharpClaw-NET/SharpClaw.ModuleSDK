@@ -1004,6 +1004,81 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task IncomingHostActionKeepsTerminalAuthorityAcrossStorageContinuationBoundary()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.AgentsJobImportAction);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                ApplicationSmokeModule.AgentsJobImportAction.Key,
+                ApplicationSmokeModule.AgentsJobImportAction.Version,
+                ActionInterceptionCapabilities.Inspect,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        for (var i = 0; i < 5; i++)
+        {
+            var prior = await client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                ["single"],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    $"storage-continuation-prior-{i}"));
+            prior.Result.Succeeded.Should().BeTrue(
+                $"CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+        }
+
+        var action = new AgentsJobImportAction("storage-heavy");
+        var result = await client.InvokeModuleActionEntryAsync(
+            ApplicationSmokeModule.AgentsJobImportAction,
+            action,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                ApplicationSmokeModule.AgentsJobImportAction.Key.Value,
+                client.Discovery.ModuleId,
+                ApplicationSmokeModule.AgentsJobImportAction,
+                action,
+                new RequestPrincipal("module-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        result.Kind.Should().Be(ActionOutcomeKind.Completed);
+        storage.InvokeCalls.Should().Be(8);
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+
+        var followUp = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CapabilityCliName,
+            ["single"],
+            IssueCliContext(
+                client,
+                ApplicationSmokeModule.CapabilityCliName,
+                "storage-continuation-after"));
+        followUp.Result.Succeeded.Should().BeTrue(
+            $"CLI error {followUp.Result.Error?.Code}: {followUp.Result.Error?.Message}");
+        storage.InvokeCalls.Should().Be(9);
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task HostSequenceResetsAfterRotationBeforeScopedModuleAction()
     {
         await using var client = await CreateClientAsync();
