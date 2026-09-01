@@ -143,6 +143,14 @@ public sealed class ModuleCompilerTests
                 && discovery.Endpoints.Single().TypeName == typeof(SampleEndpoints).FullName
                 && discovery.Endpoints.Single().Descriptor.Id == "sample.endpoint"
                 && discovery.CliCommands.Single().Descriptor.Name == "sample.inspect");
+        SidecarDiscoveryFactory.CreateDocument(
+                graph,
+                protocolVersion: 1,
+                sequence: 1,
+                DateTimeOffset.UtcNow.AddMinutes(1))
+            .StorageContracts.Should().ContainSingle(contract =>
+                contract.ModuleId == graph.Identity.Id
+                && contract.StorageName == "application-store");
     }
 
     [Test]
@@ -533,6 +541,11 @@ public sealed class ModuleCompilerTests
 
         public void Configure(ISharpClawModuleBuilder module)
         {
+            module.Storage.Add(new ModuleStorageContractDescriptor(
+                Identity.Id,
+                "application-store",
+                [new ModuleStorageOperationDescriptor("get")],
+                "Application test storage."));
         }
 
         public void ConfigureApplication(ISharpClawApplicationBuilder application)

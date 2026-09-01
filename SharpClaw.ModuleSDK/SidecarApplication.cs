@@ -69,6 +69,7 @@ public sealed record SidecarDiscoveryDocument(
     IReadOnlyList<SidecarToolHandlerDefinition> ToolHandlers,
     IReadOnlyList<SidecarLifecycleHandlerDefinition> LifecycleHandlers,
     IReadOnlyList<ModuleFeatureDescriptor> Features,
+    IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts,
     SidecarApplicationDiscovery Application) : ISidecarProtocolMessage
 {
     /// <summary>Gets the discovery message kind used by the base sidecar protocol.</summary>

@@ -26,6 +26,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         string controlToken,
         HttpClient httpClient,
         SidecarDiscoveryEnvelope discovery,
+        IReadOnlyList<ModuleStorageContractDescriptor> storageContracts,
         SidecarApplicationDiscovery application,
         SidecarHostAuthorization authorization,
         SidecarPayloadLimits hostLimits)
@@ -34,6 +35,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         _controlToken = controlToken;
         _httpClient = httpClient;
         Discovery = discovery;
+        StorageContracts = storageContracts;
         Application = application;
         Authorization = authorization;
         HostLimits = hostLimits;
@@ -41,6 +43,9 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
 
     /// <summary>Gets the validated module discovery.</summary>
     public SidecarDiscoveryEnvelope Discovery { get; }
+
+    /// <summary>Gets the validated storage contracts declared by this module.</summary>
+    public IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts { get; }
 
     /// <summary>Gets the typed endpoint and CLI contributions from the same graph.</summary>
     public SidecarApplicationDiscovery Application { get; }
@@ -205,6 +210,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 controlToken,
                 http,
                 discovery,
+                document.StorageContracts,
                 document.Application,
                 authorization,
                 hostCatalog.PayloadLimits);

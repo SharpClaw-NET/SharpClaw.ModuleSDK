@@ -124,6 +124,9 @@ public sealed class OutOfProcessApplicationProtocolTests
             endpoint.TypeName == typeof(ApplicationSmokeModule.ApplicationEndpoint).FullName);
         client.Application.CliCommands.Should().Contain(command =>
             command.Descriptor.Name == ApplicationSmokeModule.CliName);
+        client.StorageContracts.Should().ContainSingle(contract =>
+            contract.ModuleId == ApplicationSmokeModule.Id
+            && contract.StorageName == "application-store");
 
         var storage = new CountingStorageGateway();
         var dispatcher = new CountingActionDispatcher();

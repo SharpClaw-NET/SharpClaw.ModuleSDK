@@ -107,6 +107,7 @@ public static class SidecarDiscoveryFactory
                     discovery.ToolHandlers,
                     discovery.LifecycleHandlers,
                     discovery.Features,
+                    graph.Storage,
                     graph.CreateSidecarApplicationDiscovery());
             });
     }

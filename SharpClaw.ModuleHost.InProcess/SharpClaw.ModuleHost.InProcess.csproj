@@ -2,10 +2,10 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.ModuleHost.InProcess</PackageId>
-    <Version>0.5.0-beta.17</Version>
+    <Version>0.5.0-beta.18</Version>
     <AssemblyVersion>0.5.0.0</AssemblyVersion>
     <FileVersion>0.5.0.0</FileVersion>
-    <InformationalVersion>0.5.0-beta.17</InformationalVersion>
+    <InformationalVersion>0.5.0-beta.18</InformationalVersion>
     <Authors>mkn8rn</Authors>
     <Description>Supports opt-in in-process SharpClaw .NET module loading with collectible assembly contexts and host-shared contract assemblies.</Description>
     <PackageTags>sharpclaw;modulehost;in-process;modules;runtime</PackageTags>
