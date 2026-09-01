@@ -3,10 +3,10 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.ModuleSDK.HostOperations</PackageId>
-    <Version>0.5.0-beta.2</Version>
+    <Version>0.5.0-beta.3</Version>
     <AssemblyVersion>0.5.0.0</AssemblyVersion>
     <FileVersion>0.5.0.0</FileVersion>
-    <InformationalVersion>0.5.0-beta.2</InformationalVersion>
+    <InformationalVersion>0.5.0-beta.3</InformationalVersion>
     <Title>SharpClaw Module SDK Host Operations</Title>
     <Description>Neutral typed contracts for host module and Tool operations.</Description>
     <Authors>SharpClaw-NET</Authors>
@@ -17,8 +17,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.33]" />
-    <PackageReference Include="SharpClaw.ModuleSDK" Version="[0.5.0-beta.14]" />
+    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.35]" />
+    <PackageReference Include="SharpClaw.ModuleSDK" Version="[0.5.0-beta.15]" />
   </ItemGroup>
 
 </Project>
