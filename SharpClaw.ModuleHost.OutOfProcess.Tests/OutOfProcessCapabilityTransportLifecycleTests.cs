@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
@@ -294,6 +295,17 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
             SidecarExternalActionDispatchAuthority authority,
             CancellationToken cancellationToken) =>
             RunAsync(descriptor, action, terminal, actionSnapshot, cancellationToken);
+
+        public ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+            SidecarActionDefinition definition,
+            SidecarActionDescriptorIdentity identity,
+            JsonElement action,
+            Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
+            ActionPipelineSnapshot actionSnapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromException<IActionOutcome<JsonElement>>(
+                new InvalidOperationException("The lifecycle test dispatcher must not execute."));
 
         public ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,

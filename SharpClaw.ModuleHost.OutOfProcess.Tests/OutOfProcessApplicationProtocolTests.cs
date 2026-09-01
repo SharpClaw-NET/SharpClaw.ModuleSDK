@@ -233,6 +233,223 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task RealCoreDispatcherExecutesDiscoveredEntryAndRejectsReplay()
+    {
+        await using var client = await CreateClientAsync();
+        var definition = client.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.AgentsJobImportAction.Key);
+        var entry = client.Application.ActionEntries.Single(item =>
+            item.Descriptor.Key == definition.ActionKey
+            && item.Descriptor.Version == definition.Version);
+        var action = CreateAgentImportPayload("neutral-real-core");
+        var registry = new KernelExternalAuthoritySessionRegistry();
+        var graph = BuildRealCoreHostGraph();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(definition, entry.Descriptor);
+        var actionSnapshot = new ActionPipelineSnapshot(
+            graph.ActionSnapshot.ContractHash,
+            graph.ActionSnapshot.ActionGrants
+                .Append(new ActionCapabilityGrant(
+                    definition.ActionKey,
+                    definition.Version,
+                    definition.Capabilities,
+                    SensitiveApproved: false,
+                    AcceptUnknownSchemas: false))
+                .ToArray(),
+            graph.ActionSnapshot.EventGrants);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new CountingStorageGateway(),
+            CreateRealCoreDispatcher(graph, registry),
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            actionSnapshot,
+            new OutOfProcessHostActionEntryContextRegistry(),
+            registry));
+
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            definition.ActionKey.Value,
+            client.Discovery.ModuleId,
+            definition,
+            entry.Descriptor,
+            action,
+            new RequestPrincipal("neutral-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var outcome = await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            action,
+            context);
+
+        outcome.Kind.Should().Be(
+            ActionOutcomeKind.Completed,
+            $"neutral dispatch failed with {outcome.Error?.Code}: {outcome.Error?.Message}");
+        outcome.Result.GetProperty("value").GetString().Should().StartWith(
+            "imported:neutral-real-core:caller=neutral-agent:");
+
+        var replay = async () => await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            action,
+            context);
+        (await replay.Should().ThrowAsync<OutOfProcessCapabilityException>())
+            .Which.Code.Should().Be(SidecarCapabilityErrors.Replay);
+
+        var laterAction = CreateAgentImportPayload("neutral-later-use");
+        var later = await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            laterAction,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                definition.ActionKey.Value,
+                client.Discovery.ModuleId,
+                definition,
+                entry.Descriptor,
+                laterAction,
+                new RequestPrincipal("neutral-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        later.Kind.Should().Be(ActionOutcomeKind.Completed);
+        later.Result.GetProperty("value").GetString().Should().StartWith(
+            "imported:neutral-later-use:");
+        client.HostActionEntryContexts.HasActiveContexts.Should().BeFalse();
+    }
+
+    [Test, CancelAfter(30000)]
+    public async Task DiscoveredEntryRejectsMutationsAndCancellationBeforeTerminal()
+    {
+        await using var client = await CreateClientAsync();
+        var definition = client.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == ApplicationSmokeModule.AgentsJobImportAction.Key);
+        var entry = client.Application.ActionEntries.Single(item =>
+            item.Descriptor.Key == definition.ActionKey
+            && item.Descriptor.Version == definition.Version);
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(definition, entry.Descriptor);
+        var grants = client.Authorization.ActionGrants
+            .Append(new ActionCapabilityGrant(
+                definition.ActionKey,
+                definition.Version,
+                definition.Capabilities,
+                SensitiveApproved: false,
+                AcceptUnknownSchemas: false))
+            .ToArray();
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            new CountingStorageGateway(),
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                grants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var original = CreateAgentImportPayload("neutral-original");
+        var originalContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            definition.ActionKey.Value,
+            client.Discovery.ModuleId,
+            definition,
+            entry.Descriptor,
+            original,
+            new RequestPrincipal("neutral-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var changedPayload = async () => await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            CreateAgentImportPayload("neutral-changed"),
+            originalContext);
+
+        (await changedPayload.Should().ThrowAsync<OutOfProcessProtocolException>())
+            .Which.Code.Should().Be(SidecarCapabilityErrors.SpoofedIdentity);
+        dispatcher.RunCalls.Should().Be(0);
+        dispatcher.TerminalCalls.Should().Be(0);
+
+        var changedDefinition = definition with
+        {
+            DefaultTimeout = definition.DefaultTimeout + TimeSpan.FromSeconds(1),
+        };
+        Action changedDescriptor = () => client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            definition.ActionKey.Value,
+            client.Discovery.ModuleId,
+            changedDefinition,
+            entry.Descriptor,
+            original,
+            new RequestPrincipal("neutral-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        changedDescriptor.Should().Throw<OutOfProcessProtocolException>()
+            .Which.Code.Should().Be(SidecarProtocolErrors.UnknownHostDescriptor);
+
+        var cancelledAction = CreateAgentImportPayload("neutral-cancelled");
+        var cancelledContext = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            definition.ActionKey.Value,
+            client.Discovery.ModuleId,
+            definition,
+            entry.Descriptor,
+            cancelledAction,
+            new RequestPrincipal("neutral-agent"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var cancelled = async () => await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            cancelledAction,
+            cancelledContext,
+            cancellation.Token);
+        await cancelled.Should().ThrowAsync<OperationCanceledException>();
+        dispatcher.TerminalCalls.Should().Be(0);
+
+        var laterAction = CreateAgentImportPayload("neutral-after-rejection");
+        var later = await client.InvokeModuleActionEntryAsync(
+            definition,
+            entry.Descriptor,
+            laterAction,
+            client.IssueHostActionContext(
+                HostActionEntryIngress.Cli,
+                definition.ActionKey.Value,
+                client.Discovery.ModuleId,
+                definition,
+                entry.Descriptor,
+                laterAction,
+                new RequestPrincipal("neutral-agent"),
+                ExtensionFeatureSet.Empty,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        later.Kind.Should().Be(ActionOutcomeKind.Completed);
+        later.Result.GetProperty("value").GetString().Should().StartWith(
+            "imported:neutral-after-rejection:");
+        dispatcher.RunCalls.Should().Be(1);
+        dispatcher.TerminalCalls.Should().Be(1);
+        client.HostActionEntryContexts.HasActiveContexts.Should().BeFalse();
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task RealCoreDispatcherExecutesNestedHostEntryThroughSessionVerifier()
     {
         await using var client = await CreateClientAsync();
@@ -3166,6 +3383,11 @@ public sealed class OutOfProcessApplicationProtocolTests
             _controlToken,
             _catalog);
 
+    private static JsonElement CreateAgentImportPayload(string jobId) =>
+        JsonSerializer.SerializeToElement(
+            new { jobId },
+            OutOfProcessProtocolCodec.JsonOptions);
+
     private static HostEndpointRouteRequest CreateEndpointRequest(
         ModuleEndpointRouteDescriptor descriptor,
         HostActionEntryRequestContext context,
@@ -3802,6 +4024,69 @@ public sealed class OutOfProcessApplicationProtocolTests
         {
             ExternalRunCalls++;
             return RunAsync(descriptor, action, terminal, snapshot, ct);
+        }
+
+        public async ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+            SidecarActionDefinition definition,
+            SidecarActionDescriptorIdentity identity,
+            JsonElement action,
+            Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct)
+        {
+            if (ExpectedSnapshotContractHash is not null
+                && !string.Equals(
+                    snapshot.ContractHash,
+                    ExpectedSnapshotContractHash,
+                    StringComparison.Ordinal))
+            {
+                SnapshotRejectionCalls++;
+                throw new AssertionException(
+                    $"The dispatcher received snapshot '{snapshot.ContractHash}', "
+                    + $"expected '{ExpectedSnapshotContractHash}'.");
+            }
+
+            var matchingGrants = snapshot.ActionGrants.Where(item =>
+                item.ActionKey == definition.ActionKey
+                && item.ActionVersion == definition.Version)
+                .ToArray();
+            if (matchingGrants.Length != 1)
+            {
+                throw new AssertionException(
+                    $"The dispatcher received {matchingGrants.Length} grants for "
+                    + $"{definition.ActionKey}:{definition.Version}: "
+                    + string.Join(", ", matchingGrants.Select(item => item.Capabilities)));
+            }
+
+            var grant = matchingGrants[0];
+            LastSnapshotCapabilities = grant.Capabilities;
+            LastSnapshotContractHash = snapshot.ContractHash;
+            LastSnapshotHash = SidecarCapabilityTransportValidation.ComputeSnapshotHash(snapshot);
+            ExternalRunCalls++;
+            RunCalls++;
+            var hostContext = HostContextFactory?.Invoke();
+            var effectiveAction = ReplaceInput?.Invoke(action) is JsonElement replacement
+                ? replacement
+                : action;
+            var result = await terminal(
+                new ActionContext<JsonElement>(
+                    hostContext?.InvocationId ?? Guid.NewGuid(),
+                    hostContext?.ParentInvocationId,
+                    hostContext?.TraceId ?? Guid.NewGuid(),
+                    hostContext?.IdempotencyKey ?? Guid.NewGuid(),
+                    hostContext?.Depth ?? 0,
+                    hostContext?.Attempt ?? 1,
+                    hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
+                    definition.ActionKey,
+                    ApplicationSmokeModule.Id,
+                    hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
+                    effectiveAction,
+                    hostContext?.Features ?? ExtensionFeatureSet.Empty,
+                    snapshot),
+                ct);
+            TerminalCalls++;
+            return new CountingActionOutcome<JsonElement>(result);
         }
 
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(

@@ -171,6 +171,33 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             deadline,
             invocationId);
 
+    internal HostActionEntryRequestContext IssueHostActionEntryContext(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+        => _options.HostActionEntryContexts.Issue(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            definition,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+
     internal HostActionEntryRequestContext ExecuteContextIssuance(
         Func<HostActionEntryRequestContext> issue)
     {
@@ -229,7 +256,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
-    internal async ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryAsync<TAction, TResult>(
+    internal ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
         SidecarActionDescriptorIdentity identity,
@@ -239,17 +266,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        ArgumentNullException.ThrowIfNull(identity);
-        ArgumentNullException.ThrowIfNull(actionPayload);
-        ArgumentNullException.ThrowIfNull(hostContext);
-        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
-            || hostContext.Contribution is null)
-        {
-            throw new OutOfProcessCapabilityException(
-                SidecarCapabilityErrors.MalformedMessage,
-                "The module action entry host context is invalid.");
-        }
-
         if (!OutOfProcessActionDescriptorIdentity.Matches(
                 identity,
                 OutOfProcessActionDescriptorIdentity.Create(descriptor)))
@@ -257,6 +273,86 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             throw new OutOfProcessCapabilityException(
                 SidecarCapabilityErrors.SpoofedIdentity,
                 "The typed module action descriptor does not match its host identity.");
+        }
+
+        return InvokeModuleActionEntryCoreAsync<TAction, TResult>(
+            action,
+            identity,
+            actionPayload,
+            hostContext,
+            terminalId,
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            ct);
+    }
+
+    internal ValueTask<IActionOutcome<JsonElement>> InvokeModuleActionEntryAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity,
+        JsonElement action,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized module action descriptor does not match its discovery definition.");
+        }
+
+        return InvokeModuleActionEntryCoreAsync<JsonElement, JsonElement>(
+            action,
+            identity,
+            actionPayload,
+            hostContext,
+            terminalId,
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalSerializedAsync(
+                    definition,
+                    identity,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            ct);
+    }
+
+    private async ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryCoreAsync<TAction, TResult>(
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            SidecarExternalActionDispatchAuthority,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>> dispatch,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(actionPayload);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        ArgumentNullException.ThrowIfNull(dispatch);
+        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
+            || hostContext.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The module action entry host context is invalid.");
         }
 
         using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -381,11 +477,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         ?? "The module action entry failed.");
             }
 
-            var outcome = await _options.ActionDispatcher.RunExternalAsync(
-                descriptor,
-                action,
+            var outcome = await dispatch(
                 InvokeTerminalAsync,
-                _options.ActionSnapshot,
                 authority,
                 dispatchCancellation.Token);
             if (outcome.Kind == ActionOutcomeKind.Completed
@@ -396,7 +489,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     default!,
                     new ExecutionError(
                         SidecarCapabilityErrors.HostFailure,
-                        "The typed module action completed without an authenticated terminal exchange."),
+                        "The module action completed without an authenticated terminal exchange."),
                     null,
                     null);
             }
@@ -423,7 +516,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 default!,
                 new ExecutionError(
                     SidecarCapabilityErrors.HostFailure,
-                    "The typed module action dispatcher failed."),
+                    "The module action dispatcher failed."),
                 null,
                 null);
         }
@@ -2838,7 +2931,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         }
     }
 
-    internal async ValueTask<OutOfProcessActionDispatchResult> DispatchAsync<TAction, TResult>(
+    internal ValueTask<OutOfProcessActionDispatchResult> DispatchAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         SidecarActionDescriptorIdentity identity,
         SidecarActionCapabilityRequest request,
@@ -2846,6 +2939,92 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         CancellationToken ct)
     {
         var action = Deserialize<TAction>(request.Action);
+        return DispatchActionCoreAsync<TAction, TResult>(
+            action,
+            identity,
+            request,
+            context => ValidateTypedHostActionEntry(descriptor, action, request, context),
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            (terminal, cancellationToken) =>
+                _options.ActionDispatcher.RunAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    cancellationToken),
+            ct);
+    }
+
+    internal ValueTask<OutOfProcessActionDispatchResult> DispatchSerializedAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(request);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized action descriptor does not match its discovery definition.");
+        }
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "A discovered module action requires an authenticated host entry.");
+        }
+
+        var action = request.Action.Value.Clone();
+        return DispatchActionCoreAsync<JsonElement, JsonElement>(
+            action,
+            identity,
+            request,
+            context => ValidateSerializedHostActionEntry(identity, request, context),
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalSerializedAsync(
+                    definition,
+                    identity,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            dispatchInternal: null,
+            ct);
+    }
+
+    private async ValueTask<OutOfProcessActionDispatchResult> DispatchActionCoreAsync<TAction, TResult>(
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        Action<HostActionEntryRequestContext> validateHostEntry,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            SidecarExternalActionDispatchAuthority,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>> dispatchExternal,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>>? dispatchInternal,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(validateHostEntry);
+        ArgumentNullException.ThrowIfNull(dispatchExternal);
         if (request.Invocation == SidecarActionInvocationKind.HostEntry)
         {
             if (request.NestedCarrier is not null)
@@ -2871,16 +3050,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     nestedContext,
                     request.Cancellation,
                     request.Invocation);
-                var nestedOutcome = await _options.ActionDispatcher.RunExternalAsync(
-                    descriptor,
-                    action,
+                var nestedOutcome = await dispatchExternal(
                     (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
                         request,
                         identity,
                         context,
                         nestedContext,
                         terminalCancellation),
-                    _options.ActionSnapshot,
                     nestedAuthority,
                     ct);
                 return new OutOfProcessActionDispatchResult(
@@ -2905,49 +3081,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     "The host action request has no valid terminal registration.");
             }
 
-            var entryRequest = new HostActionEntryRequest<TAction, TResult>(
-                descriptor,
-                action,
-                context);
-            if (!_options.HostActionEntryContexts.TryConsume(
-                    entryRequest,
-                    DateTimeOffset.UtcNow))
-            {
-                throw new OutOfProcessCapabilityException(
-                    SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,
-                    "The host action context is invalid, expired, or already used.");
-            }
-            var issued = _session.IssueHostActionEntry(
-                entryRequest with
-                {
-                    Context = OutOfProcessHostActionEntryContextRegistry
-                        .WithoutPayloadBinding(entryRequest.Context),
-                },
-                request.Call.CallId,
-                DateTimeOffset.UtcNow,
-                authority => OutOfProcessCapabilitySecurity.CreateHostActionEntryProof(
-                    authority,
-                    _controlToken),
-                out var transport);
-            if (!issued.Accepted || transport is null)
-            {
-                throw new OutOfProcessCapabilityException(
-                    issued.Code ?? SidecarCapabilityErrors.Unauthorized,
-                    issued.Message ?? "The host action entry authority was rejected.");
-            }
-
-            var authorityValidation = _session.ValidateHostActionEntry(
-                transport,
-                DateTimeOffset.UtcNow,
-                authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
-                    authority,
-                    _controlToken));
-            if (!authorityValidation.Accepted)
-            {
-                throw new OutOfProcessCapabilityException(
-                    authorityValidation.Code ?? SidecarCapabilityErrors.Unauthorized,
-                    authorityValidation.Message ?? "The host action entry authority was rejected.");
-            }
+            validateHostEntry(context);
 
             var hostAuthority = CreateExternalActionDispatchAuthority(
                 identity,
@@ -2958,16 +3092,13 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 context,
                 request.Cancellation,
                 request.Invocation);
-            var hostOutcome = await _options.ActionDispatcher.RunExternalAsync(
-                descriptor,
-                action,
+            var hostOutcome = await dispatchExternal(
                     (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
                         request,
                         identity,
                         context,
                         request.HostContext,
                         terminalCancellation),
-                _options.ActionSnapshot,
                 hostAuthority,
                 ct);
             return new OutOfProcessActionDispatchResult(
@@ -2981,16 +3112,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     : 0);
         }
 
-        var outcome = await _options.ActionDispatcher.RunAsync(
-            descriptor,
-            action,
+        if (dispatchInternal is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The action requires an authenticated host entry.");
+        }
+        var outcome = await dispatchInternal(
             (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
                 request,
                 identity,
                 context,
                 null,
                 terminalCancellation),
-            _options.ActionSnapshot,
             ct);
         return new OutOfProcessActionDispatchResult(
             outcome.Kind,
@@ -3003,6 +3137,74 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     ? 1
                     : 0
                 : 0);
+    }
+
+    private void ValidateTypedHostActionEntry<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext context)
+    {
+        var entryRequest = new HostActionEntryRequest<TAction, TResult>(
+            descriptor,
+            action,
+            context);
+        if (!_options.HostActionEntryContexts.TryConsume(
+                entryRequest,
+                DateTimeOffset.UtcNow))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The host action context is invalid, expired, or already used.");
+        }
+        var issued = _session.IssueHostActionEntry(
+            entryRequest with
+            {
+                Context = OutOfProcessHostActionEntryContextRegistry
+                    .WithoutPayloadBinding(entryRequest.Context),
+            },
+            request.Call.CallId,
+            DateTimeOffset.UtcNow,
+            authority => OutOfProcessCapabilitySecurity.CreateHostActionEntryProof(
+                authority,
+                _controlToken),
+            out var transport);
+        if (!issued.Accepted || transport is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                issued.Code ?? SidecarCapabilityErrors.Unauthorized,
+                issued.Message ?? "The host action entry authority was rejected.");
+        }
+
+        var validation = _session.ValidateHostActionEntry(
+            transport,
+            DateTimeOffset.UtcNow,
+            authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
+                authority,
+                _controlToken));
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                validation.Message ?? "The host action entry authority was rejected.");
+        }
+    }
+
+    private void ValidateSerializedHostActionEntry(
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext context)
+    {
+        if (!_options.HostActionEntryContexts.TryConsume(
+                identity,
+                request.Action,
+                context,
+                DateTimeOffset.UtcNow))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized host action context is invalid, expired, or already used.");
+        }
     }
 
     private SidecarExternalActionDispatchAuthority CreateExternalActionDispatchAuthority<TAction>(

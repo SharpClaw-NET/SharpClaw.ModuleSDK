@@ -100,6 +100,39 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         return context;
     }
 
+    /// <summary>Issues one host context without loading the module action CLR types.</summary>
+    public HostActionEntryRequestContext IssueHostActionContext(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+    {
+        RequireActionEntry(definition, descriptor);
+        var context = CapabilitySession.IssueHostActionEntryContext(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            definition,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+        CapabilitySession.RequestRotationRetry();
+        return context;
+    }
+
     /// <summary>Creates one endpoint invocation from a context issued by this client.</summary>
     public HostEndpointInvocation CreateEndpointInvocation(
         ModuleEndpointRouteDescriptor descriptor,
@@ -732,6 +765,114 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                 carrierAuthority,
                 completion);
         }
+    }
+
+    /// <summary>Invokes one discovered module action entry with canonical JSON.</summary>
+    public async ValueTask<IActionOutcome<JsonElement>> InvokeModuleActionEntryAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        HostActionEntryRequestContext hostActionContext,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(hostActionContext);
+        var now = DateTimeOffset.UtcNow;
+        if (!hostActionContext.IsWellFormed(now)
+            || hostActionContext.Contribution is null
+            || hostActionContext.Ingress is not (
+                HostActionEntryIngress.Cli
+                or HostActionEntryIngress.Tool
+                or HostActionEntryIngress.Endpoint
+                or HostActionEntryIngress.CrossModule))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.MalformedMessage,
+                "The module action entry context is invalid.");
+        }
+
+        var entry = RequireActionEntry(definition, descriptor);
+        var payload = OutOfProcessActionDispatcher.Payload(
+            action,
+            descriptor.InputTypeIdentity,
+            descriptor.InputSchemaVersion);
+        if (!OutOfProcessHostActionEntryContextRegistry.MatchesLineage(
+                hostActionContext.Contribution.Lineage,
+                descriptor,
+                payload))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The module action entry context does not bind the serialized payload.");
+        }
+
+        var carrierAuthority = CapabilitySession
+            .BeginHostActionEntryCarrier(hostActionContext);
+        var completion = HostActionEntryCarrierCompletionKind.Failed;
+        try
+        {
+            var outcome = await CapabilitySession.InvokeModuleActionEntryAsync(
+                definition,
+                descriptor,
+                action,
+                payload,
+                hostActionContext,
+                entry.TerminalId,
+                ct);
+            completion = outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred
+                ? HostActionEntryCarrierCompletionKind.Succeeded
+                : HostActionEntryCarrierCompletionKind.Failed;
+            return outcome;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            completion = HostActionEntryCarrierCompletionKind.Cancelled;
+            throw;
+        }
+        finally
+        {
+            await CapabilitySession.CompleteHostActionEntryCarrierAsync(
+                carrierAuthority,
+                completion);
+        }
+    }
+
+    private SidecarApplicationActionEntry RequireActionEntry(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor)
+    {
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                descriptor,
+                definition))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                "The discovered action definition does not match its transport identity.");
+        }
+
+        var definitions = Discovery.ActionDefinitions
+            .Where(item => item.ActionKey == definition.ActionKey && item.Version == definition.Version)
+            .ToArray();
+        if (definitions.Length != 1
+            || !SidecarCapabilityTransportCodec.Serialize(definitions[0])
+                .SequenceEqual(SidecarCapabilityTransportCodec.Serialize(definition)))
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"The module does not declare action '{definition.ActionKey.Value}:{definition.Version}'.");
+        }
+
+        var entries = Application.ActionEntries
+            .Where(item => OutOfProcessActionDescriptorIdentity.Matches(item.Descriptor, descriptor))
+            .ToArray();
+        if (entries.Length != 1)
+        {
+            throw new OutOfProcessProtocolException(
+                SidecarProtocolErrors.UnknownHostDescriptor,
+                $"The module does not declare action entry '{descriptor.Key.Value}:{descriptor.Version}'.");
+        }
+        return entries[0];
     }
 
     /// <summary>Runs one event interceptor exchange.</summary>

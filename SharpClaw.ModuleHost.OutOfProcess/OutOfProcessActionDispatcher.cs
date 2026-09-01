@@ -74,6 +74,18 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
             new NotSupportedException(
                 "External action dispatch is host-owned and cannot start from a module sidecar."));
 
+    public ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
+        ActionPipelineSnapshot snapshot,
+        SidecarExternalActionDispatchAuthority authority,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<IActionOutcome<JsonElement>>(
+            new NotSupportedException(
+                "External action dispatch is host-owned and cannot start from a module sidecar."));
+
     public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,

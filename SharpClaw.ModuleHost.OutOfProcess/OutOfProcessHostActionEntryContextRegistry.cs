@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
@@ -58,6 +59,54 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             invocationId));
     }
 
+    /// <summary>Issues a context from exact discovery metadata and canonical JSON.</summary>
+    public HostActionEntryRequestContext Issue(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+    {
+        var coordinator = Volatile.Read(ref _issueCoordinator);
+        if (coordinator is null)
+        {
+            return IssueSerializedCore(
+                ingress,
+                primaryIdentity,
+                secondaryIdentity,
+                definition,
+                descriptor,
+                action,
+                caller,
+                features,
+                traceId,
+                idempotencyKey,
+                deadline,
+                invocationId);
+        }
+
+        return coordinator(() => IssueSerializedCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            definition,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId));
+    }
+
     private HostActionEntryRequestContext IssueCore<TAction, TResult>(
         HostActionEntryIngress ingress,
         string primaryIdentity,
@@ -72,6 +121,100 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid? invocationId)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
+        var inputSchema = descriptor.InputSchema
+            ?? throw new ArgumentException(
+                "The host action descriptor must declare an input schema.",
+                nameof(descriptor));
+        var inputSchemaHash = inputSchema.ContentHash
+            ?? throw new ArgumentException(
+                "The host action descriptor must declare an input schema hash.",
+                nameof(descriptor));
+        if (string.IsNullOrWhiteSpace(inputSchemaHash))
+        {
+            throw new ArgumentException(
+                "The host action descriptor must declare an input schema hash.",
+                nameof(descriptor));
+        }
+        var payload = OutOfProcessActionDispatcher.Payload(
+            action,
+            identity.InputTypeIdentity,
+            inputSchema.Version);
+        return IssueCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            identity,
+            inputSchema,
+            payload,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+    }
+
+    private HostActionEntryRequestContext IssueSerializedCore(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                descriptor,
+                definition))
+        {
+            throw new ArgumentException(
+                "The discovered action definition does not match its transport identity.",
+                nameof(descriptor));
+        }
+        var payload = OutOfProcessActionDispatcher.Payload(
+            action,
+            descriptor.InputTypeIdentity,
+            descriptor.InputSchemaVersion);
+        return IssueCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            definition.InputSchema,
+            payload,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+    }
+
+    private HostActionEntryRequestContext IssueCore(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDescriptorIdentity identity,
+        JsonSchemaReference inputSchema,
+        SidecarSerializedPayload payload,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(inputSchema);
+        ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(features);
         ArgumentException.ThrowIfNullOrWhiteSpace(primaryIdentity);
@@ -113,25 +256,26 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 "The host action context deadline must be inside the capability binding lifetime.");
         }
 
-        var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
-        var inputSchema = descriptor.InputSchema
-            ?? throw new ArgumentException(
-                "The host action descriptor must declare an input schema.",
-                nameof(descriptor));
         var inputSchemaHash = inputSchema.ContentHash
             ?? throw new ArgumentException(
                 "The host action descriptor must declare an input schema hash.",
-                nameof(descriptor));
+                nameof(inputSchema));
         if (string.IsNullOrWhiteSpace(inputSchemaHash))
         {
             throw new ArgumentException(
                 "The host action descriptor must declare an input schema hash.",
-                nameof(descriptor));
+                nameof(inputSchema));
         }
-        var payload = OutOfProcessActionDispatcher.Payload(
-            action,
-            identity.InputTypeIdentity,
-            inputSchema.Version);
+        if (inputSchema.Version != identity.InputSchemaVersion
+            || !string.Equals(
+                inputSchemaHash,
+                identity.InputSchemaHash,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The host action input schema does not match its descriptor identity.",
+                nameof(inputSchema));
+        }
         if (!payload.IsValid
             || payload.ByteLength > binding.PayloadLimits.ActionInputBytes)
         {
@@ -388,6 +532,44 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             && context.Contribution is not null
             && lineageMatches;
     }
+
+    internal bool TryConsume(
+        SidecarActionDescriptorIdentity descriptor,
+        SidecarSerializedPayload payload,
+        HostActionEntryRequestContext context,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!_active.TryGetValue(context.CapabilityId, out var issued)
+            || !_consumed.TryAdd(context.CapabilityId, 0))
+        {
+            return false;
+        }
+
+        var binding = Volatile.Read(ref _binding);
+        return binding is not null
+            && context.IsWellFormed(now)
+            && issued.RequestId == context.RequestId
+            && issued.CancellationId == context.CancellationId
+            && HostActionEntryAuthorityValidator.SameContext(issued.Context, context)
+            && MatchesLineage(context.Contribution?.Lineage, descriptor, payload);
+    }
+
+    internal static bool MatchesLineage(
+        HostActionEntryLineage? lineage,
+        SidecarActionDescriptorIdentity descriptor,
+        SidecarSerializedPayload payload) =>
+        lineage is not null
+        && lineage.ActionKey == descriptor.Key
+        && lineage.ActionVersion == descriptor.Version
+        && string.Equals(lineage.DescriptorHash, descriptor.DescriptorHash, StringComparison.Ordinal)
+        && string.Equals(lineage.InputTypeIdentity, descriptor.InputTypeIdentity, StringComparison.Ordinal)
+        && lineage.InputSchemaVersion == descriptor.InputSchemaVersion
+        && string.Equals(lineage.InputSchemaHash, descriptor.InputSchemaHash, StringComparison.Ordinal)
+        && string.Equals(lineage.PayloadContentHash, payload.ContentHash, StringComparison.Ordinal)
+        && lineage.PayloadByteLength == payload.ByteLength;
 
     private sealed record IssuedContext(
         Guid RequestId,

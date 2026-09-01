@@ -492,6 +492,31 @@ public sealed class OutOfProcessToolLifecycleProtocolTests
             CancellationToken ct) =>
             RunAsync(descriptor, action, terminal, snapshot, ct);
 
+        public async ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+            SidecarActionDefinition definition,
+            SidecarActionDescriptorIdentity identity,
+            JsonElement action,
+            Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            new EmptyActionOutcome<JsonElement>(await terminal(
+                new ActionContext<JsonElement>(
+                    Guid.NewGuid(),
+                    null,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    0,
+                    0,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    definition.ActionKey,
+                    "test-module",
+                    new RequestPrincipal("test"),
+                    action,
+                    ExtensionFeatureSet.Empty,
+                    snapshot),
+                ct));
+
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,

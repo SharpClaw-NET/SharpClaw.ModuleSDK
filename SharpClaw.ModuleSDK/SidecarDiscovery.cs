@@ -171,6 +171,7 @@ public static class SidecarDiscoveryFactory
             action.HasIrreversibleEffects,
             action.RepeatPolicy,
             action.ContinuationPolicy,
+            action.DefaultTimeout,
             action.SafePoints,
             action.Descriptor.ProtocolVersionRange);
 

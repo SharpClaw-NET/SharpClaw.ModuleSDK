@@ -233,7 +233,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     }
 
     [Test, CancelAfter(30000)]
-    public async Task RealCoreDispatcherExecutesCrossSidecarTargetThroughRegisteredSession()
+    public async Task RealCoreDispatcherExecutesDiscoveredCrossSidecarTargetThroughRegisteredSession()
     {
         var (targetServer, targetAddress, targetToken) =
             await StartStandaloneServerAsync(
@@ -252,8 +252,24 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             targetCatalog);
         var registry = new KernelExternalAuthoritySessionRegistry();
         var graph = BuildRealCoreCrossTargetGraph();
+        var definition = targetClient.Discovery.ActionDefinitions.Single(item =>
+            item.ActionKey == CrossSidecarModule.OwnedAction.Key);
+        var entry = targetClient.Application.ActionEntries.Single(item =>
+            item.Descriptor.Key == definition.ActionKey
+            && item.Descriptor.Version == definition.Version);
         var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
-        targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        targetDescriptors.Add(definition, entry.Descriptor);
+        var actionSnapshot = new ActionPipelineSnapshot(
+            graph.ActionSnapshot.ContractHash,
+            graph.ActionSnapshot.ActionGrants
+                .Append(new ActionCapabilityGrant(
+                    definition.ActionKey,
+                    definition.Version,
+                    definition.Capabilities,
+                    SensitiveApproved: definition.ContainsSensitiveData,
+                    AcceptUnknownSchemas: false))
+                .ToArray(),
+            graph.ActionSnapshot.EventGrants);
         var targetDispatcher = CreateRealCoreDispatcher(graph, registry);
         await targetClient.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
             new EmptyStorageGateway(),
@@ -261,7 +277,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             targetClient.CreateCapabilityGrant(),
             ["unused"],
             targetDescriptors,
-            graph.ActionSnapshot,
+            actionSnapshot,
             new OutOfProcessHostActionEntryContextRegistry(),
             registry));
 
@@ -1247,6 +1263,50 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         {
             ExternalRunCalls++;
             return RunAsync(descriptor, action, terminal, snapshot, ct);
+        }
+
+        public async ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+            SidecarActionDefinition definition,
+            SidecarActionDescriptorIdentity identity,
+            JsonElement action,
+            Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct)
+        {
+            ExternalRunCalls++;
+            RunCalls++;
+            var hostContext = HostContextFactory?.Invoke();
+            JsonElement result;
+            try
+            {
+                result = await terminal(
+                    new ActionContext<JsonElement>(
+                        hostContext?.InvocationId ?? Guid.NewGuid(),
+                        hostContext?.ParentInvocationId,
+                        hostContext?.TraceId ?? Guid.NewGuid(),
+                        hostContext?.IdempotencyKey ?? Guid.NewGuid(),
+                        hostContext?.Depth ?? 0,
+                        hostContext?.Attempt ?? 1,
+                        hostContext?.Deadline ?? DateTimeOffset.UtcNow.AddMinutes(1),
+                        definition.ActionKey,
+                        ApplicationSmokeModule.Id,
+                        hostContext?.Caller ?? ApplicationSmokeModule.HostEntryCaller,
+                        action,
+                        hostContext?.Features ?? ExtensionFeatureSet.Empty,
+                        snapshot),
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                LastException = ex;
+                throw;
+            }
+            TerminalCalls++;
+            return new CountingActionOutcome<JsonElement>(
+                ActionOutcomeKind.Completed,
+                result,
+                null);
         }
 
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(

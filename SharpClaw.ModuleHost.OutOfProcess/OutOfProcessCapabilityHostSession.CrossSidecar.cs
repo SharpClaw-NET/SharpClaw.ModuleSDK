@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.ModuleHost.OutOfProcess;
@@ -263,7 +264,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
 
     internal long BindingGeneration => Session.BindingGeneration;
 
-    internal async ValueTask<OutOfProcessCrossSidecarDispatchResult> DispatchCrossSidecarAsync<TAction, TResult>(
+    internal ValueTask<OutOfProcessCrossSidecarDispatchResult> DispatchCrossSidecarAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         SidecarActionDescriptorIdentity identity,
         SidecarCrossSidecarActionEntryCarrier carrier,
@@ -273,6 +274,86 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         CancellationToken cancellationToken)
     {
         var action = Deserialize<TAction>(carrier.Action);
+        return DispatchCrossSidecarCoreAsync<TAction, TResult>(
+            action,
+            identity,
+            carrier,
+            request,
+            terminal,
+            hostContext,
+            (terminalEntry, authority, ct) =>
+                _options.ActionDispatcher.RunExternalAsync(
+                    descriptor,
+                    action,
+                    terminalEntry,
+                    _options.ActionSnapshot,
+                    authority,
+                    ct),
+            cancellationToken);
+    }
+
+    internal ValueTask<OutOfProcessCrossSidecarDispatchResult> DispatchCrossSidecarSerializedAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity,
+        SidecarCrossSidecarActionEntryCarrier carrier,
+        SidecarActionTerminalTransportRequest request,
+        SidecarActionTerminalRegistration terminal,
+        HostActionEntryRequestContext hostContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar descriptor does not match its discovery definition.");
+        }
+
+        var action = carrier.Action.Value.Clone();
+        return DispatchCrossSidecarCoreAsync<JsonElement, JsonElement>(
+            action,
+            identity,
+            carrier,
+            request,
+            terminal,
+            hostContext,
+            (terminalEntry, authority, ct) =>
+                _options.ActionDispatcher.RunExternalSerializedAsync(
+                    definition,
+                    identity,
+                    action,
+                    terminalEntry,
+                    _options.ActionSnapshot,
+                    authority,
+                    ct),
+            cancellationToken);
+    }
+
+    private async ValueTask<OutOfProcessCrossSidecarDispatchResult> DispatchCrossSidecarCoreAsync<
+        TAction,
+        TResult>(
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarCrossSidecarActionEntryCarrier carrier,
+        SidecarActionTerminalTransportRequest request,
+        SidecarActionTerminalRegistration terminal,
+        HostActionEntryRequestContext hostContext,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            SidecarExternalActionDispatchAuthority,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>> dispatch,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(carrier);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(terminal);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        ArgumentNullException.ThrowIfNull(dispatch);
         if (!terminal.IsWellFormed || terminal.TerminalId != request.TerminalId)
         {
             throw new OutOfProcessCapabilityException(
@@ -291,9 +372,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 hostContext,
                 request.Cancellation,
                 request.Invocation);
-            var outcome = await _options.ActionDispatcher.RunExternalAsync(
-                descriptor,
-                action,
+            var outcome = await dispatch(
                 async (dispatcherContext, terminalCancellation) =>
                 {
                     var dispatcherPayload = OutOfProcessActionDispatcher.Payload(
@@ -324,7 +403,6 @@ internal sealed partial class OutOfProcessCapabilityHostSession
 
                     return Deserialize<TResult>(terminalResponse.Execution.Result);
                 },
-                _options.ActionSnapshot,
                 externalAuthority,
                 cancellationToken);
 

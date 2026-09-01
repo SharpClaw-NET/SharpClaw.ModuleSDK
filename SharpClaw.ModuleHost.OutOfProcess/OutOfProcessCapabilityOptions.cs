@@ -235,6 +235,49 @@ public sealed class OutOfProcessActionDescriptorCatalog
         }
     }
 
+    /// <summary>Adds one discovered descriptor without loading its optional contract types.</summary>
+    public void Add(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new ArgumentException(
+                "The discovered action definition does not match its transport identity.",
+                nameof(identity));
+        }
+
+        var registration = new Registration(
+            identity,
+            definition,
+            typeof(JsonElement),
+            typeof(JsonElement),
+            (session, request, cancellationToken) =>
+                session.DispatchSerializedAsync(
+                    definition,
+                    identity,
+                    request,
+                    cancellationToken),
+            (session, carrier, request, terminal, hostContext, cancellationToken) =>
+                session.DispatchCrossSidecarSerializedAsync(
+                    definition,
+                    identity,
+                    carrier,
+                    request,
+                    terminal,
+                    hostContext,
+                    cancellationToken));
+        if (!_registrations.TryAdd(Key(identity), registration))
+        {
+            throw new InvalidOperationException(
+                $"The host action descriptor '{identity.Key.Value}:{identity.Version}' is already registered.");
+        }
+    }
+
     internal bool TryGet(
         SidecarActionDescriptorIdentity identity,
         out Registration registration)
