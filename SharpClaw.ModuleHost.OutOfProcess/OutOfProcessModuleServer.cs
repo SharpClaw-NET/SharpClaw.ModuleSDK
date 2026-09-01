@@ -524,6 +524,13 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
             routeLease.Context.CapabilityId,
             routeLease.Call);
         await using var scope = _runtime.Services.CreateAsyncScope();
+        var effectiveRequest = request with
+        {
+            Invocation = request.Invocation with
+            {
+                HostActionContext = routeLease.Context,
+            },
+        };
         var completion = HostActionEntryCarrierCompletionKind.Failed;
         try
         {
@@ -553,7 +560,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                 }
 
                 result = await handler.InvokeAsync(
-                    request,
+                    effectiveRequest,
                     scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
                     linked.Token);
             }
@@ -578,7 +585,7 @@ public sealed class OutOfProcessModuleServer : IAsyncDisposable
                     .OpenImportedEndpointWebSocketChannel(routeLease);
                 await channel.AnnounceReadyAsync(linked.Token);
                 await handler.InvokeAsync(
-                    request,
+                    effectiveRequest,
                     channel,
                     scope.ServiceProvider.GetRequiredService<IHostActionEntry>(),
                     linked.Token);

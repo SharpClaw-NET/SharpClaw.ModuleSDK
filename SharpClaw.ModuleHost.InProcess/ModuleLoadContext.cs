@@ -22,11 +22,16 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
     /// the runtime would load a second copy and casts like
     /// <c>obj is ISharpClawModule</c> would fail with a type mismatch.
     /// </summary>
-    private static readonly string[] HostSharedPrefixes =
+    private static readonly HashSet<string> HostSharedAssemblyNames =
+        new(StringComparer.Ordinal)
     {
         "SharpClaw.Contracts",
         "SharpClaw.ModuleSDK",
         "SharpClaw.ModuleHost.InProcess",
+    };
+
+    private static readonly string[] HostSharedPrefixes =
+    {
         "Microsoft.Extensions.",
         "Microsoft.AspNetCore.",
         "Microsoft.EntityFrameworkCore",
@@ -54,13 +59,14 @@ public sealed class ModuleLoadContext : AssemblyLoadContext
         // module ships next to itself, causing type identity mismatches.
         if (name.Name is { Length: > 0 } shortName)
         {
+            if (HostSharedAssemblyNames.Contains(shortName))
+                return null;
+
             for (var i = 0; i < HostSharedPrefixes.Length; i++)
             {
                 var prefix = HostSharedPrefixes[i];
-                if (prefix.EndsWith('.')
-                    ? shortName.StartsWith(prefix, StringComparison.Ordinal)
-                    : shortName.Equals(prefix, StringComparison.Ordinal)
-                      || shortName.StartsWith(prefix + ".", StringComparison.Ordinal))
+                if (shortName.Equals(prefix, StringComparison.Ordinal)
+                    || shortName.StartsWith(prefix, StringComparison.Ordinal))
                 {
                     return null;
                 }

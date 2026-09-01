@@ -11,6 +11,85 @@ public sealed record OutOfProcessActionResult(
     HookCompleted Completion,
     ContinuationToken? Continuation);
 
+/// <summary>Owns one validated sidecar discovery until the host authorizes it.</summary>
+public sealed class OutOfProcessModuleDiscovery : IAsyncDisposable
+{
+    private HttpClient? _httpClient;
+    private readonly Uri _controlAddress;
+    private readonly string _controlToken;
+
+    internal OutOfProcessModuleDiscovery(
+        Uri controlAddress,
+        string controlToken,
+        HttpClient httpClient,
+        SidecarDiscoveryEnvelope discovery,
+        IReadOnlyList<ModuleStorageContractDescriptor> storageContracts,
+        SidecarApplicationDiscovery application)
+    {
+        _controlAddress = controlAddress;
+        _controlToken = controlToken;
+        _httpClient = httpClient;
+        Discovery = discovery;
+        StorageContracts = storageContracts;
+        Application = application;
+    }
+
+    public SidecarDiscoveryEnvelope Discovery { get; }
+
+    public IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts { get; }
+
+    public SidecarApplicationDiscovery Application { get; }
+
+    public async Task<OutOfProcessModuleClient> AuthorizeAsync(
+        SidecarHostDescriptorCatalog hostCatalog,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(hostCatalog);
+        var http = Interlocked.Exchange(ref _httpClient, null)
+            ?? throw new InvalidOperationException("The sidecar discovery was already consumed.");
+        try
+        {
+            var authorization = SidecarAuthorizationFactory.Create(Discovery, hostCatalog);
+            var decision = SidecarMessageHeaderFactory.CreateMeasured(
+                hostCatalog.NegotiatedProtocolVersion,
+                sequence: 2,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                hostCatalog.PayloadLimits.ProtocolMessageBytes,
+                header => new SidecarDiscoveryDecision(
+                    header,
+                    Discovery.ModuleId,
+                    Accepted: true,
+                    authorization));
+            using var response = await http.PostAsJsonAsync(
+                OutOfProcessModuleHostProtocol.AuthorizationPath,
+                decision,
+                OutOfProcessProtocolCodec.JsonOptions,
+                ct);
+            response.EnsureSuccessStatusCode();
+            return new OutOfProcessModuleClient(
+                _controlAddress,
+                _controlToken,
+                http,
+                Discovery,
+                StorageContracts,
+                Application,
+                authorization,
+                hostCatalog.PayloadLimits);
+        }
+        catch
+        {
+            http.Dispose();
+            throw;
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        Interlocked.Exchange(ref _httpClient, null)?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}
+
 /// <summary>Invokes one authorized .NET module sidecar.</summary>
 public sealed class OutOfProcessModuleClient : IAsyncDisposable
 {
@@ -21,7 +100,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
     private Task? _capabilityRun;
     private OutOfProcessHostActionEntryContextRegistry? _hostActionEntryContexts;
 
-    private OutOfProcessModuleClient(
+    internal OutOfProcessModuleClient(
         Uri controlAddress,
         string controlToken,
         HttpClient httpClient,
@@ -87,9 +166,12 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId = null)
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
     {
-        var context = CapabilitySession.IssueHostActionEntryContext(
+        var context = HostActionEntryContexts.Issue(
             ingress,
             primaryIdentity,
             secondaryIdentity,
@@ -100,7 +182,10 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             traceId,
             idempotencyKey,
             deadline,
-            invocationId);
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
         CapabilitySession.RequestRotationRetry();
         return context;
     }
@@ -118,10 +203,13 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId = null)
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
     {
         RequireActionEntry(definition, descriptor);
-        var context = CapabilitySession.IssueHostActionEntryContext(
+        var context = HostActionEntryContexts.Issue(
             ingress,
             primaryIdentity,
             secondaryIdentity,
@@ -133,7 +221,19 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
             traceId,
             idempotencyKey,
             deadline,
-            invocationId);
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
+        CapabilitySession.RequestRotationRetry();
+        return context;
+    }
+
+    /// <summary>Reissues one host-owned Tool context inside this sidecar binding.</summary>
+    public HostActionEntryRequestContext IssueToolCarrier(
+        HostActionEntryRequestContext source)
+    {
+        var context = HostActionEntryContexts.IssueToolCarrier(source);
         CapabilitySession.RequestRotationRetry();
         return context;
     }
@@ -167,9 +267,18 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         SidecarHostDescriptorCatalog hostCatalog,
         CancellationToken ct = default)
     {
+        await using var discovery = await DiscoverAsync(controlAddress, controlToken, ct);
+        return await discovery.AuthorizeAsync(hostCatalog, ct);
+    }
+
+    /// <summary>Reads and validates one sidecar discovery without issuing authority.</summary>
+    public static async Task<OutOfProcessModuleDiscovery> DiscoverAsync(
+        Uri controlAddress,
+        string controlToken,
+        CancellationToken ct = default)
+    {
         ArgumentNullException.ThrowIfNull(controlAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(controlToken);
-        ArgumentNullException.ThrowIfNull(hostCatalog);
         var http = new HttpClient
         {
             BaseAddress = controlAddress,
@@ -189,32 +298,13 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     "The sidecar returned no discovery envelope.");
             var discovery = document.ToDiscovery();
             ValidateApplicationDiscovery(discovery, document.Application);
-            var authorization = SidecarAuthorizationFactory.Create(discovery, hostCatalog);
-            var decision = SidecarMessageHeaderFactory.CreateMeasured(
-                hostCatalog.NegotiatedProtocolVersion,
-                sequence: 2,
-                DateTimeOffset.UtcNow.AddMinutes(1),
-                hostCatalog.PayloadLimits.ProtocolMessageBytes,
-                header => new SidecarDiscoveryDecision(
-                    header,
-                    discovery.ModuleId,
-                    Accepted: true,
-                    authorization));
-            using var response = await http.PostAsJsonAsync(
-                OutOfProcessModuleHostProtocol.AuthorizationPath,
-                decision,
-                OutOfProcessProtocolCodec.JsonOptions,
-                ct);
-            response.EnsureSuccessStatusCode();
-            return new OutOfProcessModuleClient(
+            return new OutOfProcessModuleDiscovery(
                 controlAddress,
                 controlToken,
                 http,
                 discovery,
                 document.StorageContracts,
-                document.Application,
-                authorization,
-                hostCatalog.PayloadLimits);
+                document.Application);
         }
         catch
         {
@@ -480,7 +570,8 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
                     HostLimits,
                     options,
                     Authorization,
-                    Application);
+                    Application,
+                    Discovery.ToolHandlers);
                 options.HostActionEntryContexts.Bind(
                     binding,
                     session.IssueHostActionEntryContext,

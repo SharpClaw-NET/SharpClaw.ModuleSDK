@@ -15,6 +15,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private readonly OutOfProcessCapabilityHostOptions _options;
     private readonly SidecarHostAuthorization _authorization;
     private readonly SidecarApplicationDiscovery _application;
+    private readonly IReadOnlyList<SidecarToolHandlerDefinition> _toolHandlers;
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
     private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
     private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
@@ -96,7 +97,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarPayloadLimits limits,
         OutOfProcessCapabilityHostOptions options,
         SidecarHostAuthorization authorization,
-        SidecarApplicationDiscovery application)
+        SidecarApplicationDiscovery application,
+        IReadOnlyList<SidecarToolHandlerDefinition> toolHandlers)
     {
         _socket = socket;
         _controlToken = controlToken;
@@ -104,6 +106,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         _options = options;
         _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
         _application = application ?? throw new ArgumentNullException(nameof(application));
+        _toolHandlers = toolHandlers ?? throw new ArgumentNullException(nameof(toolHandlers));
         if (!string.Equals(application.ModuleId, binding.ModuleId, StringComparison.Ordinal)
             || !string.Equals(application.ContractHash, binding.GraphId, StringComparison.Ordinal))
         {
@@ -2146,7 +2149,14 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             return false;
         }
 
-        var lineage = request.HostContext.Contribution?.Lineage;
+        return MatchesModuleActionLineage(request)
+            || IsAuthorizedApplicationCarrierChild(request);
+    }
+
+    private static bool MatchesModuleActionLineage(
+        SidecarActionCapabilityRequest request)
+    {
+        var lineage = request.HostContext?.Contribution?.Lineage;
         return lineage is not null
             && lineage.ActionKey == request.Descriptor.Key
             && lineage.ActionVersion == request.Descriptor.Version
@@ -2166,8 +2176,55 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             && string.Equals(
                 lineage.PayloadContentHash,
                 request.Action.ContentHash,
-                StringComparison.Ordinal)
+                StringComparison.OrdinalIgnoreCase)
             && lineage.PayloadByteLength == request.Action.ByteLength;
+    }
+
+    private bool IsAuthorizedApplicationCarrierChild(
+        SidecarActionCapabilityRequest request)
+    {
+        var context = request.HostContext;
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry
+            || request.NestedCarrier is not null
+            || request.CrossSidecarCarrier is not null
+            || request.Snapshot is not null
+            || context?.Contribution is null
+            || request.Terminal is not { IsWellFormed: true }
+            || !IsApplicationGraphBoundToSession()
+            || !Session.TryGetActiveHostActionEntryContext(
+                context.CapabilityId,
+                out var activeContext)
+            || activeContext is null
+            || !HostActionEntryAuthorityValidator.SameContextIgnoringPayload(
+                activeContext with
+                {
+                    RequestId = context.RequestId,
+                    CancellationId = context.CancellationId,
+                },
+                context)
+            || !Session.TryGetActiveHostActionEntryCarrier(
+                context.CapabilityId,
+                out var activeCarrier)
+            || activeCarrier is null
+            || activeCarrier.Carrier.Ingress != context.Ingress
+            || activeCarrier.Carrier.InvocationId != context.InvocationId
+            || activeCarrier.Carrier.Contribution != context.Contribution.IngressBinding)
+        {
+            return false;
+        }
+
+        var identity = context.Contribution.IngressBinding.PrimaryIdentity;
+        return context.Ingress switch
+        {
+            HostActionEntryIngress.Cli => _application.CliCommands.Any(command =>
+                string.Equals(command.Descriptor.Name, identity, StringComparison.Ordinal)
+                || command.Descriptor.Aliases.Contains(identity, StringComparer.Ordinal)),
+            HostActionEntryIngress.Tool => _toolHandlers.Any(tool =>
+                string.Equals(tool.ToolName, identity, StringComparison.Ordinal)),
+            HostActionEntryIngress.Endpoint => _application.Endpoints.Any(endpoint =>
+                string.Equals(endpoint.Descriptor.Id, identity, StringComparison.Ordinal)),
+            _ => false,
+        };
     }
 
     private bool IsModuleOwnedNestedHostActionAuthorized(
@@ -2233,7 +2290,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 request,
                 _session.Binding,
                 DateTimeOffset.UtcNow,
-                ValidateTerminalAuthority);
+                ValidateTerminalAuthority,
+                IsAuthorizedApplicationCarrierChild);
             if (!validation.Accepted)
             {
                 await SendActionFailureAsync(request, validation.Code, validation.Message, channelCt);
@@ -2277,12 +2335,19 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             }
             else
             {
-                var contractRequest = request.HostContext is null
+                var contractContext = request.HostContext is not null
+                    && IsAuthorizedApplicationCarrierChild(request)
+                        ? OutOfProcessHostActionEntryContextRegistry.BindContributionLineage(
+                            request.HostContext,
+                            request.Descriptor,
+                            request.Action)
+                        : request.HostContext;
+                var contractRequest = contractContext is null
                     ? request
                     : request with
                     {
                         HostContext = OutOfProcessHostActionEntryContextRegistry
-                            .WithoutPayloadBinding(request.HostContext),
+                            .WithoutPayloadBinding(contractContext),
                     };
                 begin = Session.BeginActionCall(
                     contractRequest,
@@ -3070,10 +3135,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         : 0);
             }
 
-            var context = request.HostContext
+            var initiatingContext = request.HostContext
                 ?? throw new OutOfProcessCapabilityException(
                     SidecarCapabilityErrors.Unauthorized,
                     "The host action request has no host context.");
+            var hostContext = IsAuthorizedApplicationCarrierChild(request)
+                ? OutOfProcessHostActionEntryContextRegistry.BindContributionLineage(
+                    initiatingContext,
+                    request.Descriptor,
+                    request.Action)
+                : initiatingContext;
             if (request.Terminal is null || !request.Terminal.IsWellFormed)
             {
                 throw new OutOfProcessCapabilityException(
@@ -3081,7 +3152,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                     "The host action request has no valid terminal registration.");
             }
 
-            validateHostEntry(context);
+            validateHostEntry(hostContext);
 
             var hostAuthority = CreateExternalActionDispatchAuthority(
                 identity,
@@ -3089,15 +3160,15 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                 action,
                 request.Action,
                 request.Terminal,
-                context,
+                hostContext,
                 request.Cancellation,
                 request.Invocation);
             var hostOutcome = await dispatchExternal(
-                    (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                    (dispatcherContext, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
                         request,
                         identity,
-                        context,
-                        request.HostContext,
+                        dispatcherContext,
+                        hostContext,
                         terminalCancellation),
                 hostAuthority,
                 ct);
@@ -3149,7 +3220,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             descriptor,
             action,
             context);
-        if (!_options.HostActionEntryContexts.TryConsume(
+        if (!IsAuthorizedApplicationCarrierChild(request)
+            && !_options.HostActionEntryContexts.TryConsume(
                 entryRequest,
                 DateTimeOffset.UtcNow))
         {
@@ -3195,7 +3267,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
         SidecarActionCapabilityRequest request,
         HostActionEntryRequestContext context)
     {
-        if (!_options.HostActionEntryContexts.TryConsume(
+        if (!IsAuthorizedApplicationCarrierChild(request)
+            && !_options.HostActionEntryContexts.TryConsume(
                 identity,
                 request.Action,
                 context,

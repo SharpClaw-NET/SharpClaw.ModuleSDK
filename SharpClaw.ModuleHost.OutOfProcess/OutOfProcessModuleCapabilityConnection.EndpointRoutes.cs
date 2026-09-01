@@ -440,9 +440,7 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection
 
         foreach (var candidate in _activeEndpointRouteStates.Values)
         {
-            var routeContext = candidate.Relay.Request?.Invocation?.HostActionContext;
-            if (routeContext is null ||
-                !SidecarCapabilityTransportCodec.Serialize(routeContext).SequenceEqual(
+            if (!SidecarCapabilityTransportCodec.Serialize(candidate.Context).SequenceEqual(
                     SidecarCapabilityTransportCodec.Serialize(sourceContext)))
                 continue;
 

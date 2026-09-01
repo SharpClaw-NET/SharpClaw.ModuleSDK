@@ -110,13 +110,26 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
             && HostActionEntryAuthorityValidator.MatchesDescriptorLineage(
                 contribution.Lineage,
                 request.Descriptor);
+        var activeCarrierChild = context is not null
+            && _parentTerminalRequest is null
+            && _transport.ActiveCarrierId == context.CapabilityId
+            && context.Ingress is HostActionEntryIngress.Cli or HostActionEntryIngress.Tool;
+        if (context is not null
+            && _parentTerminalRequest is null
+            && context.Ingress == HostActionEntryIngress.Endpoint
+            && _transport.ActiveCarrierId == context.CapabilityId
+            && _transport.TryGetActiveEndpointRoute(context, out var endpointRoute)
+            && endpointRoute is not null)
+        {
+            activeCarrierChild = true;
+        }
         if (context is null
             || context.Ingress != HostActionEntryIngress.Tool
                 && context.Ingress != HostActionEntryIngress.Cli
                 && context.Ingress != HostActionEntryIngress.Endpoint
                 && context.Ingress != HostActionEntryIngress.CrossModule
             || context.Contribution is null
-            || !lineageMatches)
+            || !lineageMatches && !activeCarrierChild)
         {
             throw new OutOfProcessCapabilityException(
                 SharpClaw.Contracts.Modules.SidecarCapabilityErrors.SpoofedIdentity,

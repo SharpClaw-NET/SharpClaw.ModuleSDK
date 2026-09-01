@@ -26,7 +26,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId = null)
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
     {
         var coordinator = Volatile.Read(ref _issueCoordinator);
         if (coordinator is null)
@@ -42,7 +45,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 traceId,
                 idempotencyKey,
                 deadline,
-                invocationId);
+                invocationId,
+                parentInvocationId,
+                depth,
+                attempt);
         }
 
         return coordinator(() => IssueCore(
@@ -56,7 +62,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             traceId,
             idempotencyKey,
             deadline,
-            invocationId));
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt));
     }
 
     /// <summary>Issues a context from exact discovery metadata and canonical JSON.</summary>
@@ -72,7 +81,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId = null)
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
     {
         var coordinator = Volatile.Read(ref _issueCoordinator);
         if (coordinator is null)
@@ -89,7 +101,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 traceId,
                 idempotencyKey,
                 deadline,
-                invocationId);
+                invocationId,
+                parentInvocationId,
+                depth,
+                attempt);
         }
 
         return coordinator(() => IssueSerializedCore(
@@ -104,7 +119,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             traceId,
             idempotencyKey,
             deadline,
-            invocationId));
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt));
     }
 
     private HostActionEntryRequestContext IssueCore<TAction, TResult>(
@@ -118,7 +136,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId)
+        Guid? invocationId,
+        Guid? parentInvocationId,
+        int depth,
+        int attempt)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         var identity = OutOfProcessActionDescriptorIdentity.Create(descriptor);
@@ -152,7 +173,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             traceId,
             idempotencyKey,
             deadline,
-            invocationId);
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
     }
 
     private HostActionEntryRequestContext IssueSerializedCore(
@@ -167,7 +191,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId)
+        Guid? invocationId,
+        Guid? parentInvocationId,
+        int depth,
+        int attempt)
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(descriptor);
@@ -195,7 +222,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             traceId,
             idempotencyKey,
             deadline,
-            invocationId);
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
     }
 
     private HostActionEntryRequestContext IssueCore(
@@ -210,7 +240,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         Guid traceId,
         Guid idempotencyKey,
         DateTimeOffset deadline,
-        Guid? invocationId)
+        Guid? invocationId,
+        Guid? parentInvocationId,
+        int depth,
+        int attempt)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(inputSchema);
@@ -226,6 +259,10 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                 "The host action context idempotency key is required.",
                 nameof(idempotencyKey));
         }
+        if (depth < 0)
+            throw new ArgumentOutOfRangeException(nameof(depth));
+        if (attempt < 1)
+            throw new ArgumentOutOfRangeException(nameof(attempt));
         if (ingress == HostActionEntryIngress.CrossModule)
             ArgumentException.ThrowIfNullOrWhiteSpace(secondaryIdentity);
         if (ingress == HostActionEntryIngress.Tool
@@ -325,6 +362,9 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             binding.ExpiresAt)
         {
             Contribution = contextRequestContribution,
+            ParentInvocationId = parentInvocationId,
+            Depth = depth,
+            Attempt = attempt,
         };
         var context = issuer(request) with
         {
@@ -343,6 +383,88 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
         {
             throw new InvalidOperationException(
                 "The host action context identifier was reused.");
+        }
+
+        return context;
+    }
+
+    /// <summary>Reissues one validated Tool carrier inside this capability binding.</summary>
+    public HostActionEntryRequestContext IssueToolCarrier(
+        HostActionEntryRequestContext source)
+    {
+        var coordinator = Volatile.Read(ref _issueCoordinator);
+        return coordinator is null
+            ? IssueToolCarrierCore(source)
+            : coordinator(() => IssueToolCarrierCore(source));
+    }
+
+    private HostActionEntryRequestContext IssueToolCarrierCore(
+        HostActionEntryRequestContext source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var now = DateTimeOffset.UtcNow;
+        var contribution = source.Contribution;
+        if (!source.IsWellFormed(now)
+            || source.Ingress != HostActionEntryIngress.Tool
+            || contribution is null
+            || contribution.IngressBinding.Ingress != HostActionEntryIngress.Tool)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The source Tool action context is invalid.");
+        }
+
+        var binding = Volatile.Read(ref _binding)
+            ?? throw new InvalidOperationException(
+                "The capability binding must be accepted before issuing a Tool carrier.");
+        var issuer = Volatile.Read(ref _issuer)
+            ?? throw new InvalidOperationException(
+                "The capability session must be ready before issuing a Tool carrier.");
+        if (source.Deadline > binding.ExpiresAt)
+        {
+            throw new OutOfProcessCapabilityException(
+                SharpClaw.Contracts.Modules.SidecarCapabilityErrors.Expired,
+                "The Tool action deadline exceeds the capability binding lifetime.");
+        }
+
+        var lineage = contribution.Lineage;
+        var request = new HostActionEntryContextRequest(
+            HostActionEntryIngress.Tool,
+            source.InvocationId,
+            binding.RequestId,
+            binding.CancellationId,
+            source.Caller,
+            source.Features,
+            source.TraceId,
+            source.IdempotencyKey,
+            source.Deadline,
+            binding.ExpiresAt)
+        {
+            Contribution = new HostActionEntryContribution(
+                contribution.IngressBinding,
+                lineage with
+                {
+                    PayloadContentHash = null,
+                    PayloadByteLength = null,
+                }),
+            ParentInvocationId = source.ParentInvocationId,
+            Depth = source.Depth,
+            Attempt = source.Attempt,
+        };
+        var context = issuer(request) with { Contribution = contribution };
+        if (!context.IsWellFormed(now)
+            || context.Ingress != HostActionEntryIngress.Tool
+            || context.InvocationId != source.InvocationId)
+        {
+            throw new InvalidOperationException(
+                "The capability session did not issue the requested Tool carrier.");
+        }
+
+        if (!_issued.TryAdd(
+                context.CapabilityId,
+                new IssuedContext(binding.RequestId, binding.CancellationId, context)))
+        {
+            throw new InvalidOperationException("The Tool carrier capability identifier was reused.");
         }
 
         return context;
@@ -506,6 +628,35 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
                     PayloadContentHash = null,
                     PayloadByteLength = null,
                 },
+            },
+        };
+    }
+
+    internal static HostActionEntryRequestContext BindContributionLineage(
+        HostActionEntryRequestContext context,
+        SidecarActionDescriptorIdentity descriptor,
+        SidecarSerializedPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(payload);
+        var contribution = context.Contribution
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The application carrier child has no contribution authority.");
+        return context with
+        {
+            Contribution = contribution with
+            {
+                Lineage = new HostActionEntryLineage(
+                    descriptor.Key,
+                    descriptor.Version,
+                    descriptor.DescriptorHash,
+                    descriptor.InputTypeIdentity,
+                    descriptor.InputSchemaVersion,
+                    descriptor.InputSchemaHash,
+                    payload.ContentHash,
+                    payload.ByteLength),
             },
         };
     }

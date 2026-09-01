@@ -22,7 +22,11 @@ public sealed class OutOfProcessCrossSidecarActionEntryCatalog
 
         lock (_sync)
         {
-            foreach (var entry in target.Application.ActionEntries)
+            var hostDrivenTerminals = target.Application.Chat
+                .Select(item => item.TerminalId)
+                .ToHashSet();
+            foreach (var entry in target.Application.ActionEntries.Where(item =>
+                         !hostDrivenTerminals.Contains(item.TerminalId)))
             {
                 if (!string.Equals(entry.ModuleId, target.Discovery.ModuleId, StringComparison.Ordinal)
                     || !string.Equals(entry.ContractHash, target.Discovery.ContractHash, StringComparison.Ordinal))

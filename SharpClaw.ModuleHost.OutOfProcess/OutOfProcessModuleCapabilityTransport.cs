@@ -707,6 +707,8 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
         public SidecarActionCapabilityRequest? ResolvedRequest { get; set; }
 
         public bool SessionCallStarted { get; set; }
+
+        public bool IsApplicationCarrierChild { get; init; }
     }
 
     private sealed class IncomingAction(CancellationTokenSource cancellation)
@@ -1180,6 +1182,7 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
             var pending = new PendingAction(request, terminal, completion)
             {
                 SessionCallStarted = !deferredRootHostEntry,
+                IsApplicationCarrierChild = IsActiveApplicationCarrierChild(request),
             };
             if (!_actions.TryAdd(request.Call.CallId, pending))
             {
@@ -1898,7 +1901,21 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
             }
 
         var validationRequest = pending.Request;
-        if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
+        if (pending.IsApplicationCarrierChild)
+        {
+            var context = pending.Request.HostContext
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The application carrier child has no host context.");
+            validationRequest = pending.Request with
+            {
+                HostContext = OutOfProcessHostActionEntryContextRegistry.BindContributionLineage(
+                    context,
+                    pending.Request.Descriptor,
+                    pending.Request.Action),
+            };
+        }
+        else if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
             && pending.Request.NestedCarrier is not null)
         {
             var terminal = pending.Request.Terminal
@@ -1928,14 +1945,14 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
             (authority, proof) => ValidateTerminalAuthority(authority, proof));
         ThrowIfRejected(validation);
         pending.ResolvedRequest = validationRequest;
-        if (pending.Request.Invocation == SidecarActionInvocationKind.HostEntry
-            && pending.Request.NestedCarrier is null
-            && pending.Request.HostContext is { } initiatingContext)
+        if (validationRequest.Invocation == SidecarActionInvocationKind.HostEntry
+            && validationRequest.NestedCarrier is null
+            && validationRequest.HostContext is { } initiatingContext)
         {
             await _rootRelayImportGate.WaitAsync(ct);
             try
             {
-                var terminal = pending.Request.Terminal
+                var terminal = validationRequest.Terminal
                     ?? throw new OutOfProcessCapabilityException(
                         SidecarCapabilityErrors.MalformedMessage,
                         "The root action has no terminal registration.");
@@ -1973,7 +1990,7 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                         "The receiving root HostEntry relay returned no authenticated context.");
                 }
 
-                var rootRequest = pending.Request with
+                var rootRequest = validationRequest with
                 {
                     Call = request.Call,
                     Action = request.EffectiveAction,
@@ -3407,8 +3424,24 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
             request,
             Binding,
             DateTimeOffset.UtcNow,
-            ValidateTerminalAuthority);
+            ValidateTerminalAuthority,
+            IsActiveApplicationCarrierChild);
         ThrowIfRejected(validation);
+    }
+
+    private bool IsActiveApplicationCarrierChild(
+        SidecarActionCapabilityRequest request)
+    {
+        var context = request.HostContext;
+        return request.Invocation == SidecarActionInvocationKind.HostEntry
+            && request.NestedCarrier is null
+            && request.CrossSidecarCarrier is null
+            && request.Snapshot is null
+            && request.Terminal is { IsWellFormed: true }
+            && context is not null
+            && context.Contribution is not null
+            && context.Ingress is HostActionEntryIngress.Cli or HostActionEntryIngress.Tool
+            && _transport.ActiveCarrierId == context.CapabilityId;
     }
 
     private static bool CrossSidecarOutcomeMatchesDescriptor(

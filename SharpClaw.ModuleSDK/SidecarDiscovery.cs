@@ -154,6 +154,9 @@ public static class SidecarDiscoveryFactory
             hook.VersionRange,
             hook.PayloadSchema,
             hook.RequestedCapabilities,
+            hook.Kind == ModuleEventHookKind.Interceptor
+                ? SidecarEventSubscriptionKind.Interceptor
+                : SidecarEventSubscriptionKind.Listener,
             hook.Delivery,
             hook.PayloadMode,
             hook.Ordering,

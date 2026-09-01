@@ -76,6 +76,52 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task HostDrivenChatEntriesAreNotCrossSidecarTargets()
+    {
+        var (server, address, token) = await StartStandaloneServerAsync(
+            "chat-target",
+            new ChatLifecycleSmokeModule().Identity.Id,
+            typeof(ChatLifecycleSmokeModule));
+        await using var ownedServer = server;
+        await using var client = await OutOfProcessModuleClient.CreateAuthorizedAsync(
+            address,
+            token,
+            new SidecarHostDescriptorCatalog(
+                [],
+                [],
+                OutOfProcessModuleHostProtocol.Version,
+                new SidecarPayloadLimits()));
+        var catalog = new OutOfProcessCrossSidecarActionEntryCatalog();
+
+        catalog.Add(client);
+        await using var proxy = new OutOfProcessModuleProxy(
+            new ModuleIdentity(
+                client.Discovery.ModuleId,
+                "Chat Lifecycle Smoke",
+                "chat_smoke"),
+            client);
+
+        client.Application.Chat.Should().NotBeEmpty();
+        foreach (var contribution in client.Application.Chat)
+        {
+            var definition = client.Discovery.ActionDefinitions.Single(item =>
+                item.ActionKey == contribution.Descriptor.Key
+                && item.Version == contribution.Descriptor.Version);
+            proxy.Authorization.ActionGrants.Should().ContainSingle(grant =>
+                grant.ActionKey == definition.ActionKey
+                && grant.ActionVersion == definition.Version
+                && grant.Capabilities == definition.Capabilities
+                && grant.SensitiveApproved == definition.ContainsSensitiveData
+                && !grant.AcceptUnknownSchemas);
+        }
+        client.Application.Chat.All(item =>
+            !catalog.TryResolve(
+                item.Descriptor.Key,
+                item.Descriptor.Version,
+                out _)).Should().BeTrue();
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CrossSidecarActionUsesTargetDescriptorAndTerminal()
     {
         _targetDispatcher.Reset();
@@ -729,12 +775,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         var directory = Path.Combine(_root, name + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var assemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
-        var displayName = moduleType == typeof(ApplicationSmokeModule)
-            ? "Application Smoke"
-            : "Cross Sidecar Target";
-        var toolPrefix = moduleType == typeof(ApplicationSmokeModule)
-            ? "appsmoke"
-            : "cross-target";
+        var identity = ((ISharpClawModule)Activator.CreateInstance(moduleType)!).Identity;
+        var displayName = identity.DisplayName;
+        var toolPrefix = identity.ToolPrefix;
         var requestedHooks = moduleType == typeof(ApplicationSmokeModule)
             ? """
               [
@@ -806,12 +849,9 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         var directory = Path.Combine(_root, name + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var assemblyName = Path.GetFileName(typeof(ApplicationSmokeModule).Assembly.Location);
-        var displayName = moduleType == typeof(ApplicationSmokeModule)
-            ? "Application Smoke"
-            : "Cross Sidecar Target";
-        var toolPrefix = moduleType == typeof(ApplicationSmokeModule)
-            ? "appsmoke"
-            : "cross-target";
+        var identity = ((ISharpClawModule)Activator.CreateInstance(moduleType)!).Identity;
+        var displayName = identity.DisplayName;
+        var toolPrefix = identity.ToolPrefix;
         File.Copy(
             typeof(ApplicationSmokeModule).Assembly.Location,
             Path.Combine(directory, assemblyName),
