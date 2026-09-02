@@ -2,10 +2,10 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.ModuleSDK</PackageId>
-    <Version>0.5.0-beta.21</Version>
+    <Version>0.5.0-beta.22</Version>
     <AssemblyVersion>0.5.0.0</AssemblyVersion>
     <FileVersion>0.5.0.0</FileVersion>
-    <InformationalVersion>0.5.0-beta.21</InformationalVersion>
+    <InformationalVersion>0.5.0-beta.22</InformationalVersion>
     <Authors>mkn8rn</Authors>
     <Description>Builds and validates SharpClaw module contribution graphs for in-process and out-of-process .NET module hosts.</Description>
     <PackageTags>sharpclaw;modules;sdk;hooks;actions;events</PackageTags>
@@ -17,7 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.39]" />
+    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.40]" />
   </ItemGroup>
 
   <ItemGroup>

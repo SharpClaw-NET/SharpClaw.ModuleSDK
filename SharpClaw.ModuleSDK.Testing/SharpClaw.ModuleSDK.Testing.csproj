@@ -2,10 +2,10 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.ModuleSDK.Testing</PackageId>
-    <Version>0.5.0-beta.16</Version>
+    <Version>0.5.0-beta.17</Version>
     <AssemblyVersion>0.5.0.0</AssemblyVersion>
     <FileVersion>0.5.0.0</FileVersion>
-    <InformationalVersion>0.5.0-beta.16</InformationalVersion>
+    <InformationalVersion>0.5.0-beta.17</InformationalVersion>
     <Authors>mkn8rn</Authors>
     <Description>Runs SharpClaw module action and event graphs against the production Core dispatcher in isolated tests.</Description>
     <PackageTags>sharpclaw;modules;sdk;testing;conformance</PackageTags>
@@ -17,8 +17,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.39]" />
-    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-beta.35]" />
+    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-beta.40]" />
+    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-beta.36]" />
   </ItemGroup>
 
   <ItemGroup>
