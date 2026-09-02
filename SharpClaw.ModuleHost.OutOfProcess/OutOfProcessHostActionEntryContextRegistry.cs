@@ -68,6 +68,41 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             attempt));
     }
 
+    internal HostActionEntryRequestContext IssueWithinBinding<TAction, TResult>(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
+    {
+        var coordinator = Volatile.Read(ref _issueCoordinator);
+        HostActionEntryRequestContext Issue() => IssueCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            BoundToActiveBinding(deadline),
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
+        return coordinator is null ? Issue() : coordinator(Issue);
+    }
+
     /// <summary>Issues a context from exact discovery metadata and canonical JSON.</summary>
     public HostActionEntryRequestContext Issue(
         HostActionEntryIngress ingress,
@@ -123,6 +158,51 @@ public sealed class OutOfProcessHostActionEntryContextRegistry
             parentInvocationId,
             depth,
             attempt));
+    }
+
+    internal HostActionEntryRequestContext IssueWithinBinding(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1)
+    {
+        var coordinator = Volatile.Read(ref _issueCoordinator);
+        HostActionEntryRequestContext Issue() => IssueSerializedCore(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            definition,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            BoundToActiveBinding(deadline),
+            invocationId,
+            parentInvocationId,
+            depth,
+            attempt);
+        return coordinator is null ? Issue() : coordinator(Issue);
+    }
+
+    private DateTimeOffset BoundToActiveBinding(DateTimeOffset deadline)
+    {
+        var binding = Volatile.Read(ref _binding)
+            ?? throw new InvalidOperationException(
+                "The capability binding must be accepted before issuing a host action context.");
+        return deadline < binding.ExpiresAt ? deadline : binding.ExpiresAt;
     }
 
     private HostActionEntryRequestContext IssueCore<TAction, TResult>(

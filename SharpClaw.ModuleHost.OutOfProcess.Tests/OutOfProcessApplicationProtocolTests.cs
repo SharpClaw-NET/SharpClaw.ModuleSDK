@@ -207,6 +207,62 @@ public sealed class OutOfProcessApplicationProtocolTests
             $"{ApplicationSmokeModule.Id}|{ApplicationSmokeModule.Id}|{client.Discovery.ContractHash}|{ApplicationSmokeModule.CliName}");
     }
 
+    [Test, CancelAfter(15000)]
+    public async Task ClientNarrowsHostActionDeadlineToTheActiveBinding()
+    {
+        await using var client = await CreateClientAsync();
+        var storage = new CountingStorageGateway();
+        var dispatcher = new CountingActionDispatcher();
+        var descriptors = new OutOfProcessActionDescriptorCatalog();
+        descriptors.Add(ApplicationSmokeModule.HostAction);
+        await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+            storage,
+            dispatcher,
+            client.CreateCapabilityGrant(),
+            ["application-store"],
+            descriptors,
+            new ActionPipelineSnapshot(
+                client.Discovery.ContractHash,
+                client.Authorization.ActionGrants,
+                client.Authorization.EventGrants),
+            new OutOfProcessHostActionEntryContextRegistry(),
+            new KernelExternalAuthoritySessionRegistry()));
+
+        var requestedDeadline = DateTimeOffset.UtcNow.AddMinutes(10);
+        var context = client.IssueHostActionContext(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.CliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("cli", "deadline"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            requestedDeadline);
+
+        context.Deadline.Should().Be(context.ExpiresAt);
+        context.Deadline.Should().BeBefore(requestedDeadline);
+        var result = await client.InvokeCliAsync(
+            ApplicationSmokeModule.CliName,
+            ["identity"],
+            context);
+        result.Result.Succeeded.Should().BeTrue();
+
+        Action directRegistryIssue = () => client.HostActionEntryContexts.Issue(
+            HostActionEntryIngress.Cli,
+            ApplicationSmokeModule.CliName,
+            client.Discovery.ModuleId,
+            ApplicationSmokeModule.HostAction,
+            new ApplicationSmokeAction("cli", "strict-registry"),
+            ApplicationSmokeModule.HostEntryCaller,
+            ApplicationSmokeModule.HostEntryFeatures,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            requestedDeadline);
+        directRegistryIssue.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     [Test, CancelAfter(30000)]
     public async Task RealCoreDispatcherExecutesExternalEndpointAndTypedEntryThroughSessionVerifier()
     {

@@ -171,7 +171,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         int depth = 0,
         int attempt = 1)
     {
-        var context = HostActionEntryContexts.Issue(
+        var context = HostActionEntryContexts.IssueWithinBinding(
             ingress,
             primaryIdentity,
             secondaryIdentity,
@@ -209,7 +209,7 @@ public sealed class OutOfProcessModuleClient : IAsyncDisposable
         int attempt = 1)
     {
         RequireActionEntry(definition, descriptor);
-        var context = HostActionEntryContexts.Issue(
+        var context = HostActionEntryContexts.IssueWithinBinding(
             ingress,
             primaryIdentity,
             secondaryIdentity,

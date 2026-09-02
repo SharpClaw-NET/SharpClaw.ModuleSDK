@@ -21,7 +21,7 @@ WRITTEN OFFER
 
 The source code for any program binaries or compressed scripts that are
 included with SharpClaw.ModuleSDK can be freely obtained at the following URL:
-https://github.com/mkn8rn/SharpClaw.ModuleSDK
+https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK
 
 =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 
