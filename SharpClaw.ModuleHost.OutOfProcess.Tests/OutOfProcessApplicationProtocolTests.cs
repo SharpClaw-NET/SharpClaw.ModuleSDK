@@ -1785,6 +1785,85 @@ public sealed class OutOfProcessApplicationProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task RebindDoesNotWaitForAcknowledgedIncomingTerminalCleanup()
+    {
+        var terminalReleaseEntered = new TaskCompletionSource<Guid>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminalRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rebindDrained = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(state =>
+        {
+            if (state.StartsWith("rebind-drained|", StringComparison.Ordinal))
+                rebindDrained.TrySetResult(state);
+        });
+        try
+        {
+            await using var client = await CreateClientAsync();
+            var storage = new CountingStorageGateway();
+            var dispatcher = new CountingActionDispatcher();
+            var descriptors = new OutOfProcessActionDescriptorCatalog();
+            descriptors.Add(ApplicationSmokeModule.HostAction);
+            await client.ConnectCapabilitiesAsync(new OutOfProcessCapabilityHostOptions(
+                storage,
+                dispatcher,
+                client.CreateCapabilityGrant(),
+                ["application-store"],
+                descriptors,
+                new ActionPipelineSnapshot(
+                    client.Discovery.ContractHash,
+                    client.Authorization.ActionGrants,
+                    client.Authorization.EventGrants),
+                new OutOfProcessHostActionEntryContextRegistry(),
+                new KernelExternalAuthoritySessionRegistry()));
+
+            for (var i = 0; i < 3; i++)
+            {
+                var prior = await client.InvokeCliAsync(
+                    ApplicationSmokeModule.CapabilityCliName,
+                    ["single"],
+                    IssueCliContext(
+                        client,
+                        ApplicationSmokeModule.CapabilityCliName,
+                        $"acknowledged-terminal-prior-{i}"));
+                prior.Result.Succeeded.Should().BeTrue(
+                    $"Prior CLI error {prior.Result.Error?.Code}: {prior.Result.Error?.Message}");
+            }
+
+            OutOfProcessProtocolTestFixture.ConfigureBeforeIncomingTerminalReleaseAsync(
+                async (request, ct) =>
+                {
+                    terminalReleaseEntered.TrySetResult(request.Call.CallId);
+                    await terminalRelease.Task.WaitAsync(ct);
+                });
+            var cliTask = client.InvokeCliAsync(
+                ApplicationSmokeModule.CapabilityCliName,
+                [],
+                IssueCliContext(
+                    client,
+                    ApplicationSmokeModule.CapabilityCliName,
+                    "acknowledged-terminal-rotation")).AsTask();
+            var callId = await terminalReleaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var drainedState = await rebindDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            drainedState.Should().Contain($"incomingTerminals=[{callId:N}]");
+
+            var cli = await cliTask.WaitAsync(TimeSpan.FromSeconds(5));
+            cli.Result.Succeeded.Should().BeTrue(
+                $"CLI error {cli.Result.Error?.Code}: {cli.Result.Error?.Message}");
+            storage.InvokeCalls.Should().Be(4);
+            dispatcher.RunCalls.Should().Be(1);
+            dispatcher.TerminalCalls.Should().Be(1);
+        }
+        finally
+        {
+            terminalRelease.TrySetResult();
+            OutOfProcessProtocolTestFixture.ConfigureBeforeIncomingTerminalReleaseAsync(null);
+            OutOfProcessProtocolTestFixture.ConfigureRebindStateObserver(null);
+        }
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task RebindReaderProcessesActionResponseBeforeBindingRotation()
     {
         var rebindReceived = new TaskCompletionSource<string>(

@@ -732,6 +732,8 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
 
         private bool _peerCancellationConsumed;
 
+        private int _responseAcknowledged;
+
         public bool RelayImportStarted
         {
             get
@@ -749,6 +751,10 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                     return _peerCancellationConsumed;
             }
         }
+
+        public bool ResponseAcknowledged => Volatile.Read(ref _responseAcknowledged) != 0;
+
+        public void AcknowledgeResponse() => Interlocked.Exchange(ref _responseAcknowledged, 1);
 
         public bool TryBeginRelayImport()
         {
@@ -1210,6 +1216,11 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                     Binding,
                     _session);
                 ThrowIfRejected(validation);
+                if (response.Outcome.TerminalCallCount > 0
+                    && _incomingTerminals.TryGetValue(request.Call.CallId, out var incomingTerminal))
+                {
+                    incomingTerminal.AcknowledgeResponse();
+                }
                 if (deferredRootHostEntry
                     && !pending.SessionCallStarted)
                 {
@@ -2042,6 +2053,11 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                 _limits.ProtocolMessageBytes,
                 SendGate,
                 ct);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            await OutOfProcessProtocolTestFixture.BeforeIncomingTerminalReleaseAsync(
+                request,
+                ct);
+#endif
         }
         finally
         {
@@ -3057,7 +3073,7 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
         || !_incomingActions.IsEmpty
         || !_storage.IsEmpty
         || !_terminals.IsEmpty
-        || !_incomingTerminals.IsEmpty
+        || _incomingTerminals.Values.Any(static incoming => !incoming.ResponseAcknowledged)
         || HasPendingEndpointRouteWork()
         || HasOutgoingCallReservations();
 

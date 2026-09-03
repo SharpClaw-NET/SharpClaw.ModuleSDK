@@ -16,6 +16,8 @@ internal static class OutOfProcessProtocolTestFixture
     private static Action<SidecarCapabilityCallIdentity>? _callCreatedObserver;
     private static Func<SidecarActionCapabilityRequest, CancellationToken, Task>?
         _beforeOutgoingCallRegistrationAsync;
+    private static Func<SidecarActionTerminalTransportRequest, CancellationToken, Task>?
+        _beforeIncomingTerminalReleaseAsync;
 
     internal static void ConfigureResponseTerminalCallCountTransform(
         Func<int, int>? transform) =>
@@ -68,6 +70,18 @@ internal static class OutOfProcessProtocolTestFixture
         SidecarActionCapabilityRequest request,
         CancellationToken cancellationToken) =>
         Volatile.Read(ref _beforeOutgoingCallRegistrationAsync)?.Invoke(
+            request,
+            cancellationToken)
+        ?? Task.CompletedTask;
+
+    internal static void ConfigureBeforeIncomingTerminalReleaseAsync(
+        Func<SidecarActionTerminalTransportRequest, CancellationToken, Task>? callback) =>
+        Interlocked.Exchange(ref _beforeIncomingTerminalReleaseAsync, callback);
+
+    internal static Task BeforeIncomingTerminalReleaseAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken cancellationToken) =>
+        Volatile.Read(ref _beforeIncomingTerminalReleaseAsync)?.Invoke(
             request,
             cancellationToken)
         ?? Task.CompletedTask;
