@@ -379,7 +379,7 @@ public sealed class ModuleCompilerTests
                     "descriptor-hash",
                     typeof(EchoAction).AssemblyQualifiedName!,
                     inputSchema.Version,
-                    inputSchema.ContentHash,
+                    inputSchema.ContentHash!,
                     null,
                     null)),
         };

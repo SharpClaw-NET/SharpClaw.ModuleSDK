@@ -121,15 +121,23 @@ public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
             ?? throw new ArgumentException(
                 "The action descriptor must declare a result schema.",
                 nameof(descriptor));
+        var inputHash = input.ContentHash
+            ?? throw new ArgumentException(
+                "The action input schema must declare a content hash.",
+                nameof(descriptor));
+        var resultHash = result.ContentHash
+            ?? throw new ArgumentException(
+                "The action result schema must declare a content hash.",
+                nameof(descriptor));
         var identity = new SidecarActionDescriptorIdentity(
             descriptor.Key,
             descriptor.Version,
             descriptor.Category,
             TypeIdentity(typeof(TAction)),
-            input.ContentHash,
+            inputHash,
             input.Version,
             TypeIdentity(typeof(TResult)),
-            result.ContentHash,
+            resultHash,
             result.Version,
             HostActionEntryAuthorityValidator.ComputeDescriptorHash(descriptor));
         var invoker = new ModuleActionEntryInvoker<TAction, TResult, TTerminal>(
@@ -208,6 +216,10 @@ internal sealed class ModuleActionDefinitionBuilder(ModuleBuilderState state) : 
         ArgumentNullException.ThrowIfNull(descriptor);
         var protocol = descriptor.ProtocolVersionRange ?? ContractVersionRange.Exact(1);
         var safePoints = descriptor.SafePoints ?? [];
+        var inputSchema = descriptor.InputSchema
+            ?? ModuleSchemaIdentity.ActionInput(descriptor.Key, descriptor.Version, typeof(TAction));
+        var resultSchema = descriptor.ResultSchema
+            ?? ModuleSchemaIdentity.ActionResult(descriptor.Key, descriptor.Version, typeof(TResult));
         state.Actions.Add(new ModuleActionDefinition(
             state.Identity.Id,
             new UntypedActionDescriptor(
@@ -215,8 +227,8 @@ internal sealed class ModuleActionDefinitionBuilder(ModuleBuilderState state) : 
                 descriptor.Version,
                 descriptor.Category,
                 descriptor.Capabilities,
-                ModuleSchemaIdentity.ActionInput(descriptor.Key, descriptor.Version, typeof(TAction)),
-                ModuleSchemaIdentity.ActionResult(descriptor.Key, descriptor.Version, typeof(TResult)),
+                inputSchema,
+                resultSchema,
                 descriptor.ContainsSensitiveData)
             {
                 ProtocolVersionRange = protocol,

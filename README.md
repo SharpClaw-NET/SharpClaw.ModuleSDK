@@ -23,3 +23,19 @@ host.
 Modules can declare typed endpoint and CLI contributions through
 `ISharpClawApplicationModule`. The out-of-process host carries those declarations
 through sidecar discovery and invokes CLI handlers through the same module graph.
+
+## Typed actions
+
+Use `DefineAction` when a module owns both an action contract and its terminal.
+The SDK supplies deterministic schema identities when the descriptor does not
+contain them. The descriptor still controls capabilities, safe points, repeat
+policy, continuation policy, timeout, and sensitive-data classification.
+
+```csharp
+module.DefineAction(PermissionActions.Check)
+    .UseTerminal<PermissionCheckTerminal>(PermissionTerminals.Check);
+```
+
+Use `module.Actions.Add` and `module.AddActionEntry` when the module must control
+the two registrations separately. Both APIs use the same compiler validation and
+produce the same contribution graph.
