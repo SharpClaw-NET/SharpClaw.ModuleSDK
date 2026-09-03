@@ -40,6 +40,7 @@ public sealed class ModuleActionAuthoringTests
         var action = graph.Actions.Should().ContainSingle().Subject;
         var terminal = graph.ActionEntries.Should().ContainSingle().Subject;
 
+        action.TypedDescriptor.Should().BeSameAs(descriptor);
         action.Descriptor.InputSchema.Should().Be(inputSchema);
         action.Descriptor.ResultSchema.Should().Be(resultSchema);
         terminal.Descriptor.InputSchemaHash.Should().Be(inputSchema.ContentHash);

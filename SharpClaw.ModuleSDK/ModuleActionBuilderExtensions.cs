@@ -13,13 +13,23 @@ public static class ModuleActionBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(descriptor);
 
-        var registeredDescriptor = descriptor with
+        var registeredDescriptor = descriptor;
+        if (descriptor.InputSchema is null || descriptor.ResultSchema is null)
         {
-            InputSchema = descriptor.InputSchema
-                ?? ModuleSchemaIdentity.ActionInput(descriptor.Key, descriptor.Version, typeof(TAction)),
-            ResultSchema = descriptor.ResultSchema
-                ?? ModuleSchemaIdentity.ActionResult(descriptor.Key, descriptor.Version, typeof(TResult)),
-        };
+            registeredDescriptor = descriptor with
+            {
+                InputSchema = descriptor.InputSchema
+                    ?? ModuleSchemaIdentity.ActionInput(
+                        descriptor.Key,
+                        descriptor.Version,
+                        typeof(TAction)),
+                ResultSchema = descriptor.ResultSchema
+                    ?? ModuleSchemaIdentity.ActionResult(
+                        descriptor.Key,
+                        descriptor.Version,
+                        typeof(TResult)),
+            };
+        }
 
         builder.Actions.Add(registeredDescriptor);
         return new ModuleActionRegistration<TAction, TResult>(builder, registeredDescriptor);
