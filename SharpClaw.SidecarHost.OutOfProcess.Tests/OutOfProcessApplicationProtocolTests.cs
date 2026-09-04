@@ -25,6 +25,7 @@ public sealed class OutOfProcessApplicationProtocolTests
     private SidecarHostDescriptorCatalog _catalog = null!;
     private string _scopeProbePath = null!;
     private string _terminalScopeProbePath = null!;
+    private readonly List<ServiceProvider> _realCoreProviders = [];
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -101,6 +102,8 @@ public sealed class OutOfProcessApplicationProtocolTests
         _server = null!;
         if (server is not null)
             await server.DisposeAsync();
+        foreach (var provider in _realCoreProviders)
+            await provider.DisposeAsync();
         Environment.SetEnvironmentVariable(
             ApplicationSmokeModule.ScopedEndpointProbeEnvironmentVariable,
             null);
@@ -4122,37 +4125,47 @@ public sealed class OutOfProcessApplicationProtocolTests
         return (accepted, outcome);
     }
 
-    private static KernelGraph BuildRealCoreHostGraph()
+    private KernelGraph BuildRealCoreHostGraph()
     {
         var builder = new KernelGraphBuilder(false);
         builder.Add(ApplicationSmokeModule.HostAction, "host-runtime");
-        using var services = new ServiceCollection().BuildServiceProvider();
-        return builder.Compile(
-            services,
-            new KernelGraphCompileOptions
-            {
-                SupportedActionCapabilities = ApplicationSmokeModule.HostCapabilities,
-                ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
+        var services = new ServiceCollection().BuildServiceProvider();
+        try
+        {
+            var graph = builder.Compile(
+                services,
+                new KernelGraphCompileOptions
                 {
-                    [ApplicationSmokeModule.HostAction.Key.Value] = ApplicationSmokeModule.HostCapabilities,
-                },
-                ActionRegistrationCapabilityGrants = new Dictionary<
-                    string,
-                    IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
-                {
-                    ["host-runtime"] = new Dictionary<string, ActionInterceptionCapabilities>
+                    SupportedActionCapabilities = ApplicationSmokeModule.HostCapabilities,
+                    ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
                     {
                         [ApplicationSmokeModule.HostAction.Key.Value] = ApplicationSmokeModule.HostCapabilities,
                     },
-                    [ApplicationSmokeModule.Id] = new Dictionary<string, ActionInterceptionCapabilities>
+                    ActionRegistrationCapabilityGrants = new Dictionary<
+                        string,
+                        IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
                     {
-                        [ApplicationSmokeModule.HostAction.Key.Value] =
-                            ApplicationSmokeModule.HostAction.Capabilities,
-                        [ApplicationSmokeModule.AgentsJobImportAction.Key.Value] =
-                            ApplicationSmokeModule.AgentsJobImportAction.Capabilities,
+                        ["host-runtime"] = new Dictionary<string, ActionInterceptionCapabilities>
+                        {
+                            [ApplicationSmokeModule.HostAction.Key.Value] = ApplicationSmokeModule.HostCapabilities,
+                        },
+                        [ApplicationSmokeModule.Id] = new Dictionary<string, ActionInterceptionCapabilities>
+                        {
+                            [ApplicationSmokeModule.HostAction.Key.Value] =
+                                ApplicationSmokeModule.HostAction.Capabilities,
+                            [ApplicationSmokeModule.AgentsJobImportAction.Key.Value] =
+                                ApplicationSmokeModule.AgentsJobImportAction.Capabilities,
+                        },
                     },
-                },
-            });
+                });
+            _realCoreProviders.Add(services);
+            return graph;
+        }
+        catch
+        {
+            services.Dispose();
+            throw;
+        }
     }
 
     private static KernelActionDispatcher CreateRealCoreDispatcher(

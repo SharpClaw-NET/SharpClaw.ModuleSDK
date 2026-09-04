@@ -24,6 +24,7 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     private Uri _targetAddress = null!;
     private string _targetToken = null!;
     private CountingActionDispatcher _targetDispatcher = null!;
+    private readonly List<ServiceProvider> _realCoreProviders = [];
 
     [OneTimeSetUp]
     public async Task StartSidecars()
@@ -73,6 +74,8 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             await _sourceServer.DisposeAsync();
         if (_targetServer is not null)
             await _targetServer.DisposeAsync();
+        foreach (var provider in _realCoreProviders)
+            await provider.DisposeAsync();
     }
 
     [Test, CancelAfter(30000)]
@@ -899,33 +902,43 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
             new KernelExternalAuthoritySessionRegistry(),
             targetEntries);
 
-    private static KernelGraph BuildRealCoreCrossTargetGraph()
+    private KernelGraph BuildRealCoreCrossTargetGraph()
     {
         var builder = new KernelGraphBuilder(false);
-        using var services = new ServiceCollection().BuildServiceProvider();
-        return builder.Compile(
-            services,
-            new KernelGraphCompileOptions
-            {
-                SupportedActionCapabilities = CrossSidecarModule.OwnedAction.Capabilities,
-                ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
+        var services = new ServiceCollection().BuildServiceProvider();
+        try
+        {
+            var graph = builder.Compile(
+                services,
+                new KernelGraphCompileOptions
                 {
-                    [CrossSidecarModule.OwnedAction.Key.Value] =
-                        CrossSidecarModule.OwnedAction.Capabilities,
-                },
-                ActionRegistrationCapabilityGrants = new Dictionary<
-                    string,
-                    IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
-                {
-                    [CrossSidecarModule.Id] = new Dictionary<
-                        string,
-                        ActionInterceptionCapabilities>
+                    SupportedActionCapabilities = CrossSidecarModule.OwnedAction.Capabilities,
+                    ActionCapabilityGrants = new Dictionary<string, ActionInterceptionCapabilities>
                     {
                         [CrossSidecarModule.OwnedAction.Key.Value] =
                             CrossSidecarModule.OwnedAction.Capabilities,
                     },
-                },
-            });
+                    ActionRegistrationCapabilityGrants = new Dictionary<
+                        string,
+                        IReadOnlyDictionary<string, ActionInterceptionCapabilities>>
+                    {
+                        [CrossSidecarModule.Id] = new Dictionary<
+                            string,
+                            ActionInterceptionCapabilities>
+                        {
+                            [CrossSidecarModule.OwnedAction.Key.Value] =
+                                CrossSidecarModule.OwnedAction.Capabilities,
+                        },
+                    },
+                });
+            _realCoreProviders.Add(services);
+            return graph;
+        }
+        catch
+        {
+            services.Dispose();
+            throw;
+        }
     }
 
     private static KernelActionDispatcher CreateRealCoreDispatcher(

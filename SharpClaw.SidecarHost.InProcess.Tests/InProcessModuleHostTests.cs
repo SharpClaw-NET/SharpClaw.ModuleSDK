@@ -104,6 +104,42 @@ public sealed class InProcessModuleHostTests
     }
 
     [Test]
+    public async Task ScopedAuthorizationServicesUseDistinctInstancesAndDisposeAfterEachEvaluation()
+    {
+        var policyGraph = SharpClawModuleCompiler.Compile(new ScopedAuthorizationPolicyModule());
+        await using var policyServices = BuildValidatedProvider(policyGraph);
+        for (var index = 0; index < 2; index++)
+        {
+            await using var scope = policyServices.CreateAsyncScope();
+            var decision = await scope.ServiceProvider
+                .GetRequiredService<AuthorizationPolicyTerminal>()
+                .InvokeAsync(CreateAuthorizationContext());
+            decision.Allowed.Should().BeTrue();
+        }
+        policyServices.GetRequiredService<ScopedInvocationCapture>()
+            .AssertCategory("authorization-policy", 2);
+
+        var restrictionGraph = SharpClawModuleCompiler.Compile(
+            new ScopedAuthorizationRestrictionModule(),
+            ScopedAuthorizationRestrictionManifest());
+        await using var restrictionServices = BuildValidatedProvider(restrictionGraph);
+        for (var index = 0; index < 2; index++)
+        {
+            await using var scope = restrictionServices.CreateAsyncScope();
+            var outcome = await scope.ServiceProvider
+                .GetRequiredService<AuthorizationRestrictionHook<ScopedAuthorizationRestriction>>()
+                .InvokeAsync(
+                    CreateAuthorizationContext(),
+                    new AuthorizationActionControl(),
+                    CancellationToken.None);
+            outcome.Kind.Should().Be(ActionOutcomeKind.Completed);
+            outcome.Result!.Allowed.Should().BeTrue();
+        }
+        restrictionServices.GetRequiredService<ScopedInvocationCapture>()
+            .AssertCategory("authorization-restriction", 2);
+    }
+
+    [Test]
     public async Task ToolInvokerAcceptsNullConversationIdentity()
     {
         var fixture = CreateToolFixture();
@@ -422,6 +458,23 @@ public sealed class InProcessModuleHostTests
                 new PackageEventRequest("inprocess.control.event", "Inline", ["observe"]),
             ]);
 
+    private static PackageManifest ScopedAuthorizationRestrictionManifest() =>
+        new(
+            "scoped_authorization_restriction",
+            "Scoped Authorization Restriction",
+            "0.5.0-dev",
+            "scoped_authorization_restriction",
+            "ScopedAuthorizationRestriction.dll",
+            "0.5.0-dev",
+            Runtime: PackageRuntimeInfo.DotNet,
+            HostMode: PackageRuntimeInfo.HostModeInProcess,
+            RequestedHooks:
+            [
+                new PackageHookRequest(
+                    AuthorizationProtocol.Evaluate.Key.Value,
+                    ["inspect", "wrap"]),
+            ]);
+
     private static ToolFixture CreateToolFixture()
     {
         var graph = SharpClawModuleCompiler.Compile(
@@ -438,6 +491,36 @@ public sealed class InProcessModuleHostTests
         });
         return new ToolFixture(graph, services, new InProcessModuleInvoker(graph, services));
     }
+
+    private static ServiceProvider BuildValidatedProvider(ModuleContributionGraph graph)
+    {
+        IServiceCollection services = new ServiceCollection();
+        foreach (var descriptor in graph.Services)
+            services.Add(descriptor);
+        return services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+    }
+
+    private static ActionContext<AuthorizationRequest> CreateAuthorizationContext() =>
+        new(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            AuthorizationProtocol.Evaluate.Key,
+            "scoped-authorization",
+            new RequestPrincipal("authorization-user", IsAuthenticated: true),
+            new AuthorizationRequest(
+                "scope.evaluate",
+                new AuthorizationResource("scope", "resource")),
+            ExtensionFeatureSet.Empty,
+            new ActionPipelineSnapshot("scoped-authorization", []));
 
     private static ToolInvocation CreateToolInvocation(Guid? conversationId)
     {
@@ -863,6 +946,101 @@ public sealed class InProcessModuleHostTests
 
             items.Add(instanceId);
         }
+    }
+
+    private sealed class ScopedAuthorizationPolicyModule : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } = new(
+            "scoped_authorization_policy",
+            "Scoped Authorization Policy",
+            "scoped_authorization_policy");
+
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddSingleton<ScopedInvocationCapture>();
+            services.AddAuthorizationPolicy<ScopedAuthorizationPolicy>();
+        }
+    }
+
+    private sealed class ScopedAuthorizationRestrictionModule : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } = new(
+            "scoped_authorization_restriction",
+            "Scoped Authorization Restriction",
+            "scoped_authorization_restriction");
+
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddSingleton<ScopedInvocationCapture>();
+            services.AddAuthorizationRestriction<ScopedAuthorizationRestriction>("scope");
+        }
+    }
+
+    private sealed class ScopedAuthorizationPolicy(ScopedInvocationCapture capture)
+        : ScopedContribution(capture, "authorization-policy"), IAuthorizationPolicy
+    {
+        public ValueTask<AuthorizationDecision> EvaluateAsync(
+            ActionContext<AuthorizationRequest> context,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RecordInvocation();
+            return ValueTask.FromResult(AuthorizationDecision.Allow("scope_allowed"));
+        }
+    }
+
+    private sealed class ScopedAuthorizationRestriction(ScopedInvocationCapture capture)
+        : ScopedContribution(capture, "authorization-restriction"), IAuthorizationRestriction
+    {
+        public ValueTask<AuthorizationRestriction> EvaluateAsync(
+            ActionContext<AuthorizationRequest> context,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RecordInvocation();
+            return ValueTask.FromResult(default(AuthorizationRestriction));
+        }
+    }
+
+    private sealed class AuthorizationActionControl
+        : IActionControl<AuthorizationRequest, AuthorizationDecision>
+    {
+        public ValueTask<IActionOutcome<AuthorizationDecision>> ProceedAsync(
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IActionOutcome<AuthorizationDecision>>(
+                new AuthorizationActionOutcome(AuthorizationDecision.Allow("scope_allowed")));
+
+        public ValueTask<IActionOutcome<AuthorizationDecision>> ProceedWithInputAsync(
+            ActionReplacement<AuthorizationRequest> replacement,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public IActionOutcome<AuthorizationDecision> ReplaceResult(
+            AuthorizationDecision result,
+            string reason) => throw new NotSupportedException();
+
+        public IActionOutcome<AuthorizationDecision> Cancel(string code, string message) =>
+            throw new NotSupportedException();
+
+        public IActionOutcome<AuthorizationDecision> Fail(ExecutionError error) =>
+            throw new NotSupportedException();
+
+        public ValueTask<IActionOutcome<AuthorizationDecision>> DeferAsync(
+            ActionDeferRequest request,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<IActionOutcome<AuthorizationDecision>> RepeatAsync(
+            ActionRepeatRequest<AuthorizationRequest> request,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed record AuthorizationActionOutcome(AuthorizationDecision Value)
+        : IActionOutcome<AuthorizationDecision>
+    {
+        public ActionOutcomeKind Kind => ActionOutcomeKind.Completed;
+        public AuthorizationDecision? Result => Value;
+        public ContinuationToken? Continuation => null;
+        public ExecutionError? Error => null;
+        public ActionUncertainty? Uncertainty => null;
     }
 
     private sealed class ToolInvocationCapture
