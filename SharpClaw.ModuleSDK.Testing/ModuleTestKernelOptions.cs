@@ -1,5 +1,5 @@
 using System.Reflection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Core.Kernel;
 
 namespace SharpClaw.ModuleSDK.Testing;
@@ -29,7 +29,7 @@ internal static class ModuleTestKernelOptions
             .Select(graph => graph.Identity.Id)
             .ToHashSet(StringComparer.Ordinal);
         var unknownApprovals = approvedSensitiveModules
-            .Where(moduleId => !knownModules.Contains(moduleId))
+            .Where(SourceId => !knownModules.Contains(SourceId))
             .ToArray();
         if (unknownApprovals.Length > 0)
         {
@@ -41,12 +41,12 @@ internal static class ModuleTestKernelOptions
         var eventCandidates = CreateEventCandidates(moduleGraphs, hostEvents);
         var actionGrants = CreateActionGrants(moduleGraphs, hostActions, actionCandidates);
         var eventGrants = CreateEventGrants(moduleGraphs, hostEvents, eventCandidates);
-        ApplyActionLimits(actionGrants, source.ActionModuleCapabilityGrants);
-        ApplyEventLimits(eventGrants, source.EventModuleCapabilityGrants);
+        ApplyActionLimits(actionGrants, source.ActionRegistrationCapabilityGrants);
+        ApplyEventLimits(eventGrants, source.EventRegistrationCapabilityGrants);
 
         var sensitiveModules = approvedSensitiveModules.ToHashSet(StringComparer.Ordinal);
         if (hostActions.Count > 0 || hostEvents.Count > 0)
-            sensitiveModules.Add(ModuleTestHostDefinitionModule.ModuleId);
+            sensitiveModules.Add(ModuleTestHostDefinitionSet.SourceId);
         var actionApprovals = source.SensitiveActionApprovals
             .Concat(CreateActionApprovals(moduleGraphs, actionCandidates, sensitiveModules))
             .Distinct()
@@ -61,12 +61,12 @@ internal static class ModuleTestKernelOptions
             SupportedActionCapabilities = source.SupportedActionCapabilities,
             SupportedEventCapabilities = source.SupportedEventCapabilities,
             ActionCapabilityGrants = source.ActionCapabilityGrants,
-            ActionModuleCapabilityGrants = actionGrants.ToDictionary(
+            ActionRegistrationCapabilityGrants = actionGrants.ToDictionary(
                 item => item.Key,
                 item => (IReadOnlyDictionary<string, ActionInterceptionCapabilities>)item.Value,
                 StringComparer.Ordinal),
             EventCapabilityGrants = source.EventCapabilityGrants,
-            EventModuleCapabilityGrants = eventGrants.ToDictionary(
+            EventRegistrationCapabilityGrants = eventGrants.ToDictionary(
                 item => item.Key,
                 item => (IReadOnlyDictionary<string, EventInterceptionCapabilities>)item.Value,
                 StringComparer.Ordinal),
@@ -94,8 +94,30 @@ internal static class ModuleTestKernelOptions
                 entry.ToDescriptor(),
                 entry))
             .ToList();
+        candidates.Add(new ActionCandidate(
+            ModuleLifecycleActions.Identity.Id,
+            ModuleLifecycleActions.Start.Key,
+            ModuleLifecycleActions.Start.Version,
+            ModuleLifecycleActions.Start.Category,
+            ModuleLifecycleActions.Start.Capabilities,
+            ModuleLifecycleActions.Start.ContainsSensitiveData,
+            typeof(ServiceStartContext),
+            typeof(bool),
+            ModuleLifecycleActions.Start,
+            null));
+        candidates.Add(new ActionCandidate(
+            ModuleLifecycleActions.Identity.Id,
+            ModuleLifecycleActions.Stop.Key,
+            ModuleLifecycleActions.Stop.Version,
+            ModuleLifecycleActions.Stop.Category,
+            ModuleLifecycleActions.Stop.Capabilities,
+            ModuleLifecycleActions.Stop.ContainsSensitiveData,
+            typeof(ModuleIdentity),
+            typeof(bool),
+            ModuleLifecycleActions.Stop,
+            null));
         candidates.AddRange(hostActions.Select(action => new ActionCandidate(
-            ModuleTestHostDefinitionModule.ModuleId,
+            ModuleTestHostDefinitionSet.SourceId,
             action.Descriptor.Key,
             action.Descriptor.Version,
             action.Descriptor.Category,
@@ -107,7 +129,7 @@ internal static class ModuleTestKernelOptions
             null)));
         candidates.AddRange(moduleGraphs.SelectMany(graph => graph.Actions.Select(action =>
             new ActionCandidate(
-                action.OwnerModuleId,
+                action.OwnerId,
                 action.Descriptor.Key,
                 action.Descriptor.Version,
                 action.Descriptor.Category,
@@ -125,7 +147,7 @@ internal static class ModuleTestKernelOptions
         IReadOnlyList<ModuleTestHostEvent> hostEvents)
     {
         var candidates = hostEvents.Select(evt => new EventCandidate(
-            ModuleTestHostDefinitionModule.ModuleId,
+            ModuleTestHostDefinitionSet.SourceId,
             evt.Descriptor.Key,
             evt.Descriptor.Version,
             evt.Descriptor.Category,
@@ -135,7 +157,7 @@ internal static class ModuleTestKernelOptions
             evt.TypedDescriptor)).ToList();
         candidates.AddRange(moduleGraphs.SelectMany(graph => graph.Events.Select(evt =>
             new EventCandidate(
-                evt.OwnerModuleId,
+                evt.OwnerId,
                 evt.Descriptor.Key,
                 evt.Descriptor.Version,
                 evt.Descriptor.Category,
@@ -154,19 +176,26 @@ internal static class ModuleTestKernelOptions
     {
         var result = new Dictionary<string, Dictionary<string, ActionInterceptionCapabilities>>(
             StringComparer.Ordinal);
+        result.Add(
+            ModuleLifecycleActions.Identity.Id,
+            new Dictionary<string, ActionInterceptionCapabilities>(StringComparer.Ordinal)
+            {
+                [ModuleLifecycleActions.Start.Key.Value] = ModuleLifecycleActions.Start.Capabilities,
+                [ModuleLifecycleActions.Stop.Key.Value] = ModuleLifecycleActions.Stop.Capabilities,
+            });
         if (hostActions.Count > 0)
         {
             var hostGrants = new Dictionary<string, ActionInterceptionCapabilities>(StringComparer.Ordinal);
             foreach (var action in hostActions)
                 AddGrant(hostGrants, action.Descriptor.Key.Value, action.Descriptor.Capabilities);
-            result.Add(ModuleTestHostDefinitionModule.ModuleId, hostGrants);
+            result.Add(ModuleTestHostDefinitionSet.SourceId, hostGrants);
         }
 
         foreach (var graph in moduleGraphs)
         {
             var grants = new Dictionary<string, ActionInterceptionCapabilities>(StringComparer.Ordinal);
             foreach (var candidate in candidates.Where(candidate =>
-                         string.Equals(candidate.OwnerModuleId, graph.Identity.Id, StringComparison.Ordinal)))
+                         string.Equals(candidate.OwnerId, graph.Identity.Id, StringComparison.Ordinal)))
             {
                 AddGrant(grants, candidate.Key.Value, candidate.Capabilities);
             }
@@ -201,14 +230,14 @@ internal static class ModuleTestKernelOptions
             var hostGrants = new Dictionary<string, EventInterceptionCapabilities>(StringComparer.Ordinal);
             foreach (var evt in hostEvents)
                 AddGrant(hostGrants, evt.Descriptor.Key.Value, evt.Descriptor.Capabilities);
-            result.Add(ModuleTestHostDefinitionModule.ModuleId, hostGrants);
+            result.Add(ModuleTestHostDefinitionSet.SourceId, hostGrants);
         }
 
         foreach (var graph in moduleGraphs)
         {
             var grants = new Dictionary<string, EventInterceptionCapabilities>(StringComparer.Ordinal);
             foreach (var candidate in candidates.Where(candidate =>
-                         string.Equals(candidate.OwnerModuleId, graph.Identity.Id, StringComparison.Ordinal)))
+                         string.Equals(candidate.OwnerId, graph.Identity.Id, StringComparison.Ordinal)))
             {
                 AddGrant(grants, candidate.Key.Value, candidate.Capabilities);
             }
@@ -235,16 +264,16 @@ internal static class ModuleTestKernelOptions
         IReadOnlyList<ActionCandidate> candidates,
         IReadOnlySet<string> approvedModules)
     {
-        foreach (var moduleId in approvedModules)
+        foreach (var SourceId in approvedModules)
         {
             var graph = moduleGraphs.SingleOrDefault(candidate =>
-                string.Equals(candidate.Identity.Id, moduleId, StringComparison.Ordinal));
+                string.Equals(candidate.Identity.Id, SourceId, StringComparison.Ordinal));
             foreach (var candidate in candidates.Where(candidate => candidate.ContainsSensitiveData))
             {
-                var selected = string.Equals(candidate.OwnerModuleId, moduleId, StringComparison.Ordinal)
+                var selected = string.Equals(candidate.OwnerId, SourceId, StringComparison.Ordinal)
                     || graph?.ActionHooks.Any(hook => Matches(hook, candidate)) == true;
                 if (selected)
-                    yield return CreateActionApproval(moduleId, candidate);
+                    yield return CreateActionApproval(SourceId, candidate);
             }
         }
     }
@@ -254,22 +283,22 @@ internal static class ModuleTestKernelOptions
         IReadOnlyList<EventCandidate> candidates,
         IReadOnlySet<string> approvedModules)
     {
-        foreach (var moduleId in approvedModules)
+        foreach (var SourceId in approvedModules)
         {
             var graph = moduleGraphs.SingleOrDefault(candidate =>
-                string.Equals(candidate.Identity.Id, moduleId, StringComparison.Ordinal));
+                string.Equals(candidate.Identity.Id, SourceId, StringComparison.Ordinal));
             foreach (var candidate in candidates.Where(candidate => candidate.ContainsSensitiveData))
             {
-                var selected = string.Equals(candidate.OwnerModuleId, moduleId, StringComparison.Ordinal)
+                var selected = string.Equals(candidate.OwnerId, SourceId, StringComparison.Ordinal)
                     || graph?.EventHooks.Any(hook => Matches(hook, candidate)) == true;
                 if (selected)
-                    yield return CreateEventApproval(moduleId, candidate);
+                    yield return CreateEventApproval(SourceId, candidate);
             }
         }
     }
 
     private static KernelSensitiveActionApproval CreateActionApproval(
-        string moduleId,
+        string SourceId,
         ActionCandidate candidate)
     {
         if (candidate.StandardEntry is not null)
@@ -280,7 +309,7 @@ internal static class ModuleTestKernelOptions
                 typeof(KernelActionEnvelope),
                 typeof(object));
             return new KernelSensitiveActionApproval(
-                moduleId,
+                SourceId,
                 candidate.Key,
                 candidate.Version,
                 TypeName(types.ActionType),
@@ -295,7 +324,7 @@ internal static class ModuleTestKernelOptions
                 [candidate.TypedDescriptor, candidate.ActionType, candidate.ResultType])
             ?? throw new InvalidOperationException("Core did not create an action schema identity."));
         return new KernelSensitiveActionApproval(
-            moduleId,
+            SourceId,
             candidate.Key,
             candidate.Version,
             TypeName(candidate.ActionType),
@@ -304,7 +333,7 @@ internal static class ModuleTestKernelOptions
     }
 
     private static KernelSensitiveEventApproval CreateEventApproval(
-        string moduleId,
+        string SourceId,
         EventCandidate candidate)
     {
         var schema = (string)(EventSchemaMethod
@@ -312,7 +341,7 @@ internal static class ModuleTestKernelOptions
             .Invoke(null, [candidate.TypedDescriptor, candidate.EventType])
             ?? throw new InvalidOperationException("Core did not create an event schema identity."));
         return new KernelSensitiveEventApproval(
-            moduleId,
+            SourceId,
             candidate.Key,
             candidate.Version,
             TypeName(candidate.EventType),
@@ -399,7 +428,7 @@ internal static class ModuleTestKernelOptions
         type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 
     private sealed record ActionCandidate(
-        string OwnerModuleId,
+        string OwnerId,
         SharpClawActionKey Key,
         int Version,
         string Category,
@@ -411,7 +440,7 @@ internal static class ModuleTestKernelOptions
         KernelStandardActionManifestEntry? StandardEntry);
 
     private sealed record EventCandidate(
-        string OwnerModuleId,
+        string OwnerId,
         SharpClawEventKey Key,
         int Version,
         string Category,

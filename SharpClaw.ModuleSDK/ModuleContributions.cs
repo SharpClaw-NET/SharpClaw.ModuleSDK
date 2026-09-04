@@ -1,11 +1,11 @@
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
 /// <summary>Describes one module-owned action.</summary>
 public sealed record ModuleActionDefinition(
-    string OwnerModuleId,
+    string OwnerId,
     UntypedActionDescriptor Descriptor,
     Type ActionType,
     Type ResultType,
@@ -18,7 +18,7 @@ public sealed record ModuleActionDefinition(
 
 /// <summary>Describes one module-owned event.</summary>
 public sealed record ModuleEventDefinition(
-    string OwnerModuleId,
+    string OwnerId,
     UntypedEventDescriptor Descriptor,
     Type EventType,
     object TypedDescriptor,
@@ -27,7 +27,7 @@ public sealed record ModuleEventDefinition(
 
 /// <summary>Describes one compiled action hook.</summary>
 public sealed record ModuleActionHook(
-    string OwnerModuleId,
+    string OwnerId,
     SidecarHookTargetKind TargetKind,
     SharpClawActionKey? ActionKey,
     string? Category,
@@ -68,7 +68,7 @@ public enum ModuleEventHookKind
 
 /// <summary>Describes one compiled event hook or listener.</summary>
 public sealed record ModuleEventHook(
-    string OwnerModuleId,
+    string OwnerId,
     SidecarHookTargetKind TargetKind,
     SharpClawEventKey? EventKey,
     string? Category,
@@ -94,7 +94,7 @@ public sealed record ModuleEventHook(
 
 /// <summary>Describes one tool handler and its transport schemas.</summary>
 public sealed record ModuleToolRegistration(
-    string OwnerModuleId,
+    string OwnerId,
     ToolDescriptor Descriptor,
     Type HandlerType,
     string HandlerId,
@@ -103,7 +103,7 @@ public sealed record ModuleToolRegistration(
 
 /// <summary>Describes one exported or required module contract.</summary>
 public sealed record ModuleContractContribution(
-    string OwnerModuleId,
+    string OwnerId,
     string ContractName,
     Type ServiceType,
     int SchemaVersion,
@@ -113,12 +113,12 @@ public sealed record ModuleContractContribution(
 
 /// <summary>Describes one module CLI handler.</summary>
 public sealed record ModuleCliContribution(
-    ModuleCliCommandDescriptor Descriptor,
+    CliCommandDescriptor Descriptor,
     Type HandlerType);
 
 /// <summary>Describes one module endpoint route and its handler.</summary>
 public sealed record ModuleEndpointContribution(
-    ModuleEndpointRouteDescriptor Descriptor,
+    EndpointRouteDescriptor Descriptor,
     Type HandlerType);
 
 /// <summary>Contains application-level module contributions.</summary>
@@ -142,9 +142,9 @@ public sealed record ModuleApplicationContributions(
 /// <summary>Contains chat lifecycle registrations for one module.</summary>
 public sealed record ModuleChatContributions(
     Type? ConversationResolver,
-    ExclusiveRegistration? ConversationResolverRegistration,
+    ExclusiveClaim? ConversationResolverRegistration,
     Type? ProfileResolver,
-    ExclusiveRegistration? ProfileResolverRegistration,
+    ExclusiveClaim? ProfileResolverRegistration,
     IReadOnlyList<Type> ContextContributors)
 {
     /// <summary>Gets an empty chat contribution set.</summary>
@@ -159,7 +159,7 @@ public sealed class ModuleContributionGraph
         ModuleHostingMode hostingMode,
         IReadOnlyList<ServiceDescriptor> services,
         IReadOnlyList<ModuleContractContribution> contracts,
-        IReadOnlyList<ModuleStorageContractDescriptor> storage,
+        IReadOnlyList<ScopedStorageContractDescriptor> storage,
         IReadOnlyList<ModuleActionDefinition> actions,
         IReadOnlyList<ModuleEventDefinition> events,
         IReadOnlyList<ModuleActionHook> actionHooks,
@@ -174,7 +174,7 @@ public sealed class ModuleContributionGraph
         string contractHash,
         ContractVersionRange protocolVersionRange,
         SidecarPayloadLimits payloadLimits,
-        IReadOnlyList<ModuleFeatureDescriptor> features)
+        IReadOnlyList<FeatureDescriptor> features)
     {
         Identity = identity;
         HostingMode = hostingMode;
@@ -211,7 +211,7 @@ public sealed class ModuleContributionGraph
     public IReadOnlyList<ModuleContractContribution> Contracts { get; }
 
     /// <summary>Gets module storage declarations.</summary>
-    public IReadOnlyList<ModuleStorageContractDescriptor> Storage { get; }
+    public IReadOnlyList<ScopedStorageContractDescriptor> Storage { get; }
 
     /// <summary>Gets module-owned action definitions.</summary>
     public IReadOnlyList<ModuleActionDefinition> Actions { get; }
@@ -256,5 +256,5 @@ public sealed class ModuleContributionGraph
     public SidecarPayloadLimits PayloadLimits { get; }
 
     /// <summary>Gets manifest feature declarations.</summary>
-    public IReadOnlyList<ModuleFeatureDescriptor> Features { get; }
+    public IReadOnlyList<FeatureDescriptor> Features { get; }
 }

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Providers;
 
 namespace SharpClaw.ModuleSDK;

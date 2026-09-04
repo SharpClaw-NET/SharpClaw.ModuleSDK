@@ -1,7 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.ModuleSDK.HostOperations;
 
 namespace SharpClaw.ModuleSDK.Tests;
@@ -27,9 +27,9 @@ public sealed class HostOperationContractTests
     [Test]
     public void RequestsRejectChangedOrEmptyHostOperationIdentity()
     {
-        new HostModuleLifecycleAction(HostModuleLifecycleOperation.Load, "sample_module")
+        new HostModuleLifecycleAction(HostModuleLifecycleOperation.Load, "sample_registration")
             .IsWellFormed.Should().BeTrue();
-        new HostModuleLifecycleAction(HostModuleLifecycleOperation.Load, " sample_module")
+        new HostModuleLifecycleAction(HostModuleLifecycleOperation.Load, " sample_registration")
             .IsWellFormed.Should().BeFalse();
 
         var valid = new HostToolInvokeAction(
@@ -46,8 +46,8 @@ public sealed class HostOperationContractTests
     [Test]
     public void ModuleSummaryPreservesCanonicalExportedContractNames()
     {
-        var state = new ModuleStateResponse(
-            "sample_module",
+        var state = new RegistrationStateResponse(
+            "sample_registration",
             "Sample Module",
             "sm",
             true,

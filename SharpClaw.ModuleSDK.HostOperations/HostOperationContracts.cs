@@ -1,5 +1,5 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.ModuleSDK.HostOperations;
@@ -9,13 +9,13 @@ public sealed record HostModuleListAction;
 
 /// <summary>Describes one module in the active host graph.</summary>
 public sealed record HostModuleSummary(
-    ModuleStateResponse State,
+    RegistrationStateResponse State,
     IReadOnlyList<string> ExportedContractNames)
 {
     /// <summary>Gets whether the summary contains canonical module metadata.</summary>
     public bool IsWellFormed =>
         State is not null &&
-        HostOperationContractValidation.IsCanonicalIdentifier(State.ModuleId) &&
+        HostOperationContractValidation.IsCanonicalIdentifier(State.SourceId) &&
         HostOperationContractValidation.IsCanonicalIdentifier(State.ToolPrefix) &&
         ExportedContractNames is not null &&
         ExportedContractNames.All(HostOperationContractValidation.IsCanonicalIdentifier) &&
@@ -43,28 +43,28 @@ public enum HostModuleLifecycleOperation
 /// <summary>Requests one host module lifecycle transition.</summary>
 public sealed record HostModuleLifecycleAction(
     HostModuleLifecycleOperation Operation,
-    string ModuleId)
+    string SourceId)
 {
     /// <summary>Gets whether the request has one canonical module identity.</summary>
     public bool IsWellFormed =>
         Enum.IsDefined(Operation) &&
-        HostOperationContractValidation.IsCanonicalIdentifier(ModuleId);
+        HostOperationContractValidation.IsCanonicalIdentifier(SourceId);
 }
 
 /// <summary>Contains the completed host module lifecycle transition.</summary>
 public sealed record HostModuleLifecycleResult(
     HostModuleLifecycleOperation Operation,
-    string ModuleId,
-    ModuleStateResponse? Module)
+    string SourceId,
+    RegistrationStateResponse? Module)
 {
     /// <summary>Gets whether the result matches one completed transition.</summary>
     public bool IsWellFormed =>
         Enum.IsDefined(Operation) &&
-        HostOperationContractValidation.IsCanonicalIdentifier(ModuleId) &&
+        HostOperationContractValidation.IsCanonicalIdentifier(SourceId) &&
         (Operation == HostModuleLifecycleOperation.Unload
             ? Module is null
             : Module is not null &&
-              string.Equals(Module.ModuleId, ModuleId, StringComparison.Ordinal));
+              string.Equals(Module.SourceId, SourceId, StringComparison.Ordinal));
 }
 
 /// <summary>Requests one Tool invocation through the host Tool pipeline.</summary>

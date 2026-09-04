@@ -1,7 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -11,7 +11,7 @@ public static class SharpClawModuleCompiler
     /// <summary>Compiles and validates one module.</summary>
     public static ModuleContributionGraph Compile(
         ISharpClawModule module,
-        ModuleManifest? manifest = null,
+        PackageManifest? manifest = null,
         ModuleCompilationOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(module);
@@ -23,9 +23,7 @@ public static class SharpClawModuleCompiler
         var builder = new SharpClawModuleBuilder(module.Identity);
         try
         {
-            module.Configure(builder);
-            if (module is ISharpClawApplicationModule applicationModule)
-                applicationModule.ConfigureApplication(new SharpClawApplicationBuilder(builder));
+            module.ConfigureServices(builder);
         }
         catch (Exception ex) when (ex is not ModuleGraphCompilationException)
         {
@@ -80,7 +78,7 @@ public static class SharpClawModuleCompiler
             state.ProfileResolverRegistrations.SingleOrDefault(),
             Array.AsReadOnly(state.ContextContributors.ToArray()));
         var features = Array.AsReadOnly((manifest?.Features ?? [])
-            .Select(feature => new ModuleFeatureDescriptor(
+            .Select(feature => new FeatureDescriptor(
                 feature.ContractName,
                 feature.SchemaVersion,
                 module.Identity.Id,
@@ -126,7 +124,7 @@ public static class SharpClawModuleCompiler
 
     private static void ValidateIdentity(
         ModuleIdentity identity,
-        ModuleManifest? manifest,
+        PackageManifest? manifest,
         ICollection<GraphCompilationError> errors)
     {
         if (identity is null
@@ -153,21 +151,21 @@ public static class SharpClawModuleCompiler
                 identity.Id,
                 manifest.Id,
                 "identity",
-                "The module identity does not match module.json."));
+                "The module identity does not match package.json."));
         }
     }
 
     private static void ValidateOptions(
         ModuleCompilationOptions options,
-        string moduleId,
+        string SourceId,
         ICollection<GraphCompilationError> errors)
     {
         if (options.ProtocolVersionRange is null || !options.PayloadLimits.IsValid)
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.InvalidDescriptor,
-                moduleId,
-                moduleId,
+                SourceId,
+                SourceId,
                 "protocol",
                 "The host protocol versions or payload limits are invalid."));
         }
@@ -353,7 +351,7 @@ public static class SharpClawModuleCompiler
     {
         foreach (var storage in state.Storage)
         {
-            if (!string.Equals(storage.ModuleId, state.Identity.Id, StringComparison.Ordinal)
+            if (!string.Equals(storage.SourceId, state.Identity.Id, StringComparison.Ordinal)
                 || !ValidIdentifier(storage.StorageName)
                 || storage.MaxDocumentBytes < 1
                 || storage.MaxBatchSize < 1
@@ -525,7 +523,7 @@ public static class SharpClawModuleCompiler
 
     private static IReadOnlyList<ModuleActionHook> CompileActionHooks(
         ModuleBuilderState state,
-        ModuleManifest? manifest,
+        PackageManifest? manifest,
         ModuleCompilationOptions options,
         ICollection<GraphCompilationError> errors)
     {
@@ -595,7 +593,7 @@ public static class SharpClawModuleCompiler
 
     private static IReadOnlyList<ModuleEventHook> CompileEventHooks(
         ModuleBuilderState state,
-        ModuleManifest? manifest,
+        PackageManifest? manifest,
         ModuleCompilationOptions options,
         ICollection<GraphCompilationError> errors)
     {
@@ -658,7 +656,7 @@ public static class SharpClawModuleCompiler
     }
 
     private static void ValidateActionHandler(
-        string moduleId,
+        string SourceId,
         PendingActionHook pending,
         ICollection<GraphCompilationError> errors)
     {
@@ -674,7 +672,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.InvalidHandler,
-                moduleId,
+                SourceId,
                 pending.Ordering.Id,
                 "handler",
                 $"Action hook '{pending.Ordering.Id}' does not implement the required typed or untyped interface."));
@@ -700,7 +698,7 @@ public static class SharpClawModuleCompiler
     }
 
     private static void ValidateEventHandler(
-        string moduleId,
+        string SourceId,
         PendingEventHook pending,
         ICollection<GraphCompilationError> errors)
     {
@@ -721,7 +719,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.InvalidHandler,
-                moduleId,
+                SourceId,
                 pending.Ordering.Id,
                 "handler",
                 $"Event hook '{pending.Ordering.Id}' does not implement the required typed or untyped interface."));
@@ -828,7 +826,7 @@ public static class SharpClawModuleCompiler
     }
 
     private static void ValidateActionCapabilities(
-        string moduleId,
+        string SourceId,
         string target,
         ActionInterceptionCapabilities requested,
         UntypedActionDescriptor? descriptor,
@@ -843,14 +841,14 @@ public static class SharpClawModuleCompiler
 
         errors.Add(Error(
             ModuleGraphErrorCodes.UnsupportedEffect,
-            moduleId,
+            SourceId,
             target,
             unsupported.ToString(),
             $"Action hook '{target}' requests unsupported effects '{unsupported}'."));
     }
 
     private static void ValidateEventCapabilities(
-        string moduleId,
+        string SourceId,
         string target,
         EventInterceptionCapabilities requested,
         UntypedEventDescriptor? descriptor,
@@ -865,7 +863,7 @@ public static class SharpClawModuleCompiler
 
         errors.Add(Error(
             ModuleGraphErrorCodes.UnsupportedEffect,
-            moduleId,
+            SourceId,
             target,
             unsupported.ToString(),
             $"Event hook '{target}' requests unsupported effects '{unsupported}'."));
@@ -874,9 +872,9 @@ public static class SharpClawModuleCompiler
     private static ActionInterceptionCapabilities ResolveActionCapabilities(
         ActionInterceptionCapabilities? declared,
         ActionInterceptionCapabilities manifest,
-        ModuleManifestHookRequest? request,
+        PackageHookRequest? request,
         bool requireManifest,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
@@ -884,20 +882,20 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.MissingManifestRequest,
-                moduleId,
+                SourceId,
                 target,
                 "manifest",
-                $"Action hook '{target}' has no matching module.json request."));
+                $"Action hook '{target}' has no matching package.json request."));
         }
 
         if (declared.HasValue && request is not null && declared.Value != manifest)
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.ManifestEffectMismatch,
-                moduleId,
+                SourceId,
                 target,
                 manifest.ToString(),
-                $"Action hook '{target}' effects do not equal its module.json request."));
+                $"Action hook '{target}' effects do not equal its package.json request."));
         }
 
         return declared ?? manifest;
@@ -906,9 +904,9 @@ public static class SharpClawModuleCompiler
     private static EventInterceptionCapabilities ResolveEventCapabilities(
         EventInterceptionCapabilities? declared,
         EventInterceptionCapabilities manifest,
-        ModuleManifestEventRequest? request,
+        PackageEventRequest? request,
         bool requireManifest,
-        string moduleId,
+        string SourceId,
         string target,
         ModuleEventHookKind kind,
         ICollection<GraphCompilationError> errors)
@@ -917,10 +915,10 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.MissingManifestRequest,
-                moduleId,
+                SourceId,
                 target,
                 "manifest",
-                $"Event hook '{target}' has no matching module.json request."));
+                $"Event hook '{target}' has no matching package.json request."));
         }
 
         var fallback = kind == ModuleEventHookKind.Listener
@@ -937,10 +935,10 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.ManifestEffectMismatch,
-                moduleId,
+                SourceId,
                 target,
                 manifest.ToString(),
-                $"Event hook '{target}' effects do not equal its module.json request."));
+                $"Event hook '{target}' effects do not equal its package.json request."));
         }
 
         return declared ?? fallback;
@@ -948,7 +946,7 @@ public static class SharpClawModuleCompiler
 
     private static ActionInterceptionCapabilities ParseActionEffects(
         IReadOnlyList<string>? effects,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
@@ -966,7 +964,7 @@ public static class SharpClawModuleCompiler
                 "wrap" => ActionInterceptionCapabilities.Wrap,
                 "observe" => ActionInterceptionCapabilities.Observe,
                 "publishevents" => ActionInterceptionCapabilities.PublishEvents,
-                _ => UnknownActionEffect(effect, moduleId, target, errors),
+                _ => UnknownActionEffect(effect, SourceId, target, errors),
             };
         }
 
@@ -975,7 +973,7 @@ public static class SharpClawModuleCompiler
 
     private static EventInterceptionCapabilities ParseEventEffects(
         IReadOnlyList<string>? effects,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
@@ -989,7 +987,7 @@ public static class SharpClawModuleCompiler
                 "cancel" => EventInterceptionCapabilities.Cancel,
                 "stoppropagation" => EventInterceptionCapabilities.StopPropagation,
                 "observe" => EventInterceptionCapabilities.Observe,
-                _ => UnknownEventEffect(effect, moduleId, target, errors),
+                _ => UnknownEventEffect(effect, SourceId, target, errors),
             };
         }
 
@@ -998,13 +996,13 @@ public static class SharpClawModuleCompiler
 
     private static ActionInterceptionCapabilities UnknownActionEffect(
         string effect,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
         errors.Add(Error(
             ModuleGraphErrorCodes.ManifestEffectMismatch,
-            moduleId,
+            SourceId,
             target,
             effect,
             $"Action hook '{target}' requests unknown effect '{effect}'."));
@@ -1013,25 +1011,25 @@ public static class SharpClawModuleCompiler
 
     private static EventInterceptionCapabilities UnknownEventEffect(
         string effect,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
         errors.Add(Error(
             ModuleGraphErrorCodes.ManifestEffectMismatch,
-            moduleId,
+            SourceId,
             target,
             effect,
             $"Event hook '{target}' requests unknown effect '{effect}'."));
         return 0;
     }
 
-    private static ModuleManifestHookRequest? FindHookRequest(ModuleManifest? manifest, string target) =>
+    private static PackageHookRequest? FindHookRequest(PackageManifest? manifest, string target) =>
         manifest?.RequestedHooks?.SingleOrDefault(request =>
             string.Equals(request.Target, target, StringComparison.Ordinal));
 
-    private static ModuleManifestEventRequest? FindEventRequest(
-        ModuleManifest? manifest,
+    private static PackageEventRequest? FindEventRequest(
+        PackageManifest? manifest,
         string target,
         EventDelivery delivery) =>
         manifest?.RequestedEvents?.SingleOrDefault(request =>
@@ -1053,7 +1051,7 @@ public static class SharpClawModuleCompiler
     private static IReadOnlyList<T> OrderHooks<T>(
         IReadOnlyList<T> hooks,
         Func<T, HookOrdering> ordering,
-        string moduleId,
+        string SourceId,
         string target,
         ICollection<GraphCompilationError> errors)
     {
@@ -1062,7 +1060,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.DuplicateHook,
-                moduleId,
+                SourceId,
                 duplicate.Key ?? string.Empty,
                 target,
                 "Each hook ordering identifier must be nonempty and unique."));
@@ -1107,7 +1105,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.InvalidOrdering,
-                moduleId,
+                SourceId,
                 target,
                 "cycle",
                 $"The {target} hook ordering contains a cycle."));
@@ -1124,7 +1122,7 @@ public static class SharpClawModuleCompiler
                 {
                     errors.Add(Error(
                         ModuleGraphErrorCodes.InvalidOrdering,
-                        moduleId,
+                        SourceId,
                         source,
                         reference,
                         $"Hook '{source}' references unknown hook '{reference}'."));
@@ -1143,7 +1141,7 @@ public static class SharpClawModuleCompiler
         ModuleBuilderState state,
         IReadOnlyList<ModuleActionHook> actionHooks,
         IReadOnlyList<ModuleEventHook> eventHooks,
-        string moduleId,
+        string SourceId,
         ICollection<GraphCompilationError> errors)
     {
         foreach (var duplicate in actionHooks.GroupBy(ActionSubscriptionKey, StringComparer.Ordinal)
@@ -1151,7 +1149,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.UnsupportedTransport,
-                moduleId,
+                SourceId,
                 duplicate.Key,
                 "sidecar",
                 $"The published sidecar discovery contract permits one action subscription for target '{duplicate.Key}'."));
@@ -1162,7 +1160,7 @@ public static class SharpClawModuleCompiler
         {
             errors.Add(Error(
                 ModuleGraphErrorCodes.UnsupportedTransport,
-                moduleId,
+                SourceId,
                 duplicate.Key,
                 "sidecar",
                 $"The published sidecar discovery contract permits one event subscription for target '{duplicate.Key}'."));
@@ -1178,7 +1176,7 @@ public static class SharpClawModuleCompiler
     private static string ComputeHash(
         ModuleIdentity identity,
         IReadOnlyList<ModuleContractContribution> contracts,
-        IReadOnlyList<ModuleStorageContractDescriptor> storage,
+        IReadOnlyList<ScopedStorageContractDescriptor> storage,
         IReadOnlyList<ModuleActionDefinition> actions,
         IReadOnlyList<ModuleEventDefinition> events,
         IReadOnlyList<ModuleActionHook> actionHooks,
@@ -1187,7 +1185,7 @@ public static class SharpClawModuleCompiler
         ModuleChatContributions chat,
         ModuleApplicationContributions application,
         IReadOnlyList<ModuleActionEntryRegistration> actionEntries,
-        IReadOnlyList<ModuleFeatureDescriptor> features)
+        IReadOnlyList<FeatureDescriptor> features)
     {
         var records = new List<string>
         {
@@ -1196,7 +1194,7 @@ public static class SharpClawModuleCompiler
         records.AddRange(contracts.OrderBy(value => value.ContractName, StringComparer.Ordinal)
             .Select(value => $"contract|{value.ContractName}|{value.SchemaVersion}|{value.ServiceType.AssemblyQualifiedName}|{value.MaxBytes}|{value.IsExport}|{value.Optional}"));
         records.AddRange(storage.OrderBy(value => value.StorageName, StringComparer.Ordinal)
-            .Select(value => $"storage|{value.ModuleId}|{value.StorageName}|{value.MaxDocumentBytes}|{value.MaxBatchSize}"));
+            .Select(value => $"storage|{value.SourceId}|{value.StorageName}|{value.MaxDocumentBytes}|{value.MaxBatchSize}"));
         records.AddRange(actions.OrderBy(value => value.Descriptor.Key.Value, StringComparer.Ordinal)
             .Select(value => $"action|{value.Descriptor.Key.Value}|{value.Descriptor.Version}|{value.Descriptor.Category}|{(int)value.Descriptor.Capabilities}|{value.ActionType.AssemblyQualifiedName}|{value.ResultType.AssemblyQualifiedName}|{value.Descriptor.InputSchema.ContentHash}|{value.Descriptor.ResultSchema.ContentHash}"));
         records.AddRange(events.OrderBy(value => value.Descriptor.Key.Value, StringComparer.Ordinal)
@@ -1210,9 +1208,9 @@ public static class SharpClawModuleCompiler
             .OrderBy(value => value.Descriptor.Id, StringComparer.Ordinal)
             .Select(value => $"{value.Descriptor.Id}:{value.Descriptor.Method}:{value.Descriptor.Path}:{value.Descriptor.Transport}:{value.HandlerType.AssemblyQualifiedName}"))}|{string.Join(',', application.CliCommands.Select(value => value.Descriptor.Name))}|{string.Join(',', application.UiContributionTypes.Select(type => type.AssemblyQualifiedName))}");
         records.AddRange(actionEntries.OrderBy(value => value.Descriptor.Key.Value, StringComparer.Ordinal)
-            .Select(value => $"action-entry|{value.OwnerModuleId}|{value.Descriptor.Key.Value}|{value.Descriptor.Version}|{value.Descriptor.DescriptorHash}|{value.TerminalId:D}|{value.TerminalType.AssemblyQualifiedName}"));
+            .Select(value => $"action-entry|{value.OwnerId}|{value.Descriptor.Key.Value}|{value.Descriptor.Version}|{value.Descriptor.DescriptorHash}|{value.TerminalId:D}|{value.TerminalType.AssemblyQualifiedName}"));
         records.AddRange(features.OrderBy(value => value.ContractName, StringComparer.Ordinal)
-            .Select(value => $"feature|{value.ContractName}|{value.SchemaVersion}|{value.OwnerModuleId}|{value.MaxBytes}|{value.Required}"));
+            .Select(value => $"feature|{value.ContractName}|{value.SchemaVersion}|{value.OwnerId}|{value.MaxBytes}|{value.Required}"));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', records))));
     }
 
@@ -1222,9 +1220,9 @@ public static class SharpClawModuleCompiler
 
     private static GraphCompilationError Error(
         string code,
-        string moduleId,
+        string SourceId,
         string target,
         string effect,
         string message) =>
-        new(code, moduleId, target, effect, message);
+        new(code, SourceId, target, effect, message);
 }

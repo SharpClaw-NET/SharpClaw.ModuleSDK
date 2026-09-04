@@ -1,5 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -45,7 +45,7 @@ internal sealed class ModuleBuilderState(ModuleIdentity identity)
     public ModuleIdentity Identity { get; } = identity;
     public ServiceCollection Services { get; } = [];
     public List<ModuleContractContribution> Contracts { get; } = [];
-    public List<ModuleStorageContractDescriptor> Storage { get; } = [];
+    public List<ScopedStorageContractDescriptor> Storage { get; } = [];
     public List<ModuleActionDefinition> Actions { get; } = [];
     public List<ModuleActionEntryRegistration> ActionEntries { get; } = [];
     public List<ModuleEventDefinition> Events { get; } = [];
@@ -53,17 +53,17 @@ internal sealed class ModuleBuilderState(ModuleIdentity identity)
     public List<PendingEventHook> EventHooks { get; } = [];
     public List<ModuleToolRegistration> Tools { get; } = [];
     public List<Type> ConversationResolvers { get; } = [];
-    public List<ExclusiveRegistration> ConversationResolverRegistrations { get; } = [];
+    public List<ExclusiveClaim> ConversationResolverRegistrations { get; } = [];
     public List<Type> ProfileResolvers { get; } = [];
-    public List<ExclusiveRegistration> ProfileResolverRegistrations { get; } = [];
+    public List<ExclusiveClaim> ProfileResolverRegistrations { get; } = [];
     public List<Type> ContextContributors { get; } = [];
     public List<ModuleEndpointContribution> Endpoints { get; } = [];
     public List<ModuleCliContribution> CliCommands { get; } = [];
     public List<Type> UiContributions { get; } = [];
 }
 
-/// <summary>Records one module's complete candidate contribution graph.</summary>
-public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
+/// <summary>Collects one package entry's services and typed host metadata.</summary>
+public sealed class SharpClawModuleBuilder : IServiceCollection
 {
     private readonly ModuleBuilderState _state;
 
@@ -72,7 +72,6 @@ public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
     {
         ArgumentNullException.ThrowIfNull(identity);
         _state = new ModuleBuilderState(identity);
-        Services = _state.Services;
         Contracts = new ModuleContractBuilder(_state);
         Storage = new ModuleStorageBuilder(_state);
         Actions = new ModuleActionDefinitionBuilder(_state);
@@ -82,29 +81,51 @@ public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
         Chat = new ModuleChatLifecycleBuilder(_state);
     }
 
-    /// <inheritdoc />
-    public IServiceCollection Services { get; }
+    internal IContractBuilder Contracts { get; }
 
-    /// <inheritdoc />
-    public IModuleContractBuilder Contracts { get; }
+    internal IStorageContractBuilder Storage { get; }
 
-    /// <inheritdoc />
-    public IModuleStorageBuilder Storage { get; }
+    internal IActionDefinitionBuilder Actions { get; }
 
-    /// <inheritdoc />
-    public IActionDefinitionBuilder Actions { get; }
+    internal IActionHookBuilder Hooks { get; }
 
-    /// <inheritdoc />
-    public IActionHookBuilder Hooks { get; }
+    internal IEventDefinitionBuilder Events { get; }
 
-    /// <inheritdoc />
-    public IEventDefinitionBuilder Events { get; }
+    internal IToolContributionBuilder Tools { get; }
 
-    /// <inheritdoc />
-    public IToolContributionBuilder Tools { get; }
+    internal IChatLifecycleBuilder Chat { get; }
 
-    /// <inheritdoc />
-    public IChatLifecycleBuilder Chat { get; }
+    public ServiceDescriptor this[int index]
+    {
+        get => _state.Services[index];
+        set => _state.Services[index] = value;
+    }
+
+    public int Count => _state.Services.Count;
+
+    public bool IsReadOnly => false;
+
+    public void Add(ServiceDescriptor item) =>
+        ((ICollection<ServiceDescriptor>)_state.Services).Add(item);
+
+    public void Clear() => _state.Services.Clear();
+
+    public bool Contains(ServiceDescriptor item) => _state.Services.Contains(item);
+
+    public void CopyTo(ServiceDescriptor[] array, int arrayIndex) =>
+        _state.Services.CopyTo(array, arrayIndex);
+
+    public IEnumerator<ServiceDescriptor> GetEnumerator() => _state.Services.GetEnumerator();
+
+    public int IndexOf(ServiceDescriptor item) => _state.Services.IndexOf(item);
+
+    public void Insert(int index, ServiceDescriptor item) => _state.Services.Insert(index, item);
+
+    public bool Remove(ServiceDescriptor item) => _state.Services.Remove(item);
+
+    public void RemoveAt(int index) => _state.Services.RemoveAt(index);
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 
     internal ModuleBuilderState State => _state;
 
@@ -159,31 +180,29 @@ public sealed class SharpClawModuleBuilder : ISharpClawModuleBuilder
 }
 
 /// <summary>Records application contributions for one module.</summary>
-public sealed class SharpClawApplicationBuilder : ISharpClawApplicationBuilder
+internal sealed class SharpClawApplicationBuilder
 {
     /// <summary>Initializes an application builder that uses the module builder state.</summary>
-    public SharpClawApplicationBuilder(SharpClawModuleBuilder moduleBuilder)
+    public SharpClawApplicationBuilder(SharpClawModuleBuilder registrationBuilder)
     {
-        ArgumentNullException.ThrowIfNull(moduleBuilder);
-        var state = moduleBuilder.State;
+        ArgumentNullException.ThrowIfNull(registrationBuilder);
+        var state = registrationBuilder.State;
         Endpoints = new ModuleEndpointContributionBuilder(state);
         Cli = new ModuleCliContributionBuilder(state);
         Ui = new ModuleUiContributionBuilder(state);
     }
 
-    /// <inheritdoc />
     public IEndpointContributionBuilder Endpoints { get; }
 
-    /// <inheritdoc />
     public ICliContributionBuilder Cli { get; }
 
-    /// <inheritdoc />
     public IUiContributionBuilder Ui { get; }
 }
 
-internal sealed class ModuleContractBuilder(ModuleBuilderState state) : IModuleContractBuilder
+internal sealed class ModuleContractBuilder(ModuleBuilderState state) : IContractBuilder
 {
-    public void Export<T>(string contractName, int schemaVersion = 1, int maxBytes = 65_536) =>
+    public void Export<T>(string contractName, int schemaVersion = 1, int maxBytes = 65_536)
+    {
         state.Contracts.Add(new ModuleContractContribution(
             state.Identity.Id,
             contractName,
@@ -192,8 +211,18 @@ internal sealed class ModuleContractBuilder(ModuleBuilderState state) : IModuleC
             maxBytes,
             IsExport: true,
             Optional: false));
+        state.Services.AddSingleton(new ServiceContractBinding(
+            state.Identity.Id,
+            typeof(T),
+            contractName,
+            schemaVersion,
+            maxBytes,
+            IsExport: true,
+            Optional: false));
+    }
 
-    public void Require<T>(string contractName, int minimumSchemaVersion = 1, bool optional = false) =>
+    public void Require<T>(string contractName, int minimumSchemaVersion = 1, bool optional = false)
+    {
         state.Contracts.Add(new ModuleContractContribution(
             state.Identity.Id,
             contractName,
@@ -202,11 +231,24 @@ internal sealed class ModuleContractBuilder(ModuleBuilderState state) : IModuleC
             0,
             IsExport: false,
             optional));
+        state.Services.AddSingleton(new ServiceContractBinding(
+            state.Identity.Id,
+            typeof(T),
+            contractName,
+            minimumSchemaVersion,
+            0,
+            IsExport: false,
+            optional));
+    }
 }
 
-internal sealed class ModuleStorageBuilder(ModuleBuilderState state) : IModuleStorageBuilder
+internal sealed class ModuleStorageBuilder(ModuleBuilderState state) : IStorageContractBuilder
 {
-    public void Add(ModuleStorageContractDescriptor contract) => state.Storage.Add(contract);
+    public void Add(ScopedStorageContractDescriptor contract)
+    {
+        state.Storage.Add(contract);
+        state.Services.AddSingleton(contract);
+    }
 }
 
 internal sealed class ModuleActionDefinitionBuilder(ModuleBuilderState state) : IActionDefinitionBuilder
@@ -241,6 +283,8 @@ internal sealed class ModuleActionDefinitionBuilder(ModuleBuilderState state) : 
             descriptor.ContinuationPolicy,
             descriptor.DefaultTimeout,
             Array.AsReadOnly(safePoints.ToArray())));
+        state.Services.AddSingleton<IActionDefinitionBinding>(
+            new ActionDefinitionBinding<TAction, TResult>(state.Identity.Id, descriptor));
     }
 }
 
@@ -341,7 +385,8 @@ internal sealed class ModuleActionHookRegistrationBuilder(
         Type handlerType,
         bool isUntyped,
         HookOrdering ordering,
-        ActionInterceptionCapabilities? requestedCapabilities) =>
+        ActionInterceptionCapabilities? requestedCapabilities)
+    {
         state.ActionHooks.Add(new PendingActionHook(
             targetKind,
             actionKey,
@@ -359,6 +404,25 @@ internal sealed class ModuleActionHookRegistrationBuilder(
             descriptorContainsSensitiveData,
             sensitiveApprovalRequired,
             acceptUnknownNonSensitiveSchemas));
+        state.Services.AddSingleton(new ActionHookBinding(
+            state.Identity.Id,
+            ToBehaviorTarget(targetKind),
+            actionKey,
+            category,
+            handlerType,
+            isUntyped,
+            ordering,
+            handlerType.AssemblyQualifiedName ?? handlerType.FullName ?? handlerType.Name));
+    }
+
+    private static BehaviorTargetKind ToBehaviorTarget(SidecarHookTargetKind value) =>
+        value switch
+        {
+            SidecarHookTargetKind.Exact => BehaviorTargetKind.Exact,
+            SidecarHookTargetKind.Category => BehaviorTargetKind.Category,
+            SidecarHookTargetKind.Wildcard => BehaviorTargetKind.Any,
+            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+        };
 }
 
 internal sealed class ModuleEventDefinitionBuilder(ModuleBuilderState state)
@@ -385,6 +449,8 @@ internal sealed class ModuleEventDefinitionBuilder(ModuleBuilderState state)
             descriptor,
             descriptor.DurableByDefault,
             Array.AsReadOnly(delivery.ToArray())));
+        state.Services.AddSingleton<IEventDefinitionBinding>(
+            new EventDefinitionBinding<TEvent>(state.Identity.Id, descriptor));
     }
 
     public IEventHookRegistrationBuilder For(SharpClawEventKey key) =>
@@ -485,7 +551,8 @@ internal sealed class ModuleEventHookRegistrationBuilder(
         ModuleEventHookKind kind,
         EventDelivery delivery,
         HookOrdering ordering,
-        EventInterceptionCapabilities? requestedCapabilities) =>
+        EventInterceptionCapabilities? requestedCapabilities)
+    {
         state.EventHooks.Add(new PendingEventHook(
             targetKind,
             eventKey,
@@ -504,6 +571,29 @@ internal sealed class ModuleEventHookRegistrationBuilder(
             descriptorContainsSensitiveData,
             sensitiveApprovalRequired,
             acceptUnknownNonSensitiveSchemas));
+        state.Services.AddSingleton(new EventHookBinding(
+            state.Identity.Id,
+            ToBehaviorTarget(targetKind),
+            eventKey,
+            category,
+            handlerType,
+            isUntyped,
+            kind == ModuleEventHookKind.Interceptor
+                ? EventHookKind.Interceptor
+                : EventHookKind.Listener,
+            delivery,
+            ordering,
+            handlerType.AssemblyQualifiedName ?? handlerType.FullName ?? handlerType.Name));
+    }
+
+    private static BehaviorTargetKind ToBehaviorTarget(SidecarHookTargetKind value) =>
+        value switch
+        {
+            SidecarHookTargetKind.Exact => BehaviorTargetKind.Exact,
+            SidecarHookTargetKind.Category => BehaviorTargetKind.Category,
+            SidecarHookTargetKind.Wildcard => BehaviorTargetKind.Any,
+            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+        };
 }
 
 internal sealed class ModuleToolContributionBuilder(ModuleBuilderState state) : IToolContributionBuilder
@@ -518,19 +608,24 @@ internal sealed class ModuleToolContributionBuilder(ModuleBuilderState state) : 
             $"{state.Identity.Id}:tool:{descriptor.Name}",
             ModuleSchemaIdentity.ToolInput(descriptor),
             ModuleSchemaIdentity.ToolResult(descriptor)));
+        state.Services.AddSingleton(new ToolHandlerBinding(
+            state.Identity.Id,
+            descriptor,
+            typeof(THandler),
+            $"{state.Identity.Id}:tool:{descriptor.Name}"));
     }
 }
 
 internal sealed class ModuleChatLifecycleBuilder(ModuleBuilderState state) : IChatLifecycleBuilder
 {
-    public void UseConversationResolver<TResolver>(ExclusiveRegistration registration)
+    public void UseConversationResolver<TResolver>(ExclusiveClaim registration)
         where TResolver : IConversationResolver
     {
         state.ConversationResolvers.Add(typeof(TResolver));
         state.ConversationResolverRegistrations.Add(registration);
     }
 
-    public void UseChatProfileResolver<TResolver>(ExclusiveRegistration registration)
+    public void UseChatProfileResolver<TResolver>(ExclusiveClaim registration)
         where TResolver : IChatProfileResolver
     {
         state.ProfileResolvers.Add(typeof(TResolver));
@@ -543,18 +638,18 @@ internal sealed class ModuleChatLifecycleBuilder(ModuleBuilderState state) : ICh
 
 internal sealed class ModuleEndpointContributionBuilder(ModuleBuilderState state) : IEndpointContributionBuilder
 {
-    public void AddHttp<THandler>(ModuleEndpointRouteDescriptor descriptor)
-        where THandler : class, IModuleHttpEndpointHandler =>
+    public void AddHttp<THandler>(EndpointRouteDescriptor descriptor)
+        where THandler : class, IHttpEndpointHandler =>
         state.Endpoints.Add(new ModuleEndpointContribution(descriptor, typeof(THandler)));
 
-    public void AddWebSocket<THandler>(ModuleEndpointRouteDescriptor descriptor)
-        where THandler : class, IModuleWebSocketEndpointHandler =>
+    public void AddWebSocket<THandler>(EndpointRouteDescriptor descriptor)
+        where THandler : class, IWebSocketEndpointHandler =>
         state.Endpoints.Add(new ModuleEndpointContribution(descriptor, typeof(THandler)));
 }
 
 internal sealed class ModuleCliContributionBuilder(ModuleBuilderState state) : ICliContributionBuilder
 {
-    public void Add<THandler>(ModuleCliCommandDescriptor descriptor) where THandler : IModuleCliHandler =>
+    public void Add<THandler>(CliCommandDescriptor descriptor) where THandler : ICliHandler =>
         state.CliCommands.Add(new ModuleCliContribution(descriptor, typeof(THandler)));
 }
 

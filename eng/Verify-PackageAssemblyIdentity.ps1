@@ -57,8 +57,8 @@
  try {
      $sdkPackageHash = Get-ZipEntryHash -Archive $sdkArchive -Path 'lib/net10.0/SharpClaw.ModuleSDK.dll'
      $sdkPayloadHash = Get-ZipEntryHash -Archive $outOfProcessArchive -Path 'tools/net10.0/any/SharpClaw.ModuleSDK.dll'
-     $inProcessPackageHash = Get-ZipEntryHash -Archive $inProcessArchive -Path 'lib/net10.0/SharpClaw.ModuleHost.InProcess.dll'
-     $inProcessPayloadHash = Get-ZipEntryHash -Archive $outOfProcessArchive -Path 'tools/net10.0/any/SharpClaw.ModuleHost.InProcess.dll'
+     $inProcessPackageHash = Get-ZipEntryHash -Archive $inProcessArchive -Path 'lib/net10.0/SharpClaw.SidecarHost.InProcess.dll'
+     $inProcessPayloadHash = Get-ZipEntryHash -Archive $outOfProcessArchive -Path 'tools/net10.0/any/SharpClaw.SidecarHost.InProcess.dll'
 
      if ($sdkPackageHash -ne $sdkPayloadHash) {
          throw "ModuleSDK package and OutOfProcess payload hashes differ: $sdkPackageHash != $sdkPayloadHash."

@@ -2,7 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK.Tests;
 
@@ -156,7 +156,7 @@ public sealed class ModuleCompilerTests
             item.Descriptor.Name == "sample.inspect"
             && item.HandlerType == typeof(SampleCli));
         graph.CreateSidecarApplicationDiscovery().Should().Match<SidecarApplicationDiscovery>(
-            discovery => discovery.ModuleId == graph.Identity.Id
+            discovery => discovery.SourceId == graph.Identity.Id
                 && discovery.ContractHash == graph.ContractHash
                 && discovery.Endpoints.Single().TypeName == typeof(SampleEndpoints).FullName
                 && discovery.Endpoints.Single().Descriptor.Id == "sample.endpoint"
@@ -167,7 +167,7 @@ public sealed class ModuleCompilerTests
                 sequence: 1,
                 DateTimeOffset.UtcNow.AddMinutes(1))
             .StorageContracts.Should().ContainSingle(contract =>
-                contract.ModuleId == graph.Identity.Id
+                contract.SourceId == graph.Identity.Id
                 && contract.StorageName == "application-store");
     }
 
@@ -238,7 +238,7 @@ public sealed class ModuleCompilerTests
                 HostEvents = [HostEvent(CompleteModule.HostEvent)],
             });
 
-    private static ModuleManifest Manifest(ModuleIdentity identity, bool includeCompleteRequests) =>
+    private static PackageManifest Manifest(ModuleIdentity identity, bool includeCompleteRequests) =>
         new(
             identity.Id,
             identity.DisplayName,
@@ -246,49 +246,49 @@ public sealed class ModuleCompilerTests
             identity.ToolPrefix,
             "Sample.dll",
             "0.5.0-beta.2",
-            Runtime: ModuleManifestRuntimeInfo.DotNet,
-            HostMode: ModuleManifestRuntimeInfo.HostModeSidecar,
+            Runtime: PackageRuntimeInfo.DotNet,
+            HostMode: PackageRuntimeInfo.HostModeSidecar,
             RequestedHooks: includeCompleteRequests
                 ?
                 [
-                    new ModuleManifestHookRequest(
+                    new PackageHookRequest(
                         CompleteModule.HostAction.Key.Value,
                         ["inspect", "wrap"]),
-                    new ModuleManifestHookRequest("sample.*", ["inspect", "wrap"]),
-                    new ModuleManifestHookRequest("*", ["inspect", "wrap"]),
+                    new PackageHookRequest("sample.*", ["inspect", "wrap"]),
+                    new PackageHookRequest("*", ["inspect", "wrap"]),
                 ]
                 : RequestedHooksFor(identity.Id),
             RequestedEvents: includeCompleteRequests
                 ?
                 [
-                    new ModuleManifestEventRequest(
+                    new PackageEventRequest(
                         CompleteModule.HostEvent.Key.Value,
                         "Inline",
                         ["inspect", "replace"]),
-                    new ModuleManifestEventRequest(
+                    new PackageEventRequest(
                         "sample.*",
                         "Inline",
                         ["inspect", "replace"]),
-                    new ModuleManifestEventRequest("*", "Queued", ["observe"]),
+                    new PackageEventRequest("*", "Queued", ["observe"]),
                 ]
                 : []);
 
-    private static ModuleManifestHookRequest[] RequestedHooksFor(string id) =>
+    private static PackageHookRequest[] RequestedHooksFor(string id) =>
         id switch
         {
             "unsupported_effect" =>
             [
-                new ModuleManifestHookRequest(
+                new PackageHookRequest(
                     CompleteModule.HostAction.Key.Value,
                     ["cancel"]),
             ],
             "typed_category" =>
             [
-                new ModuleManifestHookRequest("sample.*", ["inspect", "wrap"]),
+                new PackageHookRequest("sample.*", ["inspect", "wrap"]),
             ],
             "self_subscription" =>
             [
-                new ModuleManifestHookRequest(
+                new PackageHookRequest(
                     CompleteModule.HostAction.Key.Value,
                     ["inspect", "wrap"]),
             ],
@@ -441,16 +441,16 @@ public sealed class ModuleCompilerTests
         public static EventDescriptor<ChangedEvent> OwnedEvent { get; } =
             HostEvent with { Key = new SharpClawEventKey("sample.owned.changed") };
 
-        public ModuleIdentity Identity { get; } = new("sample_module", "Sample Module", "sample");
+        public ModuleIdentity Identity { get; } = new("sample_registration", "Sample Module", "sample");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Actions.Add(OwnedAction);
-            module.Events.Add(OwnedEvent);
-            module.Hooks.For(HostAction).Use<EchoHook>(
+            services.AddAction(OwnedAction);
+            services.AddEvent(OwnedEvent);
+            services.OnAction(HostAction).Use<EchoHook>(
                 ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                 new HookOrdering("sample.action.exact", Before: ["sample.action.category"]));
-            module.Hooks.Category(
+            services.OnActionCategory(
                     "sample",
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedAction("input", "sample.*"),
@@ -459,7 +459,7 @@ public sealed class ModuleCompilerTests
                 .UseAny<AnyActionHook>(
                     ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                     new HookOrdering("sample.action.category"));
-            module.Hooks.AnyAction(
+            services.OnAnyAction(
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedAction("input", "*"),
                     ModuleSchemaIdentity.UntypedAction("result", "*"))
@@ -467,10 +467,10 @@ public sealed class ModuleCompilerTests
                     ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                     new HookOrdering("sample.action.wildcard", HookPriority.Low));
 
-            module.Events.For(HostEvent).Intercept<ChangedEventHook>(
+            services.OnEvent(HostEvent).Intercept<ChangedEventHook>(
                 EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Replace,
                 new HookOrdering("sample.event.exact", Before: ["sample.event.category"]));
-            module.Events.Category(
+            services.OnEventCategory(
                     "sample",
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedEvent("sample.*"),
@@ -478,14 +478,14 @@ public sealed class ModuleCompilerTests
                 .InterceptAny<AnyEventHook>(
                     EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Replace,
                     new HookOrdering("sample.event.category"));
-            module.Events.AnyEvent(
+            services.OnAnyEvent(
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedEvent("*"))
                 .ListenAny<AnyEventListener>(
                     EventDelivery.Queued,
                     new HookOrdering("sample.event.wildcard", HookPriority.Low));
 
-            module.Tools.Add<EchoTool>(new ToolDescriptor(
+            services.AddTool<EchoTool>(new ToolDescriptor(
                 "sample.echo",
                 "Returns the supplied text.",
                 JsonSerializer.SerializeToElement(new
@@ -501,13 +501,13 @@ public sealed class ModuleCompilerTests
     {
         public ModuleIdentity Identity { get; } = new("unsupported_effect", "Unsupported Effect", "unsupported");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Actions.Add(CompleteModule.HostAction with
+            services.AddAction(CompleteModule.HostAction with
             {
                 Capabilities = ActionInterceptionCapabilities.Inspect,
             });
-            module.Hooks.For(CompleteModule.HostAction with
+            services.OnAction(CompleteModule.HostAction with
                 {
                     Capabilities = ActionInterceptionCapabilities.Inspect,
                 })
@@ -521,14 +521,14 @@ public sealed class ModuleCompilerTests
     {
         public ModuleIdentity Identity { get; } = new("duplicate_tool", "Duplicate Tool", "duplicate");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
             var descriptor = new ToolDescriptor(
                 "duplicate.echo",
                 "Echoes input.",
                 JsonSerializer.SerializeToElement(new { type = "object" }));
-            module.Tools.Add<EchoTool>(descriptor);
-            module.Tools.Add<EchoTool>(descriptor);
+            services.AddTool<EchoTool>(descriptor);
+            services.AddTool<EchoTool>(descriptor);
         }
     }
 
@@ -536,10 +536,10 @@ public sealed class ModuleCompilerTests
     {
         public ModuleIdentity Identity { get; } = new("self_subscription", "Self Subscription", "self");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Actions.Add(CompleteModule.HostAction);
-            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+            services.AddAction(CompleteModule.HostAction);
+            services.OnAction(CompleteModule.HostAction).Use<EchoHook>(
                 ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Wrap,
                 new HookOrdering("self.subscription"));
         }
@@ -549,31 +549,32 @@ public sealed class ModuleCompilerTests
     {
         public ModuleIdentity Identity { get; } = new("typed_category", "Typed Category", "typed");
 
-        public void Configure(ISharpClawModuleBuilder module) =>
-            module.Hooks.Category("sample").Use<EchoHook>(new HookOrdering("typed.category"));
+        public void ConfigureServices(IServiceCollection services) =>
+            services.OnActionCategory(
+                    "sample",
+                    ContractVersionRange.Exact(1),
+                    ModuleSchemaIdentity.UntypedAction("input", "sample.*"),
+                    ModuleSchemaIdentity.UntypedAction("result", "sample.*"))
+                .Use<EchoHook>(new HookOrdering("typed.category"));
     }
 
-    private sealed class ApplicationModule : ISharpClawModule, ISharpClawApplicationModule
+    private sealed class ApplicationModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("application_module", "Application Module", "application");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Storage.Add(new ModuleStorageContractDescriptor(
+            services.AddStorage(new ScopedStorageContractDescriptor(
                 Identity.Id,
                 "application-store",
-                [new ModuleStorageOperationDescriptor("get")],
+                [new ScopedStorageOperationDescriptor("get")],
                 "Application test storage."));
-        }
-
-        public void ConfigureApplication(ISharpClawApplicationBuilder application)
-        {
-            application.Endpoints.AddHttp<SampleEndpoints>(new ModuleEndpointRouteDescriptor(
+            services.AddHttpEndpoint<SampleEndpoints>(new EndpointRouteDescriptor(
                 "sample.endpoint",
                 "/sample",
                 "GET",
                 HostEndpointTransport.Http));
-            application.Cli.Add<SampleCli>(new ModuleCliCommandDescriptor(
+            services.AddCliCommand<SampleCli>(new CliCommandDescriptor(
                 "sample.inspect",
                 ["sample-i"],
                 "Inspects the sample module.",
@@ -582,28 +583,24 @@ public sealed class ModuleCompilerTests
         }
     }
 
-    private sealed class UiApplicationModule : ISharpClawModule, ISharpClawApplicationModule
+    private sealed class UiApplicationModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("ui_application", "UI Application", "ui");
 
-        public void Configure(ISharpClawModuleBuilder module)
-        {
-        }
-
-        public void ConfigureApplication(ISharpClawApplicationBuilder application) =>
-            application.Ui.Add<SampleUi>();
+        public void ConfigureServices(IServiceCollection services) =>
+            services.AddUi<SampleUi>();
     }
 
     private sealed class DuplicateSubscriptionModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("duplicate_subscription", "Duplicate Subscription", "duplicate");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+            services.OnAction(CompleteModule.HostAction).Use<EchoHook>(
                 ActionInterceptionCapabilities.Inspect,
                 new HookOrdering("duplicate.one"));
-            module.Hooks.For(CompleteModule.HostAction).Use<EchoHook>(
+            services.OnAction(CompleteModule.HostAction).Use<EchoHook>(
                 ActionInterceptionCapabilities.Inspect,
                 new HookOrdering("duplicate.two"));
         }
@@ -653,24 +650,24 @@ public sealed class ModuleCompilerTests
             ValueTask.FromResult(ToolResult.Text(invocation.Arguments.GetProperty("text").GetString()!));
     }
 
-    private sealed class SampleEndpoints : IModuleHttpEndpointHandler
+    private sealed class SampleEndpoints : IHttpEndpointHandler
     {
-        public ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+        public ValueTask<HttpEndpointResponse> InvokeAsync(
             HostEndpointRouteRequest request,
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken) =>
-            ValueTask.FromResult(ModuleHttpEndpointResponse.Empty(204));
+            ValueTask.FromResult(HttpEndpointResponse.Empty(204));
     }
 
     private sealed class SampleUi;
 
-    private sealed class SampleCli : IModuleCliHandler
+    private sealed class SampleCli : ICliHandler
     {
-        public ValueTask<ModuleCliResult> ExecuteAsync(
-            ModuleCliInvocation invocation,
+        public ValueTask<CliResult> ExecuteAsync(
+            CliInvocation invocation,
             CancellationToken ct) =>
-            ValueTask.FromResult(new ModuleCliResult(
+            ValueTask.FromResult(new CliResult(
                 true,
-                [new ModuleCliOutput("stdout", invocation.Command)]));
+                [new CliOutput("stdout", invocation.Command)]));
     }
 }

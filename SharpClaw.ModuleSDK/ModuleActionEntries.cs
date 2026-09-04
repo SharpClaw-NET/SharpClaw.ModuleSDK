@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -63,7 +63,7 @@ public static class ModuleCrossSidecarActionEntryExtensions
 public sealed class ModuleActionEntryRegistration
 {
     internal ModuleActionEntryRegistration(
-        string ownerModuleId,
+        string ownerId,
         SidecarActionDescriptorIdentity descriptor,
         Type actionType,
         Type resultType,
@@ -71,7 +71,7 @@ public sealed class ModuleActionEntryRegistration
         Guid terminalId,
         IModuleActionEntryInvoker invoker)
     {
-        OwnerModuleId = ownerModuleId;
+        OwnerId = ownerId;
         Descriptor = descriptor;
         ActionType = actionType;
         ResultType = resultType;
@@ -81,7 +81,7 @@ public sealed class ModuleActionEntryRegistration
     }
 
     /// <summary>Gets the owning module identifier.</summary>
-    public string OwnerModuleId { get; }
+    public string OwnerId { get; }
 
     /// <summary>Gets the exact action descriptor identity.</summary>
     public SidecarActionDescriptorIdentity Descriptor { get; }
@@ -149,7 +149,7 @@ internal sealed class ModuleActionEntryInvoker<TAction, TResult, TTerminal> : IM
             context.Attempt,
             context.Deadline,
             _descriptor.Key,
-            context.Call.ModuleId,
+            context.Call.SourceId,
             context.Caller,
             action,
             context.Features,

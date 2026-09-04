@@ -1,4 +1,5 @@
-using SharpClaw.Contracts.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -6,12 +7,13 @@ namespace SharpClaw.ModuleSDK;
 public static class ModuleActionBuilderExtensions
 {
     /// <summary>Defines one typed action and supplies deterministic schemas when the descriptor omits them.</summary>
-    public static ModuleActionRegistration<TAction, TResult> DefineAction<TAction, TResult>(
-        this ISharpClawModuleBuilder builder,
+    public static ActionRegistration<TAction, TResult> DefineAction<TAction, TResult>(
+        this IServiceCollection services,
         ActionDescriptor<TAction, TResult> descriptor)
     {
-        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(descriptor);
+        var builder = SharpClawServiceCollection.Require(services);
 
         var registeredDescriptor = descriptor;
         if (descriptor.InputSchema is null || descriptor.ResultSchema is null)
@@ -32,17 +34,17 @@ public static class ModuleActionBuilderExtensions
         }
 
         builder.Actions.Add(registeredDescriptor);
-        return new ModuleActionRegistration<TAction, TResult>(builder, registeredDescriptor);
+        return new ActionRegistration<TAction, TResult>(builder, registeredDescriptor);
     }
 }
 
 /// <summary>Continues the registration of one typed module action.</summary>
-public sealed class ModuleActionRegistration<TAction, TResult>
+public sealed class ActionRegistration<TAction, TResult>
 {
-    private readonly ISharpClawModuleBuilder _builder;
+    private readonly SharpClawModuleBuilder _builder;
 
-    internal ModuleActionRegistration(
-        ISharpClawModuleBuilder builder,
+    internal ActionRegistration(
+        SharpClawModuleBuilder builder,
         ActionDescriptor<TAction, TResult> descriptor)
     {
         _builder = builder;

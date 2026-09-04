@@ -1,4 +1,5 @@
-using SharpClaw.Contracts.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Core.Kernel;
 
 namespace SharpClaw.ModuleSDK.Testing;
@@ -6,23 +7,23 @@ namespace SharpClaw.ModuleSDK.Testing;
 /// <summary>Builds one Core-backed module test host.</summary>
 public sealed class SharpClawModuleTestBuilder
 {
-    private readonly List<(ISharpClawModule Module, ModuleManifest Manifest)> _modules = [];
+    private readonly List<(ISharpClawModule Module, PackageManifest Manifest)> _registrations = [];
     private readonly List<ModuleTestHostAction> _hostActions = [];
     private readonly List<ModuleTestHostEvent> _hostEvents = [];
     private readonly HashSet<string> _sensitiveApprovals = new(StringComparer.Ordinal);
-    private IServiceProvider? _hostServices;
+    private readonly List<Action<IServiceCollection>> _serviceConfigurations = [];
     private KernelGraphCompileOptions _coreOptions = new();
     private RequestPrincipal _caller = RequestPrincipal.Anonymous;
     private ExtensionFeatureSet _features = ExtensionFeatureSet.Empty;
 
     /// <summary>Adds one module and its authoritative manifest.</summary>
-    public SharpClawModuleTestBuilder AddModule(
+    public SharpClawModuleTestBuilder AddRegistration(
         ISharpClawModule module,
-        ModuleManifest manifest)
+        PackageManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(manifest);
-        _modules.Add((module, manifest));
+        _registrations.Add((module, manifest));
         return this;
     }
 
@@ -44,17 +45,18 @@ public sealed class SharpClawModuleTestBuilder
     }
 
     /// <summary>Approves exact sensitive contributions selected by one module.</summary>
-    public SharpClawModuleTestBuilder ApproveSensitiveContributions(string moduleId)
+    public SharpClawModuleTestBuilder ApproveSensitiveContributions(string SourceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(moduleId);
-        _sensitiveApprovals.Add(moduleId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(SourceId);
+        _sensitiveApprovals.Add(SourceId);
         return this;
     }
 
-    /// <summary>Sets host services that can satisfy declared module dependencies.</summary>
-    public SharpClawModuleTestBuilder UseHostServices(IServiceProvider services)
+    /// <summary>Adds host services that can satisfy declared module dependencies.</summary>
+    public SharpClawModuleTestBuilder ConfigureServices(Action<IServiceCollection> configure)
     {
-        _hostServices = services ?? throw new ArgumentNullException(nameof(services));
+        _serviceConfigurations.Add(
+            configure ?? throw new ArgumentNullException(nameof(configure)));
         return this;
     }
 
@@ -78,10 +80,10 @@ public sealed class SharpClawModuleTestBuilder
     /// <summary>Compiles all modules and creates the test host.</summary>
     public SharpClawModuleTestHost Build()
     {
-        if (_modules.Count == 0)
+        if (_registrations.Count == 0)
             throw new InvalidOperationException("The module test host requires at least one module.");
 
-        var moduleGraphs = _modules.Select(item =>
+        var moduleGraphs = _registrations.Select(item =>
             SharpClawModuleCompiler.Compile(
                 item.Module,
                 item.Manifest,
@@ -92,25 +94,52 @@ public sealed class SharpClawModuleTestBuilder
                     HostEvents = _hostEvents.Select(evt => evt.SidecarDescriptor).ToArray(),
                 }))
             .ToArray();
-        var registry = new KernelModuleRegistry();
-        if (_hostActions.Count > 0 || _hostEvents.Count > 0)
-            registry.Add(new ModuleTestHostDefinitionModule(_hostActions, _hostEvents));
-        foreach (var item in _modules)
-            registry.Add(item.Module);
         var coreOptions = ModuleTestKernelOptions.Create(
             _coreOptions,
             moduleGraphs,
             _hostActions,
             _hostEvents,
             _sensitiveApprovals);
-        var coreGraph = registry.Compile(_hostServices, coreOptions);
+        var services = new ServiceCollection();
+        foreach (var configure in _serviceConfigurations)
+            configure(services);
+        services.AddSingleton<IActionDefinitionBinding>(
+            new ActionDefinitionBinding<ServiceStartContext, bool>(
+                ModuleLifecycleActions.Identity.Id,
+                ModuleLifecycleActions.Start));
+        services.AddSingleton<IActionDefinitionBinding>(
+            new ActionDefinitionBinding<ModuleIdentity, bool>(
+                ModuleLifecycleActions.Identity.Id,
+                ModuleLifecycleActions.Stop));
+        ModuleTestHostDefinitionSet.AddTo(services, _hostActions, _hostEvents);
+        foreach (var graph in moduleGraphs)
+        {
+            foreach (var descriptor in graph.Services)
+                ((ICollection<ServiceDescriptor>)services).Add(descriptor);
+        }
+        var serviceProvider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        KernelGraph coreGraph;
+        try
+        {
+            coreGraph = new KernelGraphBuilder().Compile(serviceProvider, coreOptions);
+        }
+        catch
+        {
+            serviceProvider.Dispose();
+            throw;
+        }
         var execution = new KernelActionExecutionContext(
             _caller,
             _features,
             Guid.NewGuid(),
             Guid.NewGuid());
         return new SharpClawModuleTestHost(
-            registry,
+            _registrations.Select(item => item.Module).ToArray(),
+            serviceProvider,
             coreGraph,
             execution,
             Array.AsReadOnly(moduleGraphs));

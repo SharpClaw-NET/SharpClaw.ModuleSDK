@@ -1,4 +1,5 @@
-using SharpClaw.Contracts.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Core.Kernel;
 
 namespace SharpClaw.ModuleSDK.Testing;
@@ -6,19 +7,22 @@ namespace SharpClaw.ModuleSDK.Testing;
 /// <summary>Runs module actions and events through the production Core graph.</summary>
 public sealed class SharpClawModuleTestHost : IAsyncDisposable
 {
-    private readonly KernelModuleRegistry _registry;
+    private readonly IReadOnlyList<ISharpClawModule> _modules;
+    private readonly ServiceProvider _services;
     private readonly KernelActionExecutionContext _execution;
     private readonly KernelActionDispatcher _actions;
     private readonly KernelEventDispatcher _events;
     private bool _started;
 
     internal SharpClawModuleTestHost(
-        KernelModuleRegistry registry,
+        IReadOnlyList<ISharpClawModule> modules,
+        ServiceProvider services,
         KernelGraph coreGraph,
         KernelActionExecutionContext execution,
         IReadOnlyList<ModuleContributionGraph> moduleGraphs)
     {
-        _registry = registry;
+        _modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        _services = services ?? throw new ArgumentNullException(nameof(services));
         _execution = execution;
         CoreGraph = coreGraph;
         ModuleGraphs = moduleGraphs;
@@ -51,12 +55,40 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
     {
         if (_started)
             throw new InvalidOperationException("The module test host is already started.");
-        await _registry.StartAsync(
-            CoreGraph,
-            _execution,
-            hostVersion,
-            _execution.Features,
-            ct);
+        var started = 0;
+        try
+        {
+            foreach (var module in _modules)
+            {
+                var startContext = new ServiceStartContext(
+                    hostVersion,
+                    CoreGraph.ActionSnapshot.ContractHash,
+                    _execution.Features);
+                var terminalCompleted = false;
+                await _actions.RunRequiredAsync(
+                    ModuleLifecycleActions.Start,
+                    startContext,
+                    async (_, cancellationToken) =>
+                    {
+                        await module.StartAsync(startContext, cancellationToken);
+                        terminalCompleted = true;
+                        return true;
+                    },
+                    CoreGraph.ActionSnapshot,
+                    ct);
+                if (!terminalCompleted)
+                {
+                    throw new KernelActionExecutionException(
+                        "The registration start action did not run its lifecycle terminal.");
+                }
+                started++;
+            }
+        }
+        catch
+        {
+            await StopStartedAsync(started, CancellationToken.None);
+            throw;
+        }
         _started = true;
     }
 
@@ -65,8 +97,14 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
     {
         if (!_started)
             return;
-        await _registry.StopAsync(_execution, ct);
-        _started = false;
+        try
+        {
+            await StopStartedAsync(_modules.Count, ct);
+        }
+        finally
+        {
+            _started = false;
+        }
     }
 
     internal ValueTask<IActionOutcome<TResult>> RunActionAsync<TAction, TResult>(
@@ -95,8 +133,60 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
             _execution.Features,
             ct);
 
+    private async ValueTask StopStartedAsync(int count, CancellationToken ct)
+    {
+        Exception? firstFailure = null;
+        for (var index = count - 1; index >= 0; index--)
+        {
+            var module = _modules[index];
+            var terminalCompleted = false;
+            try
+            {
+                await _actions.RunRequiredAsync(
+                    ModuleLifecycleActions.Stop,
+                    module.Identity,
+                    async (_, cancellationToken) =>
+                    {
+                        await module.StopAsync(cancellationToken);
+                        terminalCompleted = true;
+                        return true;
+                    },
+                    CoreGraph.ActionSnapshot,
+                    ct);
+                if (!terminalCompleted)
+                {
+                    throw new KernelActionExecutionException(
+                        "The registration stop action did not run its lifecycle terminal.");
+                }
+            }
+            catch (Exception ex)
+            {
+                firstFailure ??= ex;
+            }
+        }
+        if (firstFailure is not null)
+            throw firstFailure;
+    }
+
     /// <inheritdoc />
-    public async ValueTask DisposeAsync() => await StopAsync(CancellationToken.None);
+    public async ValueTask DisposeAsync()
+    {
+        Exception? failure = null;
+        try
+        {
+            await StopAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+        finally
+        {
+            await _services.DisposeAsync();
+        }
+        if (failure is not null)
+            throw failure;
+    }
 }
 
 /// <summary>Builds one action execution for a module test.</summary>

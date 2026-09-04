@@ -5,7 +5,7 @@
           Condition="'$(IsPackable)' == 'true'">
     <ItemGroup>
       <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)"
-                                      Condition="'%(Filename)' == 'SharpClaw.ModuleSDK' Or '%(Filename)' == 'SharpClaw.ModuleHost.InProcess' Or '%(Filename)' == 'SharpClaw.ModuleHost.OutOfProcess' Or '%(Filename)' == 'SharpClaw.ModuleSDK.Testing'">
+                                      Condition="'%(Filename)' == 'SharpClaw.ModuleSDK' Or '%(Filename)' == 'SharpClaw.SidecarHost.InProcess' Or '%(Filename)' == 'SharpClaw.SidecarHost.OutOfProcess' Or '%(Filename)' == 'SharpClaw.ModuleSDK.Testing'">
         <ProjectVersion>[$([System.String]::Copy('%(ProjectVersion)').Replace('[', '').Replace(']', ''))]</ProjectVersion>
       </_ProjectReferencesWithVersions>
     </ItemGroup>

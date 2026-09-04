@@ -1,10 +1,10 @@
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
 /// <summary>Identifies one typed endpoint contribution across the sidecar boundary.</summary>
 public sealed record SidecarApplicationEndpoint(
-    ModuleEndpointRouteDescriptor Descriptor,
+    EndpointRouteDescriptor Descriptor,
     string TypeName,
     string AssemblyName);
 
@@ -12,11 +12,11 @@ public sealed record SidecarApplicationEndpoint(
 public sealed record SidecarApplicationCliCommand(
     string HandlerTypeName,
     string AssemblyName,
-    ModuleCliCommandDescriptor Descriptor);
+    CliCommandDescriptor Descriptor);
 
 /// <summary>Describes one module-owned action terminal across the sidecar boundary.</summary>
 public sealed record SidecarApplicationActionEntry(
-    string ModuleId,
+    string SourceId,
     string ContractHash,
     SidecarActionDescriptorIdentity Descriptor,
     Guid TerminalId,
@@ -25,7 +25,7 @@ public sealed record SidecarApplicationActionEntry(
 
 /// <summary>Describes application contributions from one compiled sidecar graph.</summary>
 public sealed record SidecarApplicationDiscovery(
-    string ModuleId,
+    string SourceId,
     string ContractHash,
     IReadOnlyList<SidecarApplicationEndpoint> Endpoints,
     IReadOnlyList<SidecarApplicationCliCommand> CliCommands,
@@ -40,7 +40,7 @@ public sealed record SidecarApplicationDiscovery(
 /// <summary>Invokes one discovered module CLI command.</summary>
 public sealed record SidecarCliInvocation(
     Guid InvocationId,
-    string ModuleId,
+    string SourceId,
     string ContractHash,
     string Command,
     IReadOnlyList<string> Arguments,
@@ -48,20 +48,20 @@ public sealed record SidecarCliInvocation(
 
 /// <summary>Returns one module CLI result with graph identity.</summary>
 public sealed record SidecarCliExecutionResponse(
-    string ModuleId,
+    string SourceId,
     string ContractHash,
-    ModuleCliResult Result);
+    CliResult Result);
 
 /// <summary>Returns one endpoint result with graph identity.</summary>
 public sealed record SidecarEndpointExecutionResponse(
-    string ModuleId,
+    string SourceId,
     string ContractHash,
-    ModuleHttpEndpointResponse Response);
+    HttpEndpointResponse Response);
 
 /// <summary>Extends the flat sidecar discovery document with application metadata.</summary>
 public sealed record SidecarDiscoveryDocument(
     SidecarMessageHeader Header,
-    string ModuleId,
+    string SourceId,
     string ContractHash,
     SidecarProtocolOffer Protocol,
     IReadOnlyList<SidecarActionSubscription> Actions,
@@ -70,8 +70,8 @@ public sealed record SidecarDiscoveryDocument(
     IReadOnlyList<SidecarEventDefinition> EventDefinitions,
     IReadOnlyList<SidecarToolHandlerDefinition> ToolHandlers,
     IReadOnlyList<SidecarLifecycleHandlerDefinition> LifecycleHandlers,
-    IReadOnlyList<ModuleFeatureDescriptor> Features,
-    IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts,
+    IReadOnlyList<FeatureDescriptor> Features,
+    IReadOnlyList<ScopedStorageContractDescriptor> StorageContracts,
     SidecarApplicationDiscovery Application) : ISidecarProtocolMessage
 {
     /// <summary>Gets the discovery message kind used by the base sidecar protocol.</summary>
@@ -80,7 +80,7 @@ public sealed record SidecarDiscoveryDocument(
     /// <summary>Gets the base Contracts discovery envelope without application metadata.</summary>
     public SidecarDiscoveryEnvelope ToDiscovery() => new(
         Header,
-        ModuleId,
+        SourceId,
         ContractHash,
         Protocol,
         Actions,

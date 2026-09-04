@@ -2,7 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK.Testing.Tests;
 
@@ -22,21 +22,21 @@ public sealed class ModuleTestHostTests
             new ExtensionFeature(
                 "module-test.feature",
                 1,
-                "test_module",
+                "test_registration",
                 1024,
                 featureValue.RootElement.Clone()),
         ]);
         await using var host = new SharpClawModuleTestBuilder()
-            .AddModule(new TestModule(), Manifest())
-            .AddHostAction(TestModule.Action)
-            .ApproveSensitiveContributions("test_module")
+            .AddRegistration(new TestRegistration(), Manifest())
+            .AddHostAction(TestRegistration.Action)
+            .ApproveSensitiveContributions("test_registration")
             .UseExecutionContext(caller, features)
             .Build();
 
         ActionContext<TestAction>? terminalContext = null;
         CancellationToken terminalCancellation = default;
         var startedAt = DateTimeOffset.UtcNow;
-        var result = await host.Action(TestModule.Action, new TestAction("start"))
+        var result = await host.Action(TestRegistration.Action, new TestAction("start"))
             .WithTerminal((context, cancellationToken) =>
             {
                 terminalContext = context;
@@ -52,7 +52,7 @@ public sealed class ModuleTestHostTests
         terminalContext.Should().NotBeNull();
         terminalContext!.InvocationId.Should().NotBe(Guid.Empty);
         terminalContext.ParentInvocationId.Should().BeNull();
-        terminalContext.ActionKey.Should().Be(TestModule.Action.Key);
+        terminalContext.ActionKey.Should().Be(TestRegistration.Action.Key);
         terminalContext.Action.Should().Be(new TestAction("typed"));
         terminalContext.Caller.Should().BeEquivalentTo(caller);
         terminalContext.Features.Should().BeEquivalentTo(features);
@@ -66,15 +66,15 @@ public sealed class ModuleTestHostTests
     public async Task TestHostDoesNotInvokeTerminalAfterPreCancellation()
     {
         await using var host = new SharpClawModuleTestBuilder()
-            .AddModule(new TestModule(), Manifest())
-            .AddHostAction(TestModule.Action)
-            .ApproveSensitiveContributions("test_module")
+            .AddRegistration(new TestRegistration(), Manifest())
+            .AddHostAction(TestRegistration.Action)
+            .ApproveSensitiveContributions("test_registration")
             .Build();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         var terminalCalls = 0;
 
-        var outcome = await host.Action(TestModule.Action, new TestAction("cancelled"))
+        var outcome = await host.Action(TestRegistration.Action, new TestAction("cancelled"))
             .WithTerminal((_, _) =>
             {
                 terminalCalls++;
@@ -86,27 +86,27 @@ public sealed class ModuleTestHostTests
         terminalCalls.Should().Be(0);
     }
 
-    private static ModuleManifest Manifest() =>
+    private static PackageManifest Manifest() =>
         new(
-            "test_module",
+            "test_registration",
             "Test Module",
             "0.5.0-beta.2",
             "test",
-            "TestModule.dll",
+            "TestRegistration.dll",
             "0.5.0-beta.2",
-            Runtime: ModuleManifestRuntimeInfo.DotNet,
-            HostMode: ModuleManifestRuntimeInfo.HostModeInProcess,
+            Runtime: PackageRuntimeInfo.DotNet,
+            HostMode: PackageRuntimeInfo.HostModeInProcess,
             RequestedHooks:
             [
-                new ModuleManifestHookRequest("test.action", ["inspect", "replaceInput", "replaceResult", "wrap"]),
-                new ModuleManifestHookRequest("test.*", ["inspect", "replaceResult", "wrap"]),
-                new ModuleManifestHookRequest("*", ["inspect", "wrap"]),
+                new PackageHookRequest("test.action", ["inspect", "replaceInput", "replaceResult", "wrap"]),
+                new PackageHookRequest("test.*", ["inspect", "replaceResult", "wrap"]),
+                new PackageHookRequest("*", ["inspect", "wrap"]),
             ]);
 
     public sealed record TestAction(string Value);
     public sealed record TestResult(string Value);
 
-    private sealed class TestModule : ISharpClawModule
+    private sealed class TestRegistration : ISharpClawModule
     {
         public static ActionDescriptor<TestAction, TestResult> Action { get; } =
             new(
@@ -132,21 +132,21 @@ public sealed class ModuleTestHostTests
                 ],
             };
 
-        public ModuleIdentity Identity { get; } = new("test_module", "Test Module", "test");
+        public ModuleIdentity Identity { get; } = new("test_registration", "Test Module", "test");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
-            module.Services.AddSingleton<InvocationLog>();
-            module.Services.AddTransient<TypedHook>();
-            module.Services.AddTransient<CategoryHook>();
-            module.Services.AddTransient<WildcardHook>();
-            module.Hooks.For(Action).Use<TypedHook>(
+            services.AddSingleton<InvocationLog>();
+            services.AddTransient<TypedHook>();
+            services.AddTransient<CategoryHook>();
+            services.AddTransient<WildcardHook>();
+            services.OnAction(Action).Use<TypedHook>(
                 ActionInterceptionCapabilities.Inspect
                 | ActionInterceptionCapabilities.ReplaceInput
                 | ActionInterceptionCapabilities.ReplaceResult
                 | ActionInterceptionCapabilities.Wrap,
                 new HookOrdering("test.typed", Before: ["test.category"]));
-            module.Hooks.Category(
+            services.OnActionCategory(
                     "test",
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedAction("input", "test.*"),
@@ -157,7 +157,7 @@ public sealed class ModuleTestHostTests
                     | ActionInterceptionCapabilities.ReplaceResult
                     | ActionInterceptionCapabilities.Wrap,
                     new HookOrdering("test.category"));
-            module.Hooks.AnyAction(
+            services.OnAnyAction(
                     ContractVersionRange.Exact(1),
                     ModuleSchemaIdentity.UntypedAction("input", "*"),
                     ModuleSchemaIdentity.UntypedAction("result", "*"),

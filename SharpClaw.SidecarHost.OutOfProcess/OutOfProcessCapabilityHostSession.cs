@@ -1,0 +1,4122 @@
+using System.Collections.Concurrent;
+using System.Net.WebSockets;
+using System.Text.Json;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
+
+namespace SharpClaw.SidecarHost.OutOfProcess;
+
+internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposable
+{
+    private readonly WebSocket _socket;
+    private SidecarCapabilitySession _session;
+    private readonly string _controlToken;
+    private readonly SidecarPayloadLimits _limits;
+    private readonly OutOfProcessCapabilityHostOptions _options;
+    private readonly SidecarHostAuthorization _authorization;
+    private readonly SidecarApplicationDiscovery _application;
+    private readonly IReadOnlyList<SidecarToolHandlerDefinition> _toolHandlers;
+    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<SidecarActionTerminalTransportResponse>> _terminals = new();
+    private readonly ConcurrentDictionary<Guid, PendingOutgoingAction> _outgoingActions = new();
+    private readonly ConcurrentDictionary<Guid, byte> _outgoingCapabilityCalls = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingActionRequests = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingStorageRequests = new();
+    private readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
+    private readonly object _terminalSequenceSync = new();
+    private readonly SortedSet<long> _pendingTerminalSequences = new();
+    private TaskCompletionSource _terminalSequenceChanged = CreateSignal();
+    private TaskCompletionSource _callChange = CreateSignal();
+    private readonly CancellationTokenSource _disconnect = new();
+    private readonly BoundedExecutionQueue _capabilityQueue;
+    private readonly object _rotationSync = new();
+    private TaskCompletionSource? _rotationReady;
+    private TaskCompletionSource<SidecarCapabilityValidationResult>? _rotationAcknowledgement;
+    private Task? _rotationTask;
+    private Task? _rotationRetryTask;
+    private TaskCompletionSource _rotationRetryWake = CreateSignal();
+    private int _completedCallsForBinding;
+    private long _sequence;
+    private readonly SemaphoreSlim _rotationGate = new(1, 1);
+    private ExternalAuthorityRegistration? _externalAuthorityRegistration;
+    private Exception? _runFailure;
+    private Exception? _lastHandledFailure;
+    private int _disposed;
+
+    private sealed class ActiveCall(CancellationTokenSource cancellation)
+    {
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public SidecarActionCapabilityRequest? ActionRequest { get; set; }
+
+        public HostActionEntryRequestContext? HostContext { get; set; }
+
+        public int Completed;
+
+        public int CompletionAccepted;
+
+        public int Finished;
+    }
+
+    private sealed class PendingOutgoingAction(CancellationTokenSource cancellation)
+    {
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public TaskCompletionSource<SidecarActionCapabilityResponse> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public SidecarActionCapabilityRequest? Request { get; set; }
+    }
+
+    private sealed class ExternalAuthorityRegistration(
+        IDisposable registration,
+        DateTimeOffset expiresAt,
+        CancellationTokenSource expiryCancellation) : IDisposable
+    {
+        private int _disposed;
+
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+
+        public CancellationToken ExpiryToken => expiryCancellation.Token;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            expiryCancellation.Cancel();
+            registration.Dispose();
+        }
+
+        public void DisposeExpiryCancellation() => expiryCancellation.Dispose();
+    }
+
+    public OutOfProcessCapabilityHostSession(
+        WebSocket socket,
+        SidecarCapabilitySessionBinding binding,
+        string controlToken,
+        SidecarPayloadLimits limits,
+        OutOfProcessCapabilityHostOptions options,
+        SidecarHostAuthorization authorization,
+        SidecarApplicationDiscovery application,
+        IReadOnlyList<SidecarToolHandlerDefinition> toolHandlers)
+    {
+        _socket = socket;
+        _controlToken = controlToken;
+        _limits = limits;
+        _options = options;
+        _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
+        _application = application ?? throw new ArgumentNullException(nameof(application));
+        _toolHandlers = toolHandlers ?? throw new ArgumentNullException(nameof(toolHandlers));
+        if (!string.Equals(application.SourceId, binding.SourceId, StringComparison.Ordinal)
+            || !string.Equals(application.ContractHash, binding.GraphId, StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The application discovery does not match the capability binding.");
+        }
+        _session = CreateSession(binding, controlToken);
+        RegisterExternalAuthoritySession();
+        SendGate = new SemaphoreSlim(1, 1);
+        _capabilityQueue = new BoundedExecutionQueue(
+            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1),
+            Math.Max(binding.ConcurrencyLimits.MaximumInFlightCalls, 1));
+    }
+
+    public SemaphoreSlim SendGate { get; }
+
+    internal Exception? RunFailure => Volatile.Read(ref _runFailure);
+
+    internal Exception? LastHandledFailure => Volatile.Read(ref _lastHandledFailure);
+
+    private SidecarCapabilitySession Session => Volatile.Read(ref _session);
+
+    internal HostActionEntryRequestContext IssueHostActionEntryContext(
+        HostActionEntryContextRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var validation = Session.IssueHostActionEntryContext(
+            request,
+            DateTimeOffset.UtcNow,
+            out var context);
+        if (!validation.Accepted || context is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                validation.Message
+                    ?? "The capability session rejected the host action entry context.");
+        }
+
+        return context;
+    }
+
+    internal HostActionEntryRequestContext IssueHostActionEntryContext<TAction, TResult>(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+        => _options.HostActionEntryContexts.Issue(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+
+    internal HostActionEntryRequestContext IssueHostActionEntryContext(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        string? secondaryIdentity,
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity descriptor,
+        JsonElement action,
+        RequestPrincipal caller,
+        ExtensionFeatureSet features,
+        Guid traceId,
+        Guid idempotencyKey,
+        DateTimeOffset deadline,
+        Guid? invocationId = null)
+        => _options.HostActionEntryContexts.Issue(
+            ingress,
+            primaryIdentity,
+            secondaryIdentity,
+            definition,
+            descriptor,
+            action,
+            caller,
+            features,
+            traceId,
+            idempotencyKey,
+            deadline,
+            invocationId);
+
+    internal HostActionEntryRequestContext ExecuteContextIssuance(
+        Func<HostActionEntryRequestContext> issue)
+    {
+        ArgumentNullException.ThrowIfNull(issue);
+        while (true)
+        {
+            Task? rotation = null;
+            _rotationGate.Wait(_disconnect.Token);
+            try
+            {
+                lock (_rotationSync)
+                {
+                    if (_rotationTask is { IsCompleted: false })
+                    {
+                        rotation = _rotationTask;
+                    }
+
+                    if (rotation is null)
+                    {
+                        var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                        if (_rotationReady is null
+                            && (_rotationTask is null || _rotationTask.IsCompleted)
+                            && Volatile.Read(ref _completedCallsForBinding)
+                                >= Math.Max(maximumCalls - 2, 1))
+                        {
+                            _rotationReady = new TaskCompletionSource(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                        }
+
+                        if (_rotationReady is null
+                            && (_rotationTask is null || _rotationTask.IsCompleted))
+                            return issue();
+
+                        var callsForBinding =
+                            Volatile.Read(ref _completedCallsForBinding)
+                            + _calls.Count
+                            + _outgoingCapabilityCalls.Count;
+                        if (_options.HostActionEntryContexts.HasPendingContexts
+                            && callsForBinding
+                                < Math.Max(maximumCalls - 2, 1))
+                        {
+                            return issue();
+                        }
+
+                        rotation = _rotationTask ?? _rotationReady?.Task;
+                    }
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            RequestRotationRetry();
+            rotation?.GetAwaiter().GetResult();
+        }
+    }
+
+    internal ValueTask<IActionOutcome<TResult>> InvokeRegistrationActionEntryAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        if (!OutOfProcessActionDescriptorIdentity.Matches(
+                identity,
+                OutOfProcessActionDescriptorIdentity.Create(descriptor)))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The typed module action descriptor does not match its host identity.");
+        }
+
+        return InvokeModuleActionEntryCoreAsync<TAction, TResult>(
+            action,
+            identity,
+            actionPayload,
+            hostContext,
+            terminalId,
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            ct);
+    }
+
+    internal ValueTask<IActionOutcome<JsonElement>> InvokeRegistrationActionEntryAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity,
+        JsonElement action,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized module action descriptor does not match its discovery definition.");
+        }
+
+        return InvokeModuleActionEntryCoreAsync<JsonElement, JsonElement>(
+            action,
+            identity,
+            actionPayload,
+            hostContext,
+            terminalId,
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalSerializedAsync(
+                    definition,
+                    identity,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            ct);
+    }
+
+    private async ValueTask<IActionOutcome<TResult>> InvokeModuleActionEntryCoreAsync<TAction, TResult>(
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload actionPayload,
+        HostActionEntryRequestContext hostContext,
+        Guid terminalId,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            SidecarExternalActionDispatchAuthority,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>> dispatch,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(actionPayload);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        ArgumentNullException.ThrowIfNull(dispatch);
+        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
+            || hostContext.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The module action entry host context is invalid.");
+        }
+
+        using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            ct,
+            _disconnect.Token);
+        var remaining = hostContext.Deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            dispatchCancellation.Cancel();
+        else
+            dispatchCancellation.CancelAfter(remaining);
+
+        await WaitForRotationAsync(
+            dispatchCancellation.Token,
+            hostContext.CapabilityId);
+        SidecarCapabilityCallIdentity call = null!;
+        SidecarCancellationIdentity cancellation = null!;
+        while (true)
+        {
+            Task? activeRotation = null;
+            await _rotationGate.WaitAsync(dispatchCancellation.Token);
+            try
+            {
+                lock (_rotationSync)
+                {
+                    if (_rotationTask is { IsCompleted: false } rotationTask)
+                        activeRotation = rotationTask;
+                }
+
+                if (activeRotation is null)
+                {
+                    call = CreateOutgoingCall(hostContext.Deadline);
+                    cancellation = new SidecarCancellationIdentity(
+                        call.CancellationId,
+                        SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
+                        hostContext.Deadline);
+                    var begin = Session.BeginCall(
+                        call,
+                        SidecarCapabilityKind.Action,
+                        actionPayload,
+                        actionPayload.ByteLength,
+                        DateTimeOffset.UtcNow,
+                        hostContext);
+                    if (!begin.Accepted)
+                    {
+                        throw new OutOfProcessCapabilityException(
+                            begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                            begin.Message ?? "The capability session rejected the module action entry.");
+                    }
+
+                    if (!_outgoingCapabilityCalls.TryAdd(call.CallId, 0))
+                    {
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.Replay,
+                            "The capability call identifier was reused.");
+                    }
+
+                    break;
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            await activeRotation.WaitAsync(dispatchCancellation.Token);
+        }
+
+        var terminalCalls = 0;
+        var sessionTerminalCallCount = 0;
+        try
+        {
+            var authority = CreateExternalActionDispatchAuthority(
+                identity,
+                call,
+                action,
+                actionPayload,
+                new SidecarActionTerminalRegistration(
+                    terminalId,
+                    identity.InputTypeIdentity,
+                    identity.InputSchemaVersion,
+                    identity.ResultTypeIdentity,
+                    identity.ResultSchemaVersion,
+                    identity.DescriptorHash),
+                hostContext,
+                cancellation,
+                SidecarActionInvocationKind.HostEntry);
+            async ValueTask<TResult> InvokeTerminalAsync(
+                ActionContext<TAction> dispatcherContext,
+                CancellationToken terminalCancellation)
+            {
+                if (Interlocked.Exchange(ref terminalCalls, 1) != 0)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Replay,
+                        "The typed module action dispatcher invoked its terminal more than once.");
+                }
+
+                var response = await InvokeModuleActionEntryExchangeAsync(
+                    call,
+                    cancellation,
+                    identity,
+                    actionPayload,
+                    hostContext,
+                    dispatcherContext,
+                    terminalId,
+                    terminalCancellation);
+                sessionTerminalCallCount = response.Outcome.TerminalCallCount;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                sessionTerminalCallCount = OutOfProcessProtocolTestFixture
+                    .TransformResponseTerminalCallCount(sessionTerminalCallCount);
+#endif
+                var terminalOutcome = OutOfProcessActionDispatcher.CreateOutcome<TResult>(response);
+                if (terminalOutcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred)
+                    return terminalOutcome.Result;
+
+                throw new OutOfProcessCapabilityException(
+                    terminalOutcome.Error?.Code
+                        ?? response.SafeFailure?.Code
+                        ?? SidecarCapabilityErrors.HostFailure,
+                    terminalOutcome.Error?.Message
+                        ?? response.SafeFailure?.Message
+                        ?? "The module action entry failed.");
+            }
+
+            var outcome = await dispatch(
+                InvokeTerminalAsync,
+                authority,
+                dispatchCancellation.Token);
+            if (outcome.Kind == ActionOutcomeKind.Completed
+                && terminalCalls != 1)
+            {
+                return new OutOfProcessActionOutcome<TResult>(
+                    ActionOutcomeKind.Failed,
+                    default!,
+                    new ExecutionError(
+                        SidecarCapabilityErrors.HostFailure,
+                        "The module action completed without an authenticated terminal exchange."),
+                    null,
+                    null);
+            }
+
+            return outcome;
+        }
+        catch (OperationCanceledException) when (dispatchCancellation.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OutOfProcessCapabilityException exception)
+        {
+            return new OutOfProcessActionOutcome<TResult>(
+                ActionOutcomeKind.Failed,
+                default!,
+                new ExecutionError(exception.Code, exception.Message),
+                null,
+                null);
+        }
+        catch (Exception)
+        {
+            return new OutOfProcessActionOutcome<TResult>(
+                ActionOutcomeKind.Failed,
+                default!,
+                new ExecutionError(
+                    SidecarCapabilityErrors.HostFailure,
+                    "The module action dispatcher failed."),
+                null,
+                null);
+        }
+        finally
+        {
+            await CompleteOutgoingCapabilityCallAsync(
+                call.CallId,
+                hostContext,
+                sessionTerminalCallCount);
+        }
+    }
+
+    private async ValueTask<SidecarActionCapabilityResponse> InvokeModuleActionEntryExchangeAsync<TAction>(
+        SidecarCapabilityCallIdentity call,
+        SidecarCancellationIdentity cancellation,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload initiatingAction,
+        HostActionEntryRequestContext hostContext,
+        ActionContext<TAction> dispatcherContext,
+        Guid terminalId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(initiatingAction);
+        ArgumentNullException.ThrowIfNull(hostContext);
+        ArgumentNullException.ThrowIfNull(dispatcherContext);
+        if (!hostContext.IsWellFormed(DateTimeOffset.UtcNow)
+            || hostContext.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The module action entry host context is invalid.");
+        }
+
+        var effectiveDispatcherContext = BindHostEntryDispatcherContext(
+            identity,
+            hostContext,
+            dispatcherContext);
+
+        var initiatingLineage = hostContext.Contribution.Lineage;
+        if (!string.Equals(
+                initiatingLineage.PayloadContentHash,
+                initiatingAction.ContentHash,
+                StringComparison.Ordinal)
+            || initiatingLineage.PayloadByteLength != initiatingAction.ByteLength)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The typed module action entry does not preserve its initiating payload authority.");
+        }
+
+        var deadline = hostContext.Deadline;
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _disconnect.Token);
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            linked.Cancel();
+        else
+            linked.CancelAfter(remaining);
+
+        var effectiveAction = CreatePayload(
+            effectiveDispatcherContext.Action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        var request = SidecarActionCapabilityRequest.HostEntry(
+            call,
+            identity,
+            effectiveAction,
+            cancellation,
+            deadline,
+            hostContext,
+            new SidecarActionTerminalRegistration(
+                terminalId,
+                identity.InputTypeIdentity,
+                identity.InputSchemaVersion,
+                identity.ResultTypeIdentity,
+                identity.ResultSchemaVersion,
+                identity.DescriptorHash)) with
+        {
+            EffectiveHostEntryContext = CreateEffectiveHostEntryContext(
+                call,
+                identity,
+                effectiveAction,
+                cancellation,
+                deadline,
+                hostContext,
+                effectiveDispatcherContext,
+                terminalId),
+        };
+        var effectiveHostEntry = request.EffectiveHostEntryContext
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.HostFailure,
+                "The module action entry has no effective terminal authority.");
+        var terminalRecord = Session.RecordTerminal(
+            call.CallId,
+            effectiveHostEntry.Authority.AuthorityId,
+            effectiveHostEntry.EffectiveContext.Receipt);
+        if (!terminalRecord.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                terminalRecord.Code ?? SidecarCapabilityErrors.InvalidBinding,
+                terminalRecord.Message ?? "The module action terminal receipt was rejected.");
+        }
+
+        var pending = new PendingOutgoingAction(linked)
+        {
+            Request = request,
+        };
+        if (!_outgoingActions.TryAdd(call.CallId, pending))
+        {
+            linked.Dispose();
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The module action entry call identifier was reused.");
+        }
+
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionRequest,
+                request,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                linked.Token);
+            var response = await pending.Completion.Task.WaitAsync(linked.Token);
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
+                request,
+                response,
+                Session.Binding,
+                Session);
+            if (!responseValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    responseValidation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                    responseValidation.Message
+                        ?? "The module action entry response was rejected.");
+            }
+
+            return response;
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+            await SendCancellationAsync(
+                call,
+                cancellation,
+                deadline,
+                linked.Token,
+                ct);
+            throw;
+        }
+        finally
+        {
+            _outgoingActions.TryRemove(call.CallId, out _);
+            linked.Dispose();
+            RequestRotationRetry();
+        }
+    }
+
+    private SidecarActionEffectiveHostEntryContext CreateEffectiveHostEntryContext<TAction>(
+        SidecarCapabilityCallIdentity call,
+        SidecarActionDescriptorIdentity identity,
+        SidecarSerializedPayload effectiveAction,
+        SidecarCancellationIdentity cancellation,
+        DateTimeOffset deadline,
+        HostActionEntryRequestContext initiatingContext,
+        ActionContext<TAction> dispatcherContext,
+        Guid terminalId,
+        SidecarActionInvocationKind invocation = SidecarActionInvocationKind.HostEntry)
+    {
+        var receipt = new SidecarTerminalReceipt(
+            Guid.NewGuid().ToString("N"),
+            identity.Key,
+            identity.Version,
+            call.CallId,
+            dispatcherContext.Attempt,
+            $"{Session.Binding.GraphId}:{call.CallId:N}",
+            effectiveAction.ContentHash);
+        var issuedAt = DateTimeOffset.UtcNow;
+        var expiresAt = deadline < Session.Binding.ExpiresAt
+            ? deadline
+            : Session.Binding.ExpiresAt;
+        var authority = new SidecarHostTerminalAuthority(
+            Guid.NewGuid(),
+            call.SessionId,
+            call.RequestId,
+            call.CancellationId,
+            call.CallId,
+            Session.Binding.SourceId,
+            Session.Binding.GraphId,
+            invocation,
+            identity.Key,
+            identity.Version,
+            identity.DescriptorHash,
+            effectiveAction.TypeIdentity,
+            effectiveAction.SchemaVersion,
+            effectiveAction.ContentHash,
+            effectiveAction.ByteLength,
+            receipt.ReceiptId,
+            receipt.ActionKey,
+            receipt.ActionVersion,
+            receipt.CallId,
+            receipt.Attempt,
+            receipt.IdempotencyScope,
+            receipt.ContentHash,
+            deadline,
+            issuedAt,
+            expiresAt,
+            "pending")
+        {
+            TerminalId = terminalId,
+            SnapshotContentHash = SidecarCapabilityTransportValidation.ComputeSnapshotHash(
+                dispatcherContext.Snapshot),
+            Caller = dispatcherContext.Caller,
+            Features = dispatcherContext.Features,
+            TraceId = dispatcherContext.TraceId,
+            IdempotencyKey = dispatcherContext.IdempotencyKey,
+            InvocationId = dispatcherContext.InvocationId,
+            ParentInvocationId = dispatcherContext.ParentInvocationId,
+            Depth = dispatcherContext.Depth,
+            Attempt = dispatcherContext.Attempt,
+            HostContextBindingHash = SidecarCapabilityTransportValidation
+                .ComputeHostActionEntryContextBindingHash(initiatingContext),
+            RootPeerCall = invocation == SidecarActionInvocationKind.HostEntry
+                ? call
+                : null,
+            ReceivingRootBudgetId = initiatingContext.CapabilityId,
+            ReceivingPeerBindingGeneration = Session.BindingGeneration,
+        };
+        authority = authority with
+        {
+            CanonicalBindingHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority),
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                authority,
+                _controlToken),
+        };
+        var effectiveContext = new SidecarActionTerminalExecutionContext(
+            call,
+            invocation,
+            identity,
+            effectiveAction,
+            dispatcherContext.Snapshot,
+            dispatcherContext.InvocationId,
+            dispatcherContext.ParentInvocationId,
+            dispatcherContext.Depth,
+            dispatcherContext.Attempt,
+            dispatcherContext.Caller,
+            dispatcherContext.Features,
+            dispatcherContext.TraceId,
+            dispatcherContext.IdempotencyKey,
+            cancellation,
+            receipt,
+            deadline);
+        return new SidecarActionEffectiveHostEntryContext(
+            initiatingContext,
+            effectiveContext,
+            authority);
+    }
+
+    private SidecarCapabilityCallIdentity CreateOutgoingCall(DateTimeOffset deadline)
+    {
+        var binding = Session.Binding;
+        var sequence = Interlocked.Increment(ref _sequence);
+        return new SidecarCapabilityCallIdentity(
+            binding.SessionId,
+            binding.RequestId,
+            binding.CancellationId,
+            Guid.NewGuid(),
+            $"{binding.SessionId:N}:{sequence}:{Guid.NewGuid():N}",
+            binding.SourceId,
+            binding.GraphId,
+            SidecarCapabilityKind.Action,
+            sequence,
+            deadline);
+    }
+
+    private void ObserveSequence(long sequence)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _sequence);
+            if (sequence <= current
+                || Interlocked.CompareExchange(ref _sequence, sequence, current) == current)
+                return;
+        }
+    }
+
+    internal HostActionEntryCarrierAuthority BeginHostActionEntryCarrier(
+        HostActionEntryRequestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Contribution is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The host action context has no ingress contribution.");
+        }
+        HostActionEntryCarrierAuthority? authority = null;
+        WaitForRotationAsync(
+                _disconnect.Token,
+                context.CapabilityId,
+                allowPendingCarrier: true)
+            .GetAwaiter()
+            .GetResult();
+        _rotationGate.Wait(_disconnect.Token);
+        try
+        {
+            if (!_options.HostActionEntryContexts.TryBeginCarrier(context))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The host action context is not pending for a carrier.");
+            }
+
+            RequestRotationRetry();
+            var beforeCarrierSessionBegin = _options.BeforeCarrierSessionBeginAsync;
+            _options.BeforeCarrierSessionBeginAsync = null;
+            if (beforeCarrierSessionBegin is not null)
+                beforeCarrierSessionBegin().GetAwaiter().GetResult();
+
+            var carrier = new HostActionEntryCarrierIdentity(
+                context.Ingress,
+                context.InvocationId,
+                context.Contribution.IngressBinding);
+            var validation = Session.BeginHostActionEntryCarrier(
+                OutOfProcessHostActionEntryContextRegistry.WithoutPayloadBinding(context),
+                carrier,
+                DateTimeOffset.UtcNow,
+                out authority);
+            if (!validation.Accepted || authority is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    validation.Message
+                        ?? "The host action entry carrier was rejected.");
+            }
+
+            RequestRotationRetry();
+        }
+        catch
+        {
+            _options.HostActionEntryContexts.RestorePendingCarrier(context);
+            RequestRotationRetry();
+            throw;
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
+        return authority!;
+    }
+
+    internal async ValueTask CompleteHostActionEntryCarrierAsync(
+        HostActionEntryCarrierAuthority authority,
+        HostActionEntryCarrierCompletionKind completion)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        var completionAccepted = false;
+        try
+        {
+            await WaitForRotationAsync(
+                _disconnect.Token,
+                authority.CapabilityId,
+                allowAnyActiveCarrier: true,
+                allowPendingCarrier: true);
+            await _rotationGate.WaitAsync(_disconnect.Token);
+            try
+            {
+                await WaitForHostActionCallsToFinishAsync(_disconnect.Token);
+                var completionAuthority =
+                    Session.TryGetActiveHostActionEntryCarrier(
+                        authority.CapabilityId,
+                        out var rebasedAuthority)
+                    && rebasedAuthority is not null
+                        ? rebasedAuthority
+                        : authority;
+                var validation = Session.CompleteHostActionEntryCarrier(
+                    completionAuthority,
+                    completion,
+                    DateTimeOffset.UtcNow);
+                if (!validation.Accepted)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                        validation.Message
+                            ?? "The host action entry carrier completion was rejected.");
+                }
+
+                completionAccepted = true;
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+        }
+        finally
+        {
+            _options.HostActionEntryContexts.CompleteCarrier(authority.CapabilityId);
+            ArmRotationAfterCarrier();
+            RequestRotationRetry();
+        }
+
+        if (completionAccepted && !_disconnect.IsCancellationRequested)
+            await StartRotationIfReadyAsync(_disconnect.Token);
+    }
+
+    private async Task WaitForHostActionCallsToFinishAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task changed;
+            lock (_calls)
+            {
+                if (_calls.IsEmpty
+                    && _outgoingCapabilityCalls.IsEmpty
+                    && _pendingStorageRequests.IsEmpty
+                    && _terminals.IsEmpty)
+                {
+                    return;
+                }
+
+                changed = _callChange.Task;
+            }
+
+            await changed.WaitAsync(ct);
+        }
+    }
+
+    private void WaitForNestedHostActionCallsToFinish(
+        Guid callId,
+        HostActionEntryRequestContext context,
+        CancellationToken ct)
+    {
+        var lineage = new HashSet<Guid> { context.InvocationId };
+        while (true)
+        {
+            Task changed;
+            lock (_calls)
+            {
+                var hasDescendant = false;
+                foreach (var pair in _calls)
+                {
+                    if (pair.Key == callId)
+                        continue;
+
+                    var candidate = pair.Value.ActionRequest?.HostContext
+                        ?? pair.Value.HostContext;
+                    if (candidate?.ParentInvocationId is not { } parent
+                        || !lineage.Contains(parent))
+                    {
+                        continue;
+                    }
+
+                    hasDescendant = true;
+                    lineage.Add(candidate.InvocationId);
+                }
+
+                if (!hasDescendant)
+                    return;
+
+                changed = _callChange.Task;
+            }
+
+            changed.Wait(ct);
+        }
+    }
+
+    private void ArmRotationAfterCarrier()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _disconnect.IsCancellationRequested)
+            return;
+
+        _rotationGate.Wait(CancellationToken.None);
+        try
+        {
+            lock (_rotationSync)
+            {
+                var maximumCalls = Session.Binding.ConcurrencyLimits.MaximumCallsPerRequest;
+                var callsForRotation =
+                    Volatile.Read(ref _completedCallsForBinding)
+                        + _calls.Count
+                        + _outgoingCapabilityCalls.Count;
+                if (_rotationReady is null
+                    && (_rotationTask is null || _rotationTask.IsCompleted)
+                    && callsForRotation >= Math.Max(maximumCalls - 3, 1))
+                {
+                    _rotationReady = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+    }
+
+    private static SidecarCapabilitySession CreateSession(
+        SidecarCapabilitySessionBinding binding,
+        string controlToken) =>
+        new(
+            binding,
+            authority => OutOfProcessCapabilitySecurity.Authenticate(authority, controlToken),
+            _ => true,
+            DateTimeOffset.UtcNow,
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                        authority,
+                        controlToken),
+                    authority.Proof,
+                    StringComparison.Ordinal),
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && OutOfProcessCapabilitySecurity.ValidateStorageContinuationProof(
+                    authority,
+                    controlToken),
+            (authority, canonicalBindingHash) =>
+                string.Equals(
+                    authority.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointRouteAuthorityProof(
+                        authority,
+                        controlToken),
+                    authority.Proof,
+                    StringComparison.Ordinal),
+            (relay, canonicalBindingHash) =>
+                string.Equals(
+                    relay.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointRouteRelayProof(
+                        relay,
+                        controlToken),
+                    relay.Proof,
+                    StringComparison.Ordinal),
+            (reservation, canonicalBindingHash) =>
+                string.Equals(
+                    reservation.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildReservationProof(
+                        reservation,
+                        controlToken),
+                    reservation.Proof,
+                    StringComparison.Ordinal),
+            (relay, canonicalBindingHash) =>
+                string.Equals(
+                    relay.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity.CreateEndpointTypedActionChildRelayProof(
+                        relay,
+                        controlToken),
+                    relay.Proof,
+                    StringComparison.Ordinal),
+            (acknowledgment, canonicalBindingHash) =>
+                string.Equals(
+                    acknowledgment.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity
+                        .CreateEndpointTypedActionChildImportAcknowledgmentProof(
+                            acknowledgment,
+                            controlToken),
+                    acknowledgment.Proof,
+                    StringComparison.Ordinal),
+            (abort, canonicalBindingHash) =>
+                string.Equals(
+                    abort.CanonicalBindingHash,
+                    canonicalBindingHash,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    OutOfProcessCapabilitySecurity
+                        .CreateEndpointTypedActionChildImportAbortProof(
+                            abort,
+                            controlToken),
+                    abort.Proof,
+                    StringComparison.Ordinal));
+
+    private void RegisterExternalAuthoritySession()
+    {
+        var binding = Session.Binding;
+        var registration = new ExternalAuthorityRegistration(
+            _options.ExternalAuthorityRegistry.Register(Session),
+            binding.ExpiresAt,
+            new CancellationTokenSource());
+        var previous = Interlocked.Exchange(ref _externalAuthorityRegistration, registration);
+        previous?.Dispose();
+        _ = ExpireExternalAuthorityRegistrationAsync(registration);
+    }
+
+    private void DisposeExternalAuthorityRegistration()
+    {
+        var registration = Interlocked.Exchange(ref _externalAuthorityRegistration, null);
+        registration?.Dispose();
+    }
+
+    private async Task ExpireExternalAuthorityRegistrationAsync(
+        ExternalAuthorityRegistration registration)
+    {
+        try
+        {
+            var delay = registration.ExpiresAt - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, registration.ExpiryToken);
+
+            if (registration.ExpiryToken.IsCancellationRequested)
+                return;
+
+            if (ReferenceEquals(
+                    Interlocked.CompareExchange(
+                        ref _externalAuthorityRegistration,
+                        null,
+                        registration),
+                    registration))
+            {
+                registration.Dispose();
+            }
+        }
+        catch (OperationCanceledException) when (registration.ExpiryToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            registration.DisposeExpiryCancellation();
+        }
+    }
+
+    public async Task RunAsync(CancellationToken ct)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _disconnect.Token);
+        await RunCoreAsync(linked.Token);
+    }
+
+    private async Task RunCoreAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (true)
+            {
+                var frame = await OutOfProcessCapabilityWire.ReceiveAsync(
+                    _socket,
+                    _limits.ProtocolMessageBytes,
+                    ct);
+                switch (frame.Kind)
+                {
+                    case OutOfProcessCapabilityFrameKind.ActionRequest:
+                        await ScheduleActionRequestAsync(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityRequest>(frame.Payload),
+                            ct);
+                        break;
+                    case OutOfProcessCapabilityFrameKind.ActionResponse:
+                        CompleteOutgoingAction(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionCapabilityResponse>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.StorageRequest:
+                        await ScheduleStorageRequestAsync(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarStorageCapabilityRequest>(frame.Payload),
+                            ct);
+                        break;
+                    case OutOfProcessCapabilityFrameKind.CapabilityCancellation:
+                        CancelCall(OutOfProcessCapabilityWire.Deserialize<OutOfProcessCapabilityCancellation>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.CapabilityRebindAccepted:
+                        CompleteRebind(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarCapabilityValidationResult>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.ActionTerminalRequest:
+                        await HandleNestedTerminalRequestAsync(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportRequest>(frame.Payload),
+                            ct);
+                        break;
+                    case OutOfProcessCapabilityFrameKind.ActionTerminalResponse:
+                        CompleteTerminal(
+                            OutOfProcessCapabilityWire.Deserialize<SidecarActionTerminalTransportResponse>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteReservationResponse:
+                        CompleteEndpointRouteReservationResponse(
+                            OutOfProcessCapabilityWire.Deserialize<OutOfProcessEndpointRouteReservationResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointRouteRelayResponse:
+                        CompleteEndpointRouteRelayResponse(
+                            OutOfProcessCapabilityWire.Deserialize<OutOfProcessEndpointRouteRelayResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleReady:
+                        HandleEndpointWebSocketModuleReady(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketReady>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleMessage:
+                        HandleEndpointWebSocketModuleMessage(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketMessage>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketModuleCompleted:
+                        HandleEndpointWebSocketModuleCompleted(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointWebSocketCompleted>(frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostMessage:
+                    case OutOfProcessCapabilityFrameKind.EndpointWebSocketHostCompleted:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The host received unsupported endpoint WebSocket frame '{frame.Kind}'.");
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationRequest:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildReservationRequestAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    OutOfProcessEndpointTypedActionChildReservationRequest>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationRelease:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildReservationReleaseAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    SidecarEndpointTypedActionChildReservation>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildRelay:
+                        _ = ObserveQueueCompletionAsync(
+                            HandleEndpointTypedActionChildRelayAsync(
+                                OutOfProcessCapabilityWire.Deserialize<
+                                    SidecarEndpointTypedActionChildRelay>(
+                                    frame.Payload),
+                                ct));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildImportAbortResponse:
+                        CompleteEndpointTypedActionChildImportAbortResponse(
+                            OutOfProcessCapabilityWire.Deserialize<
+                                OutOfProcessEndpointTypedActionChildImportAbortResponse>(
+                                frame.Payload));
+                        break;
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildReservationResponse:
+                    case OutOfProcessCapabilityFrameKind.EndpointTypedActionChildRelayResponse:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The host received unsupported endpoint child response frame '{frame.Kind}'.");
+                    case OutOfProcessCapabilityFrameKind.Error:
+                        throw ReadError(frame.Payload);
+                    default:
+                        throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.MalformedMessage,
+                            $"The host received unsupported capability frame '{frame.Kind}'.");
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (OutOfProcessCapabilityException ex)
+        {
+            Volatile.Write(ref _runFailure, ex);
+        }
+        finally
+        {
+            var binding = Session.Binding;
+            _options.HostActionEntryContexts.Invalidate(binding);
+            DisposeExternalAuthorityRegistration();
+            Session.Disconnect();
+            lock (_rotationSync)
+            {
+                _rotationAcknowledgement?.TrySetException(
+                    new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Disconnected,
+                        "The sidecar capability channel disconnected."));
+                _rotationReady?.TrySetException(
+                    new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.Disconnected,
+                        "The sidecar capability channel disconnected."));
+            }
+            foreach (var terminal in _terminals.Values)
+            {
+                terminal.TrySetException(new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Disconnected,
+                    "The sidecar capability channel disconnected."));
+            }
+            foreach (var action in _outgoingActions.Values)
+            {
+                CancelSafely(action.Cancellation);
+                action.Completion.TrySetException(new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Disconnected,
+                    "The sidecar capability channel disconnected."));
+            }
+            foreach (var call in _calls.Values)
+                CancelSafely(call.Cancellation);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        _disconnect.Cancel();
+        var binding = Session.Binding;
+        _options.HostActionEntryContexts.Invalidate(binding);
+        DisposeExternalAuthorityRegistration();
+        Session.Disconnect();
+        lock (_rotationSync)
+        {
+            _rotationAcknowledgement?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+            _rotationReady?.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+        }
+        foreach (var call in _calls.Values)
+            CancelSafely(call.Cancellation);
+        foreach (var terminal in _terminals.Values)
+        {
+            terminal.TrySetException(new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+        }
+        foreach (var action in _outgoingActions.Values)
+        {
+            CancelSafely(action.Cancellation);
+            action.Completion.TrySetException(
+                new ObjectDisposedException(nameof(OutOfProcessCapabilityHostSession)));
+        }
+        await DisposeEndpointWebSocketBridgesAsync();
+
+        try
+        {
+            if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await _socket.CloseAsync(
+                    WebSocketCloseStatus.NormalClosure,
+                    "capability-disconnected",
+                    CancellationToken.None);
+            }
+        }
+        catch (WebSocketException)
+        {
+        }
+        await _capabilityQueue.DisposeAsync();
+        await _rotationGate.WaitAsync(CancellationToken.None);
+        _rotationGate.Release();
+        _rotationGate.Dispose();
+        SendGate.Dispose();
+        _disconnect.Dispose();
+    }
+
+    private static void CancelSafely(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private async Task ScheduleActionRequestAsync(
+        SidecarActionCapabilityRequest request,
+        CancellationToken channelCt)
+    {
+        var pendingRegistered = false;
+        var terminalSequenceRegistered = false;
+        var scheduled = false;
+        try
+        {
+            if (!_pendingActionRequests.TryAdd(request.Call.CallId, 0))
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Replay,
+                    "The incoming action request identifier was reused.");
+            }
+
+            pendingRegistered = true;
+            terminalSequenceRegistered = RegisterTerminalSequence(request);
+            await _rotationGate.WaitAsync(channelCt);
+            try
+            {
+                if (_capabilityQueue.TrySchedule(
+                        ct => HandleActionRequestAsync(request, ct),
+                        channelCt,
+                        out var completion))
+                {
+                    scheduled = true;
+                    _ = ObserveQueueCompletionAsync(completion);
+                    return;
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            await SendActionFailureAsync(
+                request,
+                SidecarCapabilityErrors.RegistrationBusy,
+                "The host capability execution queue is full.",
+                channelCt);
+        }
+        finally
+        {
+            if (pendingRegistered && !scheduled)
+                RemovePendingActionRequest(request.Call.CallId);
+            if (terminalSequenceRegistered && !scheduled)
+                CompleteTerminalSequence(request.Call.Sequence);
+        }
+    }
+
+    private async Task ScheduleStorageRequestAsync(
+        SidecarStorageCapabilityRequest request,
+        CancellationToken channelCt)
+    {
+        if (!_pendingStorageRequests.TryAdd(request.Call.CallId, 0))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The incoming storage request identifier was reused.");
+        }
+
+        var scheduled = false;
+        try
+        {
+            var continuationCarrierId = request.HostEntryContinuationAuthority?.CarrierId;
+            await WaitForRotationAsync(
+                channelCt,
+                continuationCarrierId ?? ActiveCarrierIdFor(request.Call.CallId),
+                allowAnyActiveCarrier: continuationCarrierId is null);
+            if (_capabilityQueue.TrySchedule(
+                    ct => HandleStorageRequestAsync(request, ct),
+                    channelCt,
+                    out var completion))
+            {
+                scheduled = true;
+                _ = ObserveQueueCompletionAsync(completion);
+                return;
+            }
+
+            await SendStorageFailureAsync(
+                request,
+                SidecarCapabilityErrors.RegistrationBusy,
+                "The host capability execution queue is full.",
+                channelCt);
+        }
+        finally
+        {
+            if (!scheduled)
+                RemovePendingStorageRequest(request.Call.CallId);
+        }
+    }
+
+    private async Task ObserveQueueCompletionAsync(Task completion)
+    {
+        try
+        {
+            await completion;
+        }
+        catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            _disconnect.Cancel();
+        }
+    }
+
+    private void CancelCall(OutOfProcessCapabilityCancellation cancellation)
+    {
+        if (!_calls.TryGetValue(cancellation.Call.CallId, out var active)
+            || !cancellation.Call.Equals(CreateExpectedCall(cancellation.Call)))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The capability cancellation does not match an active call.");
+        }
+
+        if (cancellation.Cancellation.CancellationId != cancellation.Call.CancellationId
+            || !string.Equals(
+                cancellation.Cancellation.AuthorityHash,
+                SidecarCapabilitySessionValidator.ComputeBindingHash(Session.Binding),
+                StringComparison.Ordinal)
+            || cancellation.Cancellation.ExpiresAt != cancellation.Call.Deadline)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The capability cancellation identity is invalid.");
+        }
+
+        active.Cancellation.Cancel();
+    }
+
+    private ActiveCall RegisterCall(
+        SidecarCapabilityCallIdentity call,
+        CancellationToken channelCancellation,
+        SidecarActionCapabilityRequest? actionRequest = null)
+    {
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(channelCancellation);
+        var remaining = call.Deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            cancellation.Cancel();
+        else
+            cancellation.CancelAfter(remaining);
+        var active = new ActiveCall(cancellation)
+        {
+            ActionRequest = actionRequest,
+        };
+        var added = false;
+        lock (_calls)
+        {
+            added = _calls.TryAdd(call.CallId, active);
+        }
+
+        if (!added)
+        {
+            cancellation.Dispose();
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Replay,
+                "The capability call identifier was reused.");
+        }
+
+        return active;
+    }
+
+    private void AbandonCall(Guid callId, ActiveCall active)
+    {
+        var removedCall = false;
+        ActiveCall? removed = null;
+        lock (_calls)
+        {
+            removedCall = _calls.TryRemove(callId, out removed);
+            if (removedCall)
+                SignalCallChange();
+        }
+
+        if (removedCall && removed is not null)
+            removed.Cancellation.Dispose();
+        else
+            active.Cancellation.Dispose();
+    }
+
+    private bool CompleteCall(Guid callId, int terminalCallCount)
+    {
+        if (!_calls.TryGetValue(callId, out var active)
+            || Interlocked.Exchange(ref active.Completed, 1) != 0)
+        {
+            return active is not null
+                && Volatile.Read(ref active.CompletionAccepted) != 0;
+        }
+
+        var effectiveTerminalCallCount = terminalCallCount;
+        if (effectiveTerminalCallCount == 0
+            && Session.TryGetTerminalReceipt(callId, out _))
+        {
+            effectiveTerminalCallCount = 1;
+        }
+
+        var accepted = CompleteSessionCall(callId, effectiveTerminalCallCount);
+        if (!accepted && effectiveTerminalCallCount != 0)
+            accepted = CompleteSessionCall(callId, 0);
+        if (accepted)
+            Volatile.Write(ref active.CompletionAccepted, 1);
+        return accepted;
+    }
+
+    private async ValueTask FinishCallAsync(
+        Guid callId,
+        ActiveCall? active,
+        CancellationToken channelCt)
+    {
+        if (active is null || Interlocked.Exchange(ref active.Finished, 1) != 0)
+            return;
+
+        if (!_calls.TryGetValue(callId, out var removed)
+            || !ReferenceEquals(active, removed))
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref removed.Completed, 1) == 0
+            || Volatile.Read(ref removed.CompletionAccepted) == 0)
+        {
+            if (CompleteSessionCall(callId, 0))
+                Volatile.Write(ref removed.CompletionAccepted, 1);
+        }
+        lock (_calls)
+        {
+            if (_calls.TryRemove(callId, out _))
+                SignalCallChange();
+        }
+        removed.Cancellation.Dispose();
+        try
+        {
+            await StartRotationIfReadyAsync(channelCt);
+        }
+        finally
+        {
+            RequestRotationRetry();
+        }
+    }
+
+    private void SignalCallChange()
+    {
+        _callChange.TrySetResult();
+        _callChange = CreateSignal();
+    }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+    private string DescribeHostRotationState() =>
+        $"pendingActions={_pendingActionRequests.Count};"
+            + $"pendingStorage={_pendingStorageRequests.Count};"
+            + $"calls={_calls.Count};"
+            + $"outgoing={_outgoingCapabilityCalls.Count};"
+            + $"terminals={_terminals.Count};"
+            + $"contexts={_options.HostActionEntryContexts.HasPendingContexts}";
+#endif
+
+    private bool RegisterTerminalSequence(SidecarActionCapabilityRequest request)
+    {
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry
+            || request.HostContext is null)
+        {
+            return false;
+        }
+
+        lock (_terminalSequenceSync)
+            _pendingTerminalSequences.Add(request.Call.Sequence);
+        return true;
+    }
+
+    private async ValueTask WaitForTerminalSequenceAsync(
+        long sequence,
+        CancellationToken ct)
+    {
+        while (true)
+        {
+            Task changed;
+            lock (_terminalSequenceSync)
+            {
+                if (_pendingTerminalSequences.Count == 0
+                    || _pendingTerminalSequences.Min == sequence)
+                {
+                    return;
+                }
+
+                changed = _terminalSequenceChanged.Task;
+            }
+
+            await changed.WaitAsync(ct);
+        }
+    }
+
+    private void CompleteTerminalSequence(long sequence)
+    {
+        lock (_terminalSequenceSync)
+        {
+            if (!_pendingTerminalSequences.Remove(sequence))
+                return;
+
+            _terminalSequenceChanged.TrySetResult();
+            _terminalSequenceChanged = CreateSignal();
+        }
+    }
+
+    private async ValueTask CompleteOutgoingCapabilityCallAsync(
+        Guid callId,
+        HostActionEntryRequestContext hostContext,
+        int terminalCallCount)
+    {
+        while (true)
+        {
+            var result = CompleteSessionCallResult(callId, terminalCallCount);
+            if (result.Accepted)
+            {
+                ReleaseOutgoingCapabilityCall(callId);
+                return;
+            }
+
+            if (!string.Equals(
+                    result.Code,
+                    SidecarCapabilityErrors.InvalidBinding,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    result.Message,
+                    "A parent action cannot complete while a nested action is active.",
+                    StringComparison.Ordinal))
+            {
+                ReleaseOutgoingCapabilityCall(callId);
+                throw new OutOfProcessCapabilityException(
+                    result.Code ?? SidecarCapabilityErrors.HostFailure,
+                    result.Message ?? "The capability call could not be completed.");
+            }
+
+            WaitForNestedHostActionCallsToFinish(
+                callId,
+                hostContext,
+                _disconnect.Token);
+        }
+    }
+
+    private void ReleaseOutgoingCapabilityCall(Guid callId)
+    {
+        if (_outgoingCapabilityCalls.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
+        }
+    }
+
+    private bool CompleteSessionCall(Guid callId, int terminalCallCount) =>
+        CompleteSessionCallResult(callId, terminalCallCount).Accepted;
+
+    private SidecarCapabilityValidationResult CompleteSessionCallResult(
+        Guid callId,
+        int terminalCallCount)
+    {
+        var session = Session;
+        var effectiveTerminalCallCount = terminalCallCount;
+        if (effectiveTerminalCallCount == 0
+            && session.TryGetTerminalReceipt(callId, out _))
+        {
+            effectiveTerminalCallCount = 1;
+        }
+
+        var result = session.CompleteCall(callId, effectiveTerminalCallCount);
+        if (result.Accepted)
+        {
+            var callsForRotation = Interlocked.Increment(ref _completedCallsForBinding);
+            if (callsForRotation
+                >= Math.Max(session.Binding.ConcurrencyLimits.MaximumCallsPerRequest - 2, 1))
+            {
+                lock (_rotationSync)
+                {
+                    _rotationReady ??= new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private async Task WaitForRotationAsync(
+        CancellationToken ct,
+        Guid? activeCarrierId = null,
+        bool allowAnyActiveCarrier = false,
+        bool allowPendingCarrier = false)
+    {
+        Task? rotation;
+        lock (_rotationSync)
+        {
+            var hasReservation = HasActiveHostActionReservation(
+                activeCarrierId,
+                allowAnyActiveCarrier,
+                allowPendingCarrier);
+            if (hasReservation
+                && (_rotationTask is null || _rotationTask.IsCompleted))
+            {
+                return;
+            }
+
+            rotation = _rotationTask ?? _rotationReady?.Task;
+        }
+        if (rotation is not null)
+            await rotation.WaitAsync(ct);
+    }
+
+    private bool HasActiveHostActionReservation(
+        Guid? activeCarrierId,
+        bool allowAnyActiveCarrier,
+        bool allowPendingCarrier)
+    {
+        if (activeCarrierId is not null
+            && (_options.HostActionEntryContexts.IsActive(activeCarrierId.Value)
+                || _calls.Values.Any(active =>
+                    active.HostContext?.CapabilityId == activeCarrierId.Value)
+                || Session.TryGetActiveHostActionEntryCarrier(
+                    activeCarrierId.Value,
+                    out _)))
+        {
+            return true;
+        }
+
+        if (allowPendingCarrier
+            && activeCarrierId is not null
+            && _options.HostActionEntryContexts.IsPending(activeCarrierId.Value))
+        {
+            return true;
+        }
+
+        return allowAnyActiveCarrier
+            && (_options.HostActionEntryContexts.HasActiveContexts
+                || _calls.Values.Any(active => active.HostContext is not null));
+    }
+
+    private Guid? ActiveCarrierIdFor(Guid callId) =>
+        _calls.TryGetValue(callId, out var active)
+            ? active.HostContext?.CapabilityId
+            : null;
+
+    private async ValueTask<DateTimeOffset?> StartRotationIfReadyAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        Session.SweepExpiredHostActionEntryCarriers(now);
+        _options.HostActionEntryContexts.SweepExpired(now);
+        Task? rotation = null;
+        await _rotationGate.WaitAsync(ct);
+        try
+        {
+            lock (_rotationSync)
+            {
+                if (_rotationTask is { IsCompleted: false })
+                {
+                    rotation = _rotationTask;
+                }
+
+                if (rotation is null)
+                {
+                    if (_rotationReady is null
+                        || !_pendingActionRequests.IsEmpty
+                        || !_pendingStorageRequests.IsEmpty
+                        || !_calls.IsEmpty
+                        || !_outgoingCapabilityCalls.IsEmpty
+                        || !_terminals.IsEmpty
+                        || HasPendingEndpointTypedActionChildWork)
+                    {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                        if (_rotationReady is not null)
+                        {
+                            OutOfProcessProtocolTestFixture.RecordRebindState(
+                                "host-rotation-blocked",
+                                DescribeHostRotationState());
+                        }
+#endif
+                        return null;
+                    }
+                    var nextPendingExpiration = _options.HostActionEntryContexts
+                        .NextPendingContextExpiration();
+                    if (nextPendingExpiration is not null)
+                        return nextPendingExpiration;
+
+                    var ready = _rotationReady;
+                    var beforeRotationStart = _options.BeforeRotationStartAsync;
+                    _options.BeforeRotationStartAsync = null;
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                    OutOfProcessProtocolTestFixture.RecordRebindState(
+                        "host-rotation-start",
+                        DescribeHostRotationState());
+#endif
+                    _rotationTask = RunRotationAsync(ready, beforeRotationStart, ct);
+                    rotation = _rotationTask;
+                }
+            }
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
+        if (rotation is not null)
+            await rotation;
+        return null;
+    }
+
+    private async Task RunRotationAsync(
+        TaskCompletionSource ready,
+        Func<Task>? beforeRotationStart,
+        CancellationToken ct)
+    {
+        if (beforeRotationStart is not null)
+            await beforeRotationStart();
+
+        await RotateBindingAsync(ready, ct);
+    }
+
+    internal void RequestRotationRetry()
+    {
+        lock (_rotationSync)
+        {
+            if (_rotationReady is null
+                || Volatile.Read(ref _disposed) != 0
+                || _disconnect.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _rotationRetryWake.TrySetResult();
+            if (_rotationRetryTask is null || _rotationRetryTask.IsCompleted)
+                _rotationRetryTask = RunRotationRetryAsync();
+        }
+    }
+
+    private async Task RunRotationRetryAsync()
+    {
+        try
+        {
+            while (!_disconnect.IsCancellationRequested)
+            {
+                var retryAt = await StartRotationIfReadyAsync(_disconnect.Token);
+                if (retryAt is null)
+                    return;
+
+                var delay = retryAt.Value - DateTimeOffset.UtcNow;
+                if (delay <= TimeSpan.Zero)
+                    continue;
+
+                Task wake;
+                lock (_rotationSync)
+                {
+                    if (_rotationRetryWake.Task.IsCompleted)
+                    {
+                        _rotationRetryWake = CreateSignal();
+                        continue;
+                    }
+
+                    wake = _rotationRetryWake.Task;
+                }
+
+                await Task.WhenAny(
+                    Task.Delay(delay, _disconnect.Token),
+                    wake);
+            }
+        }
+        catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            _disconnect.Cancel();
+        }
+    }
+
+    private static TaskCompletionSource CreateSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private async Task RotateBindingAsync(
+        TaskCompletionSource ready,
+        CancellationToken ct)
+    {
+        var acknowledgement = new TaskCompletionSource<SidecarCapabilityValidationResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_rotationSync)
+            _rotationAcknowledgement = acknowledgement;
+
+        try
+        {
+            var nextBinding = OutOfProcessCapabilitySecurity.CreateBinding(
+                Session.Binding.GraphId,
+                Session.Binding.SourceId,
+                Session.Binding.ProtocolVersion,
+                _options.Grant,
+                _limits,
+                _controlToken);
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.CapabilityRebind,
+                nextBinding,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                ct);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-rebind-sent",
+                DescribeHostRotationState());
+#endif
+            var accepted = await acknowledgement.Task.WaitAsync(ct);
+            if (!accepted.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    accepted.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    accepted.Message ?? "The sidecar rejected the capability binding rotation.");
+            }
+
+            var rotation = Session.RotateBinding(nextBinding, DateTimeOffset.UtcNow);
+            if (!rotation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    rotation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                    rotation.Message
+                        ?? "The capability session rejected binding rotation.");
+            }
+            RegisterExternalAuthoritySession();
+            _options.HostActionEntryContexts.Bind(
+                nextBinding,
+                IssueHostActionEntryContext,
+                preserveActiveContexts: true,
+                issueCoordinator: ExecuteContextIssuance);
+            Interlocked.Exchange(ref _completedCallsForBinding, 0);
+            Interlocked.Exchange(ref _sequence, 0);
+            lock (_rotationSync)
+            {
+                _rotationAcknowledgement = null;
+                _rotationReady = null;
+                ready.TrySetResult();
+                _rotationTask = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            ready.TrySetException(ex);
+            _disconnect.Cancel();
+            throw;
+        }
+        finally
+        {
+            lock (_rotationSync)
+            {
+                if (_rotationAcknowledgement == acknowledgement)
+                    _rotationAcknowledgement = null;
+            }
+        }
+    }
+
+    private void CompleteRebind(SidecarCapabilityValidationResult result)
+    {
+        lock (_rotationSync)
+        {
+            if (_rotationAcknowledgement is null)
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The host received an unsolicited capability binding acknowledgement.");
+            _rotationAcknowledgement.TrySetResult(result);
+        }
+    }
+
+    private void CompleteOutgoingAction(SidecarActionCapabilityResponse response)
+    {
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Outcome.Receipt?.CallId;
+        if (callId is null || callId == Guid.Empty)
+        {
+            var pending = _outgoingActions.Values
+                .Select(value => value.Request?.Call.CallId)
+                .Where(value => value is not null)
+                .Select(value => value!.Value)
+                .Take(2)
+                .ToArray();
+            if (pending.Length != 1)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The module action response has no unique pending call.");
+            }
+
+            callId = pending[0];
+        }
+
+        if (_outgoingActions.TryGetValue(callId.Value, out var action))
+        {
+            action.Completion.TrySetResult(response);
+            return;
+        }
+
+        throw new OutOfProcessCapabilityException(
+            SidecarCapabilityErrors.Unauthorized,
+            "The module action response does not match an active call.");
+    }
+
+    private bool IsHostActionAuthorized(SidecarActionCapabilityRequest request)
+    {
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry
+            && (IsModuleOwnedHostActionAuthorized(request)
+                || IsModuleOwnedNestedHostActionAuthorized(request)))
+        {
+            return true;
+        }
+
+        var snapshotGrant = _options.ActionSnapshot.ActionGrants.SingleOrDefault(grant =>
+            grant.ActionKey == request.Descriptor.Key
+            && grant.ActionVersion == request.Descriptor.Version);
+        var authorizationGrant = _authorization.ActionGrants.SingleOrDefault(grant =>
+            grant.ActionKey == request.Descriptor.Key
+            && grant.ActionVersion == request.Descriptor.Version);
+        if (authorizationGrant is null || snapshotGrant is null)
+            return false;
+
+        if (authorizationGrant.Capabilities != snapshotGrant.Capabilities
+            || authorizationGrant.AcceptUnknownSchemas != snapshotGrant.AcceptUnknownSchemas)
+        {
+            return false;
+        }
+
+        if (authorizationGrant.SensitiveApproved && !snapshotGrant.SensitiveApproved)
+            return false;
+
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry)
+            return request.Snapshot is null
+                && (request.HostContext is not null || request.NestedCarrier is not null)
+                && request.Terminal is { IsWellFormed: true }
+                && request.Terminal.DescriptorHash == request.Descriptor.DescriptorHash;
+
+        return request.Snapshot is not null
+            && request.HostContext is null
+            && string.Equals(
+                request.Snapshot.ContractHash,
+                _options.ActionSnapshot.ContractHash,
+                StringComparison.Ordinal);
+    }
+
+    private bool IsModuleOwnedHostActionAuthorized(
+        SidecarActionCapabilityRequest request)
+    {
+        if (request.NestedCarrier is not null
+            || request.Snapshot is not null
+            || request.HostContext is null
+            || request.Terminal is not { IsWellFormed: true }
+            || request.Terminal.DescriptorHash != request.Descriptor.DescriptorHash
+            || !IsApplicationGraphBoundToSession()
+            || !_application.ActionEntries.Any(entry =>
+                string.Equals(entry.SourceId, _session.Binding.SourceId, StringComparison.Ordinal)
+                && string.Equals(entry.ContractHash, _session.Binding.GraphId, StringComparison.Ordinal)
+                && entry.TerminalId == request.Terminal.TerminalId
+                && OutOfProcessActionDescriptorIdentity.Matches(
+                    entry.Descriptor,
+                    request.Descriptor)))
+        {
+            return false;
+        }
+
+        return MatchesModuleActionLineage(request)
+            || IsAuthorizedApplicationCarrierChild(request);
+    }
+
+    private static bool MatchesModuleActionLineage(
+        SidecarActionCapabilityRequest request)
+    {
+        var lineage = request.HostContext?.Contribution?.Lineage;
+        return lineage is not null
+            && lineage.ActionKey == request.Descriptor.Key
+            && lineage.ActionVersion == request.Descriptor.Version
+            && string.Equals(
+                lineage.DescriptorHash,
+                request.Descriptor.DescriptorHash,
+                StringComparison.Ordinal)
+            && string.Equals(
+                lineage.InputTypeIdentity,
+                request.Descriptor.InputTypeIdentity,
+                StringComparison.Ordinal)
+            && lineage.InputSchemaVersion == request.Descriptor.InputSchemaVersion
+            && string.Equals(
+                lineage.InputSchemaHash,
+                request.Descriptor.InputSchemaHash,
+                StringComparison.Ordinal)
+            && string.Equals(
+                lineage.PayloadContentHash,
+                request.Action.ContentHash,
+                StringComparison.OrdinalIgnoreCase)
+            && lineage.PayloadByteLength == request.Action.ByteLength;
+    }
+
+    private bool IsAuthorizedApplicationCarrierChild(
+        SidecarActionCapabilityRequest request)
+    {
+        var context = request.HostContext;
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry
+            || request.NestedCarrier is not null
+            || request.CrossSidecarCarrier is not null
+            || request.Snapshot is not null
+            || context?.Contribution is null
+            || request.Terminal is not { IsWellFormed: true }
+            || !IsApplicationGraphBoundToSession()
+            || !Session.TryGetActiveHostActionEntryContext(
+                context.CapabilityId,
+                out var activeContext)
+            || activeContext is null
+            || !HostActionEntryAuthorityValidator.SameContextIgnoringPayload(
+                activeContext with
+                {
+                    RequestId = context.RequestId,
+                    CancellationId = context.CancellationId,
+                },
+                context)
+            || !Session.TryGetActiveHostActionEntryCarrier(
+                context.CapabilityId,
+                out var activeCarrier)
+            || activeCarrier is null
+            || activeCarrier.Carrier.Ingress != context.Ingress
+            || activeCarrier.Carrier.InvocationId != context.InvocationId
+            || activeCarrier.Carrier.Contribution != context.Contribution.IngressBinding)
+        {
+            return false;
+        }
+
+        var identity = context.Contribution.IngressBinding.PrimaryIdentity;
+        return context.Ingress switch
+        {
+            HostActionEntryIngress.Cli => _application.CliCommands.Any(command =>
+                string.Equals(command.Descriptor.Name, identity, StringComparison.Ordinal)
+                || command.Descriptor.Aliases.Contains(identity, StringComparer.Ordinal)),
+            HostActionEntryIngress.Tool => _toolHandlers.Any(tool =>
+                string.Equals(tool.ToolName, identity, StringComparison.Ordinal)),
+            HostActionEntryIngress.Endpoint => _application.Endpoints.Any(endpoint =>
+                string.Equals(endpoint.Descriptor.Id, identity, StringComparison.Ordinal)),
+            _ => false,
+        };
+    }
+
+    private bool IsModuleOwnedNestedHostActionAuthorized(
+        SidecarActionCapabilityRequest request)
+    {
+        if (request.NestedCarrier is null
+            || request.Snapshot is not null
+            || request.HostContext is not null
+            || request.Terminal is not { IsWellFormed: true }
+            || request.Terminal.DescriptorHash != request.Descriptor.DescriptorHash
+            || !IsApplicationGraphBoundToSession())
+        {
+            return false;
+        }
+
+        return _application.ActionEntries.Any(entry =>
+            string.Equals(entry.SourceId, _session.Binding.SourceId, StringComparison.Ordinal)
+            && string.Equals(entry.ContractHash, _session.Binding.GraphId, StringComparison.Ordinal)
+            && entry.TerminalId == request.Terminal.TerminalId
+            && OutOfProcessActionDescriptorIdentity.Matches(
+                entry.Descriptor,
+                request.Descriptor));
+    }
+
+    private bool IsApplicationGraphBoundToSession() =>
+        string.Equals(
+            _application.SourceId,
+            _session.Binding.SourceId,
+            StringComparison.Ordinal)
+        && string.Equals(
+            _application.ContractHash,
+            _session.Binding.GraphId,
+            StringComparison.Ordinal);
+
+    private SidecarCapabilityCallIdentity CreateExpectedCall(
+        SidecarCapabilityCallIdentity call) =>
+        new(
+            _session.Binding.SessionId,
+            _session.Binding.RequestId,
+            _session.Binding.CancellationId,
+            call.CallId,
+            call.ReplayNonce,
+            _session.Binding.SourceId,
+            _session.Binding.GraphId,
+            call.Capability,
+            call.Sequence,
+            call.Deadline);
+
+    private async Task HandleActionRequestAsync(
+        SidecarActionCapabilityRequest request,
+        CancellationToken channelCt)
+    {
+        ActiveCall? active = null;
+        try
+        {
+            if (request.Invocation == SidecarActionInvocationKind.HostEntry
+                && request.NestedCarrier is not null)
+            {
+                request = ResolveNestedActionRequest(request);
+            }
+
+            var validation = SidecarCapabilityTransportValidation.ValidateActionRequest(
+                request,
+                _session.Binding,
+                DateTimeOffset.UtcNow,
+                ValidateTerminalAuthority,
+                IsAuthorizedApplicationCarrierChild);
+            if (!validation.Accepted)
+            {
+                await SendActionFailureAsync(request, validation.Code, validation.Message, channelCt);
+                return;
+            }
+
+            ObserveSequence(request.Call.Sequence);
+
+            if (!IsHostActionAuthorized(request))
+            {
+                CompleteRejectedActionCall(request);
+                await SendActionFailureAsync(
+                    request,
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The action request does not match the host-owned action snapshot.",
+                    channelCt);
+                return;
+            }
+
+            _rotationGate.Wait(channelCt);
+            try
+            {
+                active = RegisterCall(request.Call, channelCt, request);
+                RemovePendingActionRequest(request.Call.CallId);
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+            SidecarCapabilityValidationResult begin;
+            HostActionEntryRequestContext? hostContext;
+            if (request.NestedCarrier is not null)
+            {
+                begin = Session.BeginNestedHostActionEntryCall(
+                    request.NestedCarrier,
+                    request.Call,
+                    request.Action,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out hostContext);
+            }
+            else
+            {
+                var contractContext = request.HostContext is not null
+                    && IsAuthorizedApplicationCarrierChild(request)
+                        ? OutOfProcessHostActionEntryContextRegistry.BindContributionLineage(
+                            request.HostContext,
+                            request.Descriptor,
+                            request.Action)
+                        : request.HostContext;
+                var contractRequest = contractContext is null
+                    ? request
+                    : request with
+                    {
+                        HostContext = OutOfProcessHostActionEntryContextRegistry
+                            .WithoutPayloadBinding(contractContext),
+                    };
+                begin = Session.BeginActionCall(
+                    contractRequest,
+                    request.Action.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out hostContext);
+            }
+            active.HostContext = hostContext;
+            if (!begin.Accepted)
+            {
+                AbandonCall(request.Call.CallId, active);
+                active = null;
+                await SendActionFailureAsync(request, begin.Code, begin.Message, channelCt);
+                return;
+            }
+
+            if (!_options.ActionDescriptors.TryGet(request.Descriptor, out var registration))
+            {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    0,
+                    channelCt);
+                active = null;
+                await SendActionFailureAsync(
+                    request,
+                    SidecarCapabilityErrors.UnknownAction,
+                    "The host action descriptor was not registered for this sidecar.",
+                    channelCt);
+                return;
+            }
+
+            var outcome = await registration.Dispatch(
+                this,
+                request,
+                active.Cancellation.Token);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-dispatched",
+                $"call={request.Call.CallId:N}");
+#endif
+            var response = CreateActionResponse(request, registration, outcome);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-response-created",
+                $"call={request.Call.CallId:N}");
+#endif
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionResponse(
+                request,
+                response,
+                _session.Binding,
+                _session);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-response-validated",
+                $"call={request.Call.CallId:N};accepted={responseValidation.Accepted};"
+                    + $"code={responseValidation.Code};message={responseValidation.Message}");
+#endif
+            if (!responseValidation.Accepted)
+            {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    response.Outcome.TerminalCallCount,
+                    channelCt);
+                active = null;
+                await SendActionFailureAsync(
+                    request,
+                    responseValidation.Code,
+                    $"{responseValidation.Message} request={request.Descriptor.Key.Value}:{request.Descriptor.Version}:{request.Descriptor.DescriptorHash}; "
+                    + $"response={response.ResultIdentity?.ActionKey.Value}:{response.ResultIdentity?.ActionVersion}:{response.ResultIdentity?.ResultTypeIdentity}:{response.ResultIdentity?.ContentHash}; "
+                    + $"outcome={response.Outcome.Kind}:{response.Outcome.TerminalCallCount}:{response.Outcome.Receipt?.ReceiptId}",
+                    channelCt);
+                return;
+            }
+
+            if (request.HostContext is not null)
+            {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordRebindState(
+                    "host-action-nested-wait",
+                    $"call={request.Call.CallId:N}");
+#endif
+                WaitForNestedHostActionCallsToFinish(
+                    request.Call.CallId,
+                    active.HostContext ?? request.HostContext,
+                    channelCt);
+            }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-before-complete",
+                $"call={request.Call.CallId:N}");
+#endif
+            var completion = CompleteCall(
+                request.Call.CallId,
+                response.Outcome.TerminalCallCount);
+            if (!completion)
+            {
+                await CompleteCallBeforeActionFailureAsync(
+                    request.Call.CallId,
+                    active,
+                    response.Outcome.TerminalCallCount,
+                    channelCt);
+                active = null;
+                await SendActionFailureAsync(
+                    request,
+                    SidecarCapabilityErrors.HostFailure,
+                    "The host capability call could not be completed.",
+                    channelCt);
+                return;
+            }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-before-response",
+                $"call={request.Call.CallId:N}");
+            await OutOfProcessProtocolTestFixture.BeforeActionResponseAsync(
+                request.Call,
+                channelCt);
+#endif
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionResponse,
+                response,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                channelCt);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "host-action-after-response",
+                $"call={request.Call.CallId:N}");
+#endif
+
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
+            active = null;
+        }
+        catch (OperationCanceledException) when (
+            active is not null
+            && active.Cancellation.IsCancellationRequested
+            && !channelCt.IsCancellationRequested)
+        {
+            var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                ? 1
+                : 0;
+            if (active is not null)
+            {
+                if (active.HostContext is not null)
+                {
+                    WaitForNestedHostActionCallsToFinish(
+                        request.Call.CallId,
+                        active.HostContext,
+                        channelCt);
+                }
+
+                CompleteCall(request.Call.CallId, terminalCallCount);
+                await FinishCallAsync(request.Call.CallId, active, channelCt);
+                active = null;
+            }
+            await SendActionFailureAsync(
+                request,
+                SidecarCapabilityErrors.Cancelled,
+                request.Deadline <= DateTimeOffset.UtcNow
+                    ? "The host action deadline expired."
+                    : "The sidecar cancelled the host action.",
+                channelCt);
+        }
+        catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _lastHandledFailure, ex);
+            var terminalCallCount = Session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                ? 1
+                : 0;
+            if (active is not null)
+            {
+                if (active.HostContext is not null)
+                {
+                    WaitForNestedHostActionCallsToFinish(
+                        request.Call.CallId,
+                        active.HostContext,
+                        channelCt);
+                }
+
+                CompleteCall(request.Call.CallId, terminalCallCount);
+                await FinishCallAsync(request.Call.CallId, active, channelCt);
+                active = null;
+            }
+            await SendActionFailureAsync(
+                request,
+                SidecarCapabilityErrors.HostFailure,
+                "The host action dispatcher failed.",
+                channelCt);
+        }
+        finally
+        {
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
+            RemovePendingActionRequest(request.Call.CallId);
+            CompleteTerminalSequence(request.Call.Sequence);
+        }
+    }
+
+    private void RemovePendingActionRequest(Guid callId)
+    {
+        if (_pendingActionRequests.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
+        }
+    }
+
+    private void RemovePendingStorageRequest(Guid callId)
+    {
+        if (_pendingStorageRequests.TryRemove(callId, out _))
+        {
+            SignalCallChange();
+            RequestRotationRetry();
+        }
+    }
+
+    private async ValueTask CompleteCallBeforeActionFailureAsync(
+        Guid callId,
+        ActiveCall active,
+        int terminalCallCount,
+        CancellationToken channelCt)
+    {
+        ArgumentNullException.ThrowIfNull(active);
+        if (active.HostContext is not null)
+        {
+            WaitForNestedHostActionCallsToFinish(
+                callId,
+                active.HostContext,
+                channelCt);
+        }
+
+        if (CompleteCall(callId, terminalCallCount))
+        {
+            await FinishCallAsync(callId, active, channelCt);
+            return;
+        }
+
+        var recordedTerminalCallCount = Session.TryGetTerminalReceipt(callId, out _)
+            ? 1
+            : 0;
+        if (!CompleteCall(callId, recordedTerminalCallCount))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.HostFailure,
+                "The host capability call could not be completed before its failure response.");
+        }
+
+        await FinishCallAsync(callId, active, channelCt);
+    }
+
+    private void CompleteRejectedActionCall(SidecarActionCapabilityRequest request)
+    {
+        var contractRequest = request.HostContext is null
+            ? request
+            : request with
+            {
+                HostContext = OutOfProcessHostActionEntryContextRegistry
+                    .WithoutPayloadBinding(request.HostContext),
+            };
+        var begin = contractRequest.HostContext is { } hostContext
+            ? Session.BeginCall(
+                contractRequest.Call,
+                SidecarCapabilityKind.Action,
+                contractRequest.Action,
+                contractRequest.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                hostContext)
+            : Session.BeginActionCall(
+                contractRequest,
+                request.Action.ByteLength,
+                DateTimeOffset.UtcNow,
+                out _);
+        if (!begin.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                begin.Code ?? SidecarCapabilityErrors.Unauthorized,
+                begin.Message ?? "The rejected action call could not enter the capability session.");
+        }
+
+        var completion = Session.CompleteCall(request.Call.CallId, 0);
+        if (!completion.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                completion.Code ?? SidecarCapabilityErrors.HostFailure,
+                completion.Message ?? "The rejected action call could not leave the capability session.");
+        }
+
+        RequestRotationRetry();
+    }
+
+    private async Task HandleNestedTerminalRequestAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken ct)
+    {
+        if (request.CrossSidecarActionRequest is not null)
+        {
+            await HandleCrossSidecarTerminalRequestAsync(request, ct);
+            return;
+        }
+
+        if (request.NestedCarrierRequest is null
+            || !_calls.TryGetValue(request.Call.CallId, out var active)
+            || active.ActionRequest is not { } initiatingRequest
+            || !_terminals.ContainsKey(request.Call.CallId))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested terminal request has no active parent terminal exchange.");
+        }
+
+        var validation = SidecarCapabilityTransportValidation.ValidateActionTerminalRequest(
+            initiatingRequest,
+            request,
+            Session.Binding,
+            DateTimeOffset.UtcNow,
+            ValidateTerminalAuthority);
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                validation.Message ?? "The nested terminal request was rejected.");
+        }
+
+        var record = Session.RecordTerminal(
+            request.Call.CallId,
+            request.Authority.AuthorityId,
+            request.Receipt);
+        if (!record.Accepted && !Session.TryGetTerminalReceipt(request.Call.CallId, out _))
+        {
+            throw new OutOfProcessCapabilityException(
+                record.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                record.Message ?? "The parent terminal authority was rejected.");
+        }
+
+        var resolvedNestedRequest = ResolveNestedRelayRequest(
+            request.NestedCarrierRequest,
+            active.HostContext,
+            out var resolvedDescriptor,
+            out var resolvedContribution);
+        var issue = Session.IssueNestedHostActionEntryPeerRelay(
+            request.Call,
+            resolvedNestedRequest,
+            resolvedDescriptor,
+            resolvedContribution,
+            Session,
+            DateTimeOffset.UtcNow,
+            out var relay);
+        var outcomeKind = issue.Accepted && relay is not null
+            ? SidecarNestedHostActionEntryRelayOutcomeKind.Issued
+            : SidecarNestedHostActionEntryRelayOutcomeKind.Failed;
+        var failure = issue.Accepted && relay is not null
+            ? null
+            : new SidecarSafeFailureIdentity(
+                Guid.NewGuid(),
+                issue.Code ?? SidecarCapabilityErrors.HostFailure,
+                issue.Message ?? "The host could not issue the nested action carrier.",
+                Retryable: false);
+        var response = CreateNestedRelayResponse(
+            request,
+            relay,
+            outcomeKind,
+            failure);
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.ActionTerminalResponse,
+            response,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
+    }
+
+    private SidecarNestedHostActionEntryRequest ResolveNestedRelayRequest(
+        SidecarNestedHostActionEntryRequest request,
+        HostActionEntryRequestContext? parentContext,
+        out SidecarActionDescriptorIdentity resolvedDescriptor,
+        out HostActionEntryContribution resolvedContribution)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!_options.ActionDescriptors.TryResolve(
+                request.ActionKey,
+                request.ActionVersion,
+                out var registration))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                $"The nested action '{request.ActionKey.Value}:{request.ActionVersion}' "
+                + "is not registered in host descriptor authority.");
+        }
+
+        if (parentContext is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested action has no authenticated parent context.");
+        }
+
+        var parentContribution = parentContext.Contribution
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The nested action has no authenticated parent contribution.");
+        resolvedDescriptor = registration.Identity;
+        resolvedContribution = parentContribution with
+        {
+            Lineage = new HostActionEntryLineage(
+                resolvedDescriptor.Key,
+                resolvedDescriptor.Version,
+                resolvedDescriptor.DescriptorHash,
+                resolvedDescriptor.InputTypeIdentity,
+                resolvedDescriptor.InputSchemaVersion,
+                resolvedDescriptor.InputSchemaHash,
+                null,
+                null),
+        };
+        var validation = SidecarCapabilityTransportValidation
+            .ValidateResolvedNestedHostActionEntryRequest(
+                request,
+                resolvedDescriptor,
+                resolvedContribution,
+                Session.Binding,
+                DateTimeOffset.UtcNow);
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.SpoofedIdentity,
+                validation.Message ?? "The nested action does not match host descriptor authority.");
+        }
+
+        return request;
+    }
+
+    private SidecarActionCapabilityRequest ResolveNestedActionRequest(
+        SidecarActionCapabilityRequest request)
+    {
+        var carrier = request.NestedCarrier
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action request has no host-issued carrier.");
+        if (request.Descriptor.Key != carrier.ActionKey
+            || request.Descriptor.Version != carrier.ActionVersion)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action request does not select its host-issued carrier action.");
+        }
+
+        if (!_options.ActionDescriptors.TryResolve(
+                carrier.ActionKey,
+                carrier.ActionVersion,
+                out var registration)
+            || !OutOfProcessActionDescriptorIdentity.Matches(
+                registration.Identity,
+                request.Descriptor)
+            || !string.Equals(
+                registration.Identity.DescriptorHash,
+                carrier.DescriptorHash,
+                StringComparison.Ordinal))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The nested carrier does not identify a registered host descriptor.");
+        }
+
+        var action = request.Action;
+        if (!string.Equals(
+                action.TypeIdentity,
+                request.Descriptor.InputTypeIdentity,
+                StringComparison.Ordinal)
+            || action.SchemaVersion != request.Descriptor.InputSchemaVersion
+            || !string.Equals(
+                action.ContentHash,
+                carrier.ActionContentHash,
+                StringComparison.Ordinal)
+            || action.ByteLength != carrier.ActionByteLength)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The nested action payload does not match its host-issued carrier.");
+        }
+
+        var terminal = request.Terminal
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The nested action request has no terminal registration.");
+        return request with
+        {
+            Descriptor = request.Descriptor,
+            Action = action,
+            Terminal = terminal,
+        };
+    }
+
+    private async Task HandleStorageRequestAsync(
+        SidecarStorageCapabilityRequest request,
+        CancellationToken channelCt)
+    {
+        ActiveCall? active = null;
+        try
+        {
+            var validation = SidecarCapabilityTransportValidation.ValidateStorageRequest(
+                request,
+                _session.Binding,
+                DateTimeOffset.UtcNow);
+            if (!validation.Accepted)
+            {
+                await SendStorageFailureAsync(request, validation.Code, validation.Message, channelCt);
+                return;
+            }
+
+            ObserveSequence(request.Call.Sequence);
+
+            if (!string.Equals(request.SourceId, _session.Binding.SourceId, StringComparison.Ordinal)
+                || (request.Operation != SidecarStorageOperationKind.ListContracts
+                    && !_options.OwnedStorageNames.Contains(request.StorageName)))
+            {
+                await SendStorageFailureAsync(
+                    request,
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The storage request is not owned by the authorized module.",
+                    channelCt);
+                return;
+            }
+
+            var requestPayload = request.RequestPayload;
+            var requestFramePayload = requestPayload ?? EmptyPayload();
+            var storageContinuation = request.HostEntryContinuationAuthority;
+            _rotationGate.Wait(channelCt);
+            try
+            {
+                active = RegisterCall(request.Call, channelCt);
+                RemovePendingStorageRequest(request.Call.CallId);
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+            SidecarCapabilityValidationResult begin;
+            if (storageContinuation is null)
+            {
+                begin = Session.BeginCall(
+                    request.Call,
+                    SidecarCapabilityKind.Storage,
+                    requestFramePayload,
+                    requestFramePayload.ByteLength,
+                    DateTimeOffset.UtcNow);
+            }
+            else
+            {
+                var import = Session.ImportHostEntryStorageContinuationAuthority(
+                    storageContinuation,
+                    DateTimeOffset.UtcNow);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "host-continuation-import",
+                    import.Accepted,
+                    import.Code,
+                    import.Message);
+#endif
+                if (!import.Accepted)
+                {
+                    AbandonCall(request.Call.CallId, active);
+                    active = null;
+                    await SendStorageFailureAsync(
+                        request,
+                        import.Code,
+                        import.Message,
+                        channelCt);
+                    return;
+                }
+
+                begin = Session.BeginStorageContinuationCall(
+                    request,
+                    requestFramePayload.ByteLength,
+                    DateTimeOffset.UtcNow,
+                    out _);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+                OutOfProcessProtocolTestFixture.RecordStorageStage(
+                    request,
+                    "host-continuation-begin",
+                    begin.Accepted,
+                    begin.Code,
+                    begin.Message);
+#endif
+            }
+            if (!begin.Accepted)
+            {
+                AbandonCall(request.Call.CallId, active);
+                active = null;
+                await SendStorageFailureAsync(request, begin.Code, begin.Message, channelCt);
+                return;
+            }
+
+            var response = await InvokeStorageAsync(request, active.Cancellation.Token);
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateStorageResponse(
+                request,
+                response,
+                _session.Binding);
+            if (!responseValidation.Accepted)
+            {
+                await SendStorageFailureAsync(
+                    request,
+                    responseValidation.Code,
+                    responseValidation.Message,
+                    channelCt);
+                return;
+            }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "storage-before-complete",
+                request.Call.CallId.ToString("N"));
+#endif
+            var completionAccepted = CompleteCall(request.Call.CallId, 0);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+            OutOfProcessProtocolTestFixture.RecordRebindState(
+                "storage-after-complete",
+                $"{request.Call.CallId:N}|accepted={completionAccepted}");
+#endif
+            if (!completionAccepted)
+            {
+                await SendStorageFailureAsync(
+                    request,
+                    SidecarCapabilityErrors.HostFailure,
+                    "The host capability call could not be completed.",
+                    channelCt);
+                return;
+            }
+
+            await SendStorageResponseAsync(request, response, channelCt);
+        }
+        catch (OperationCanceledException) when (
+            active is not null
+            && active.Cancellation.IsCancellationRequested
+            && !channelCt.IsCancellationRequested)
+        {
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
+            await SendStorageFailureAsync(
+                request,
+                SidecarCapabilityErrors.Cancelled,
+                request.Deadline <= DateTimeOffset.UtcNow
+                    ? "The host storage deadline expired."
+                    : "The sidecar cancelled the host storage call.",
+                channelCt);
+        }
+        catch (OperationCanceledException) when (channelCt.IsCancellationRequested)
+        {
+        }
+        catch (ScopedStorageContractException ex)
+        {
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
+            await SendStorageFailureAsync(
+                request,
+                ex.Failure.Code,
+                ex.Failure.Message,
+                channelCt,
+                ex.Failure);
+        }
+        catch (Exception)
+        {
+            if (active is not null)
+                CompleteCall(request.Call.CallId, 0);
+            await SendStorageFailureAsync(
+                request,
+                SidecarCapabilityErrors.HostFailure,
+                "The host storage gateway failed.",
+                channelCt);
+        }
+        finally
+        {
+            RemovePendingStorageRequest(request.Call.CallId);
+            await FinishCallAsync(request.Call.CallId, active, channelCt);
+        }
+    }
+
+    internal ValueTask<OutOfProcessActionDispatchResult> DispatchAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>? hostTerminal,
+        CancellationToken ct)
+    {
+        var action = Deserialize<TAction>(request.Action);
+        return DispatchActionCoreAsync<TAction, TResult>(
+            action,
+            identity,
+            request,
+            context => ValidateTypedHostActionEntry(descriptor, action, request, context),
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            (terminal, cancellationToken) =>
+                _options.ActionDispatcher.RunAsync(
+                    descriptor,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    cancellationToken),
+            ct);
+    }
+
+    internal ValueTask<OutOfProcessActionDispatchResult> DispatchSerializedAsync(
+        SidecarActionDefinition definition,
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(request);
+        if (!SidecarExternalActionDispatchAuthorityValidator.DescriptorMatchesDefinition(
+                identity,
+                definition))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized action descriptor does not match its discovery definition.");
+        }
+        if (request.Invocation != SidecarActionInvocationKind.HostEntry)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "A discovered module action requires an authenticated host entry.");
+        }
+
+        var action = request.Action.Value.Clone();
+        return DispatchActionCoreAsync<JsonElement, JsonElement>(
+            action,
+            identity,
+            request,
+            context => ValidateSerializedHostActionEntry(identity, request, context),
+            (terminal, authority, cancellationToken) =>
+                _options.ActionDispatcher.RunExternalSerializedAsync(
+                    definition,
+                    identity,
+                    action,
+                    terminal,
+                    _options.ActionSnapshot,
+                    authority,
+                    cancellationToken),
+            dispatchInternal: null,
+            ct);
+    }
+
+    private async ValueTask<OutOfProcessActionDispatchResult> DispatchActionCoreAsync<TAction, TResult>(
+        TAction action,
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        Action<HostActionEntryRequestContext> validateHostEntry,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            SidecarExternalActionDispatchAuthority,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>> dispatchExternal,
+        Func<
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>,
+            CancellationToken,
+            ValueTask<IActionOutcome<TResult>>>? dispatchInternal,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(validateHostEntry);
+        ArgumentNullException.ThrowIfNull(dispatchExternal);
+        if (request.Invocation == SidecarActionInvocationKind.HostEntry)
+        {
+            if (request.NestedCarrier is not null)
+            {
+                if (!_calls.TryGetValue(request.Call.CallId, out var active)
+                    || active.HostContext is null)
+                {
+                    throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The nested host action call has no authenticated host context.");
+                }
+
+                var nestedContext = active.HostContext;
+                var nestedAuthority = CreateExternalActionDispatchAuthority(
+                    identity,
+                    request.Call,
+                    action,
+                    request.Action,
+                    request.Terminal
+                        ?? throw new OutOfProcessCapabilityException(
+                            SidecarCapabilityErrors.UnknownAction,
+                            "The nested host action request has no terminal registration."),
+                    nestedContext,
+                    request.Cancellation,
+                    request.Invocation);
+                var nestedOutcome = await dispatchExternal(
+                    (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                        request,
+                        identity,
+                        context,
+                        nestedContext,
+                        terminalCancellation),
+                    nestedAuthority,
+                    ct);
+                return new OutOfProcessActionDispatchResult(
+                    nestedOutcome.Kind,
+                    nestedOutcome.Result,
+                    nestedOutcome.Error,
+                    nestedOutcome.Uncertainty,
+                    nestedOutcome.Continuation,
+                    _session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                        ? 1
+                        : 0);
+            }
+
+            var initiatingContext = request.HostContext
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.Unauthorized,
+                    "The host action request has no host context.");
+            var hostContext = IsAuthorizedApplicationCarrierChild(request)
+                ? OutOfProcessHostActionEntryContextRegistry.BindContributionLineage(
+                    initiatingContext,
+                    request.Descriptor,
+                    request.Action)
+                : initiatingContext;
+            if (request.Terminal is null || !request.Terminal.IsWellFormed)
+            {
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.UnknownAction,
+                    "The host action request has no valid terminal registration.");
+            }
+
+            validateHostEntry(hostContext);
+
+            var hostAuthority = CreateExternalActionDispatchAuthority(
+                identity,
+                request.Call,
+                action,
+                request.Action,
+                request.Terminal,
+                hostContext,
+                request.Cancellation,
+                request.Invocation);
+            var hostOutcome = await dispatchExternal(
+                    (dispatcherContext, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                        request,
+                        identity,
+                        dispatcherContext,
+                        hostContext,
+                        terminalCancellation),
+                hostAuthority,
+                ct);
+            return new OutOfProcessActionDispatchResult(
+                hostOutcome.Kind,
+                hostOutcome.Result,
+                hostOutcome.Error,
+                hostOutcome.Uncertainty,
+                hostOutcome.Continuation,
+                _session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                    ? 1
+                    : 0);
+        }
+
+        if (dispatchInternal is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.UnknownAction,
+                "The action requires an authenticated host entry.");
+        }
+        var outcome = await dispatchInternal(
+            (context, terminalCancellation) => InvokeTerminalAsync<TAction, TResult>(
+                request,
+                identity,
+                context,
+                null,
+                terminalCancellation),
+            ct);
+        return new OutOfProcessActionDispatchResult(
+            outcome.Kind,
+            outcome.Result,
+            outcome.Error,
+            outcome.Uncertainty,
+            outcome.Continuation,
+            _session.TryGetTerminalReceipt(request.Call.CallId, out _)
+                ? 1
+                : 0);
+    }
+
+    private void ValidateTypedHostActionEntry<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext context)
+    {
+        var entryRequest = new HostActionEntryRequest<TAction, TResult>(
+            descriptor,
+            action,
+            context);
+        if (!IsAuthorizedApplicationCarrierChild(request)
+            && !_options.HostActionEntryContexts.TryConsume(
+                entryRequest,
+                DateTimeOffset.UtcNow))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The host action context is invalid, expired, or already used.");
+        }
+        var issued = _session.IssueHostActionEntry(
+            entryRequest with
+            {
+                Context = OutOfProcessHostActionEntryContextRegistry
+                    .WithoutPayloadBinding(entryRequest.Context),
+            },
+            request.Call.CallId,
+            DateTimeOffset.UtcNow,
+            authority => OutOfProcessCapabilitySecurity.CreateHostActionEntryProof(
+                authority,
+                _controlToken),
+            out var transport);
+        if (!issued.Accepted || transport is null)
+        {
+            throw new OutOfProcessCapabilityException(
+                issued.Code ?? SidecarCapabilityErrors.Unauthorized,
+                issued.Message ?? "The host action entry authority was rejected.");
+        }
+
+        var validation = _session.ValidateHostActionEntry(
+            transport,
+            DateTimeOffset.UtcNow,
+            authority => OutOfProcessCapabilitySecurity.ValidateHostActionEntryProof(
+                authority,
+                _controlToken));
+        if (!validation.Accepted)
+        {
+            throw new OutOfProcessCapabilityException(
+                validation.Code ?? SidecarCapabilityErrors.Unauthorized,
+                validation.Message ?? "The host action entry authority was rejected.");
+        }
+    }
+
+    private void ValidateSerializedHostActionEntry(
+        SidecarActionDescriptorIdentity identity,
+        SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext context)
+    {
+        if (!IsAuthorizedApplicationCarrierChild(request)
+            && !_options.HostActionEntryContexts.TryConsume(
+                identity,
+                request.Action,
+                context,
+                DateTimeOffset.UtcNow))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The serialized host action context is invalid, expired, or already used.");
+        }
+    }
+
+    private SidecarExternalActionDispatchAuthority CreateExternalActionDispatchAuthority<TAction>(
+        SidecarActionDescriptorIdentity identity,
+        SidecarCapabilityCallIdentity call,
+        TAction action,
+        SidecarSerializedPayload actionPayload,
+        SidecarActionTerminalRegistration terminal,
+        HostActionEntryRequestContext hostContext,
+        SidecarCancellationIdentity cancellation,
+        SidecarActionInvocationKind invocation)
+    {
+        var dispatcherContext = new ActionContext<TAction>(
+            hostContext.InvocationId,
+            hostContext.ParentInvocationId,
+            hostContext.TraceId,
+            hostContext.IdempotencyKey,
+            hostContext.Depth,
+            hostContext.Attempt,
+            hostContext.Deadline,
+            identity.Key,
+            _session.Binding.SourceId,
+            hostContext.Caller,
+            action,
+            hostContext.Features,
+            _options.ActionSnapshot);
+        var effectiveHostEntry = CreateEffectiveHostEntryContext(
+            call,
+            identity,
+            actionPayload,
+            cancellation,
+            hostContext.Deadline,
+            hostContext,
+            dispatcherContext,
+            terminal.TerminalId,
+            invocation);
+        return new SidecarExternalActionDispatchAuthority(
+            _session.Binding.SourceId,
+            _session.Binding.GraphId,
+            call,
+            identity,
+            actionPayload,
+            terminal,
+            hostContext,
+            effectiveHostEntry);
+    }
+
+    private async ValueTask<TResult> InvokeTerminalAsync<TAction, TResult>(
+        SidecarActionCapabilityRequest request,
+        SidecarActionDescriptorIdentity identity,
+        ActionContext<TAction> context,
+        HostActionEntryRequestContext? hostContext,
+        CancellationToken ct)
+    {
+        var effectiveContext = request.Invocation == SidecarActionInvocationKind.HostEntry
+            ? BindHostEntryDispatcherContext(request, hostContext, context)
+            : context;
+
+        var actionPayload = CreatePayload(
+            effectiveContext.Action,
+            identity.InputTypeIdentity,
+            identity.InputSchemaVersion);
+        var receipt = new SidecarTerminalReceipt(
+            Guid.NewGuid().ToString("N"),
+            identity.Key,
+            identity.Version,
+            request.Call.CallId,
+            1,
+            $"{_session.Binding.GraphId}:{request.Call.CallId:N}",
+            actionPayload.ContentHash);
+        var issuedAt = DateTimeOffset.UtcNow;
+        var expiresAt = request.Deadline < _session.Binding.ExpiresAt
+            ? request.Deadline
+            : _session.Binding.ExpiresAt;
+        var authority = new SidecarHostTerminalAuthority(
+            Guid.NewGuid(),
+            request.Call.SessionId,
+            request.Call.RequestId,
+            request.Call.CancellationId,
+            request.Call.CallId,
+            _session.Binding.SourceId,
+            _session.Binding.GraphId,
+            request.Invocation,
+            identity.Key,
+            identity.Version,
+            identity.DescriptorHash,
+            actionPayload.TypeIdentity,
+            actionPayload.SchemaVersion,
+            actionPayload.ContentHash,
+            actionPayload.ByteLength,
+            receipt.ReceiptId,
+            receipt.ActionKey,
+            receipt.ActionVersion,
+            receipt.CallId,
+            receipt.Attempt,
+            receipt.IdempotencyScope,
+            receipt.ContentHash,
+            request.Deadline,
+            issuedAt,
+            expiresAt,
+            "pending");
+        authority = authority with
+        {
+            TerminalId = request.Terminal?.TerminalId ?? Guid.Empty,
+            SnapshotContentHash = SidecarCapabilityTransportCodec.ComputeSha256(
+                SidecarCapabilityTransportCodec.Serialize(_options.ActionSnapshot)),
+            Caller = effectiveContext.Caller,
+            Features = effectiveContext.Features,
+            TraceId = effectiveContext.TraceId,
+            IdempotencyKey = effectiveContext.IdempotencyKey,
+            InvocationId = effectiveContext.InvocationId,
+            ParentInvocationId = effectiveContext.ParentInvocationId,
+            Depth = effectiveContext.Depth,
+            Attempt = effectiveContext.Attempt,
+            HostContextBindingHash = hostContext is null
+                ? null
+                : SidecarCapabilityTransportValidation
+                    .ComputeHostActionEntryContextBindingHash(hostContext),
+            RootPeerCall = request.Invocation == SidecarActionInvocationKind.HostEntry
+                ? request.Call
+                : null,
+            ReceivingRootBudgetId = hostContext?.CapabilityId ?? Guid.Empty,
+            ReceivingPeerBindingGeneration = _session.BindingGeneration,
+        };
+        authority = authority with
+        {
+            CanonicalBindingHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority),
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
+        };
+        var terminalRequest = new SidecarActionTerminalTransportRequest(
+            request.Call,
+            request.Invocation,
+            request.Descriptor,
+            actionPayload,
+            authority,
+            receipt,
+            request.Cancellation,
+            request.Deadline)
+        {
+            Context = new SidecarActionTerminalExecutionContext(
+                request.Call,
+                request.Invocation,
+                request.Descriptor,
+                actionPayload,
+                _options.ActionSnapshot,
+                effectiveContext.InvocationId,
+                effectiveContext.ParentInvocationId,
+                effectiveContext.Depth,
+                effectiveContext.Attempt,
+                effectiveContext.Caller,
+                effectiveContext.Features,
+                effectiveContext.TraceId,
+                effectiveContext.IdempotencyKey,
+                request.Cancellation,
+                receipt,
+                request.Invocation == SidecarActionInvocationKind.HostEntry
+                    ? effectiveContext.Deadline
+                    : request.Deadline),
+            TerminalId = request.Terminal?.TerminalId ?? Guid.Empty,
+        };
+        var terminalSequenceRegistered = request.Invocation == SidecarActionInvocationKind.HostEntry
+            && request.HostContext is not null;
+        var terminalSequenceCompleted = false;
+        if (terminalSequenceRegistered)
+            await WaitForTerminalSequenceAsync(request.Call.Sequence, ct);
+
+        try
+        {
+            var record = _session.RecordTerminal(
+                request.Call.CallId,
+                authority.AuthorityId,
+                receipt);
+            if (!record.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    record.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                    record.Message ?? "The terminal receipt was rejected.");
+            }
+
+            var terminalResponse = await SendTerminalAsync(
+                terminalRequest,
+                ct,
+                terminalSequenceRegistered
+                    ? () =>
+                    {
+                        CompleteTerminalSequence(request.Call.Sequence);
+                        terminalSequenceCompleted = true;
+                    }
+                    : null);
+            var responseValidation = SidecarCapabilityTransportValidation.ValidateActionTerminalResponse(
+                terminalRequest,
+                terminalResponse,
+                _session.Binding);
+            if (!responseValidation.Accepted)
+            {
+                throw new OutOfProcessCapabilityException(
+                    responseValidation.Code ?? SidecarCapabilityErrors.MalformedMessage,
+                    responseValidation.Message ?? "The terminal response was rejected.");
+            }
+
+            if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)
+            {
+                throw new OutOfProcessCapabilityException(
+                    terminalResponse.SafeFailure?.Code ?? SidecarCapabilityErrors.HostFailure,
+                    terminalResponse.SafeFailure?.Message ?? "The sidecar terminal callback failed.");
+            }
+
+            return JsonSerializer.Deserialize<TResult>(
+                    terminalResponse.Execution.Result.Value.GetRawText(),
+                    SidecarCapabilityTransportCodec.CreateJsonOptions())
+                ?? throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.MalformedMessage,
+                    "The sidecar terminal callback returned no result.");
+        }
+        finally
+        {
+            if (terminalSequenceRegistered && !terminalSequenceCompleted)
+                CompleteTerminalSequence(request.Call.Sequence);
+        }
+    }
+
+    private static ActionContext<TAction> BindHostEntryDispatcherContext<TAction>(
+        SidecarActionCapabilityRequest request,
+        HostActionEntryRequestContext? hostContext,
+        ActionContext<TAction> context)
+    {
+        var expected = hostContext
+            ?? throw new OutOfProcessCapabilityException(
+                SharpClaw.Contracts.Kernel.SidecarCapabilityErrors.SpoofedIdentity,
+                "The host action entry request has no initiating host context.");
+        return BindHostEntryDispatcherContext(request.Descriptor, expected, context);
+    }
+
+    private static ActionContext<TAction> BindHostEntryDispatcherContext<TAction>(
+        SidecarActionDescriptorIdentity descriptor,
+        HostActionEntryRequestContext expected,
+        ActionContext<TAction> context)
+    {
+        if (context.ActionKey != descriptor.Key)
+        {
+            throw new OutOfProcessCapabilityException(
+                SharpClaw.Contracts.Kernel.SidecarCapabilityErrors.SpoofedIdentity,
+                "The dispatcher action context does not match the host action descriptor.");
+        }
+
+        return new ActionContext<TAction>(
+            expected.InvocationId,
+            expected.ParentInvocationId,
+            expected.TraceId,
+            expected.IdempotencyKey,
+            expected.Depth,
+            expected.Attempt,
+            expected.Deadline,
+            context.ActionKey,
+            context.OwnerId,
+            expected.Caller,
+            context.Action,
+            expected.Features,
+            context.Snapshot);
+    }
+
+    private SidecarActionTerminalTransportResponse CreateNestedRelayResponse(
+        SidecarActionTerminalTransportRequest request,
+        SidecarNestedHostActionEntryRelay? relay,
+        SidecarNestedHostActionEntryRelayOutcomeKind outcomeKind,
+        SidecarSafeFailureIdentity? failure)
+    {
+        var authority = request.Authority with
+        {
+            NestedCarrierRelay = relay,
+            NestedCarrierOutcomeKind = outcomeKind,
+            NestedCarrierRequestFingerprint =
+                SidecarCapabilityTransportValidation.ComputeNestedCarrierRequestFingerprint(
+                    request.NestedCarrierRequest!),
+            Proof = "pending",
+        };
+        authority = authority with
+        {
+            CanonicalBindingHash = SidecarCapabilityTransportValidation
+                .ComputeTerminalAuthorityBindingHash(authority),
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(
+                authority,
+                _controlToken),
+        };
+
+        var issued = outcomeKind == SidecarNestedHostActionEntryRelayOutcomeKind.Issued;
+        var result = issued
+            ? CreateNullPayload(
+                request.Descriptor.ResultTypeIdentity,
+                request.Descriptor.ResultSchemaVersion)
+            : null;
+        return new SidecarActionTerminalTransportResponse(
+            issued
+                ? new SidecarActionResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    request.Descriptor.Key,
+                    request.Descriptor.Version,
+                    request.Descriptor.ResultTypeIdentity,
+                    result!.ContentHash)
+                : null,
+            new SidecarTerminalExecutionResult(
+                result,
+                issued ? null : failure ?? _session.Binding.SafeFailure,
+                Completed: true),
+            request.Receipt,
+            _session.Binding.SafeFailure)
+        {
+            TerminalId = request.TerminalId,
+            NestedCarrierRelay = relay,
+            NestedCarrierAuthority = authority,
+            NestedCarrierOutcome = new(outcomeKind, issued ? null : failure),
+        };
+    }
+
+    private static SidecarSerializedPayload CreateNullPayload(
+        string typeIdentity,
+        int schemaVersion)
+    {
+        using var document = JsonDocument.Parse("null");
+        var canonical = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        return new SidecarSerializedPayload(
+            typeIdentity,
+            schemaVersion,
+            SidecarCapabilityTransportCodec.ComputeSha256(canonical),
+            document.RootElement.Clone(),
+            canonical.Length);
+    }
+
+    private bool ValidateTerminalAuthority(
+        SidecarHostTerminalAuthority authority,
+        string canonicalBindingHash) =>
+        string.Equals(
+            authority.CanonicalBindingHash,
+            canonicalBindingHash,
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
+            OutOfProcessCapabilitySecurity.CreateTerminalProof(authority, _controlToken),
+            authority.Proof,
+            StringComparison.Ordinal);
+
+    private SidecarHostTerminalAuthority CreateCancelledTerminalAuthority(
+        SidecarHostTerminalAuthority authority,
+        SidecarCrossSidecarActionEntryRelay peerRelay,
+        DateTimeOffset cancelledAt)
+    {
+        var peerCall = peerRelay.PeerCall
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.SpoofedIdentity,
+                "The cross-sidecar cancellation relay has no peer call.");
+        var sourceParentCall = peerRelay.Carrier.Authority.SourceParentCall;
+        var cancelled = authority with
+        {
+            SessionId = sourceParentCall.SessionId,
+            RequestId = sourceParentCall.RequestId,
+            CancellationId = sourceParentCall.CancellationId,
+            CallId = sourceParentCall.CallId,
+            CancellationState = SidecarHostTerminalCancellationState.Cancelled,
+            CancellationAt = cancelledAt,
+            RootPeerCall = peerCall,
+            CrossSidecarPeerRelayBindingHash =
+                SidecarCapabilityTransportValidation.ComputeCrossSidecarPeerRelayBindingHash(
+                    peerRelay),
+            CanonicalBindingHash = string.Empty,
+            Proof = string.Empty,
+        };
+        var canonicalBindingHash = SidecarCapabilityTransportValidation
+            .ComputeTerminalAuthorityBindingHash(cancelled);
+        var hashed = cancelled with { CanonicalBindingHash = canonicalBindingHash };
+        return hashed with
+        {
+            Proof = OutOfProcessCapabilitySecurity.CreateTerminalProof(hashed, _controlToken),
+        };
+    }
+
+    private async Task<SidecarActionTerminalTransportResponse> SendTerminalAsync(
+        SidecarActionTerminalTransportRequest request,
+        CancellationToken ct,
+        Action? afterSend = null)
+    {
+        var completion = new TaskCompletionSource<SidecarActionTerminalTransportResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_terminals.TryAdd(request.Call.CallId, completion))
+        {
+            throw new OutOfProcessCapabilityException(
+                "sidecar_replay",
+                "The terminal call identifier was reused.");
+        }
+
+        var sent = false;
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.ActionTerminalRequest,
+                request,
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                ct);
+            sent = true;
+            afterSend?.Invoke();
+            return await completion.Task.WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (
+            sent
+            && ct.IsCancellationRequested
+            && request.Invocation == SidecarActionInvocationKind.HostEntryCrossSidecar)
+        {
+            var cancelledAt = DateTimeOffset.UtcNow;
+            var cancelledAuthority = CreateCancelledTerminalAuthority(
+                request.Authority,
+                request.CrossSidecarPeerRelay
+                    ?? throw new OutOfProcessCapabilityException(
+                        SidecarCapabilityErrors.SpoofedIdentity,
+                        "The cross-sidecar terminal request has no peer relay."),
+                cancelledAt);
+            await SendCancellationAsync(
+                request.Call,
+                request.Cancellation,
+                request.Deadline,
+                ct,
+                ct,
+                new SidecarCrossSidecarActionEntryPeerCancellation(
+                    request.CrossSidecarPeerRelay,
+                    cancelledAuthority,
+                    cancelledAt),
+                cancelledAt);
+            using var responseTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            return await completion.Task.WaitAsync(responseTimeout.Token);
+        }
+        finally
+        {
+            if (_terminals.TryRemove(request.Call.CallId, out _))
+            {
+                SignalCallChange();
+                RequestRotationRetry();
+            }
+        }
+    }
+
+    private async Task<SidecarStorageCapabilityResponse> InvokeStorageAsync(
+        SidecarStorageCapabilityRequest request,
+        CancellationToken ct)
+    {
+        switch (request.Operation)
+        {
+            case SidecarStorageOperationKind.ListContracts:
+                return CreateStorageResponse(
+                    request,
+                    _options.StorageGateway.ListContracts(),
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    alreadyCommitted: false);
+            case SidecarStorageOperationKind.Invoke:
+            {
+                var invoke = Deserialize<OutOfProcessStorageInvokePayload>(request.RequestPayload);
+                var value = await _options.StorageGateway.InvokeAsync(
+                    request.SourceId,
+                    request.StorageName,
+                    invoke.Operation,
+                    invoke.Value,
+                    ct);
+                return CreateStorageResponse(
+                    request,
+                    value,
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    alreadyCommitted: false);
+            }
+            case SidecarStorageOperationKind.CommitMutationAndOutbox:
+            {
+                var value = await _options.StorageGateway.CommitMutationAndOutboxAsync(
+                    request.SourceId,
+                    request.StorageName,
+                    Deserialize<ScopedStorageMutationAndOutboxRequest>(request.RequestPayload),
+                    ct);
+                return CreateStorageResponse(
+                    request,
+                    value,
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    value.AlreadyCommitted);
+            }
+            case SidecarStorageOperationKind.Claim:
+            {
+                var value = await _options.StorageGateway.ClaimAsync<JsonElement>(
+                    request.SourceId,
+                    request.StorageName,
+                    Deserialize<ScopedStorageClaimRequest>(request.RequestPayload),
+                    ct);
+                return CreateStorageResponse(
+                    request,
+                    value,
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    alreadyCommitted: false);
+            }
+            case SidecarStorageOperationKind.RenewClaim:
+            {
+                var value = await _options.StorageGateway.RenewClaimAsync(
+                    request.SourceId,
+                    request.StorageName,
+                    Deserialize<ScopedStorageClaimRenewalRequest>(request.RequestPayload),
+                    ct);
+                return CreateStorageResponse(
+                    request,
+                    value,
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    alreadyCommitted: false);
+            }
+            case SidecarStorageOperationKind.RecoverClaim:
+            {
+                var value = await _options.StorageGateway.RecoverClaimAsync(
+                    request.SourceId,
+                    request.StorageName,
+                    Deserialize<ScopedStorageClaimRecoveryRequest>(request.RequestPayload),
+                    ct);
+                return CreateStorageResponse(
+                    request,
+                    value,
+                    request.ResultPayloadType.TypeIdentity,
+                    request.ResultPayloadType.SchemaVersion,
+                    alreadyCommitted: false);
+            }
+            default:
+                throw new OutOfProcessCapabilityException(
+                    SidecarCapabilityErrors.UnsupportedCapability,
+                    $"Storage operation '{request.Operation}' is not supported.");
+        }
+    }
+
+    private SidecarStorageCapabilityResponse CreateStorageResponse<T>(
+        SidecarStorageCapabilityRequest request,
+        T value,
+        string typeIdentity,
+        int schemaVersion,
+        bool alreadyCommitted)
+    {
+        var payload = CreatePayload(
+            value,
+            typeIdentity,
+            schemaVersion);
+        return new SidecarStorageCapabilityResponse(
+            new SidecarStorageResultIdentity(
+                Guid.NewGuid(),
+                request.Call.CallId,
+                payload.ContentHash,
+                alreadyCommitted),
+            payload,
+            null!,
+            _session.Binding.SafeFailure,
+            Completed: true);
+    }
+
+    private async Task SendActionFailureAsync(
+        SidecarActionCapabilityRequest request,
+        string? code,
+        string? message,
+        CancellationToken ct)
+    {
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.ActionResponse,
+            CreateActionFailure(request, code, message),
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
+    }
+
+    private async Task SendStorageFailureAsync(
+        SidecarStorageCapabilityRequest request,
+        string? code,
+        string? message,
+        CancellationToken ct,
+        ScopedStorageContractFailure? failure = null)
+    {
+        await SendStorageResponseAsync(
+            request,
+            new SidecarStorageCapabilityResponse(
+                new SidecarStorageResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    string.Empty,
+                    false),
+                null!,
+                failure ?? new ScopedStorageContractFailure(
+                    code ?? SidecarCapabilityErrors.HostFailure,
+                    message ?? "The storage request failed.",
+                    request.StorageName,
+                    null,
+                    null),
+                _session.Binding.SafeFailure,
+                Completed: false),
+            ct);
+    }
+
+    private async Task SendStorageResponseAsync(
+        SidecarStorageCapabilityRequest request,
+        SidecarStorageCapabilityResponse response,
+        CancellationToken ct)
+    {
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        await OutOfProcessProtocolTestFixture.BeforeStorageResponseAsync(ct);
+#endif
+        await OutOfProcessCapabilityWire.SendAsync(
+            _socket,
+            OutOfProcessCapabilityFrameKind.StorageResponse,
+            response,
+            _limits.ProtocolMessageBytes,
+            SendGate,
+            ct);
+    }
+
+    private async Task SendCancellationAsync(
+        SidecarCapabilityCallIdentity call,
+        SidecarCancellationIdentity cancellation,
+        DateTimeOffset deadline,
+        CancellationToken callCancellation,
+        CancellationToken callerCancellation,
+        SidecarCrossSidecarActionEntryPeerCancellation? peerCancellation = null,
+        DateTimeOffset? sentAt = null)
+    {
+        var reason = deadline <= DateTimeOffset.UtcNow
+            ? "deadline"
+            : callerCancellation.IsCancellationRequested
+                ? "caller"
+                : "call";
+        var cancellationSentAt = sentAt ?? DateTimeOffset.UtcNow;
+        using var sendTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await OutOfProcessCapabilityWire.SendAsync(
+                _socket,
+                OutOfProcessCapabilityFrameKind.CapabilityCancellation,
+                new OutOfProcessCapabilityCancellation(
+                    call,
+                    cancellation,
+                    reason,
+                    cancellationSentAt,
+                    peerCancellation),
+                _limits.ProtocolMessageBytes,
+                SendGate,
+                sendTimeout.Token);
+        }
+        catch (OperationCanceledException) when (sendTimeout.IsCancellationRequested)
+        {
+            _disconnect.Cancel();
+        }
+        catch (WebSocketException)
+        {
+            _disconnect.Cancel();
+        }
+    }
+
+    private SidecarActionCapabilityResponse CreateActionResponse(
+        SidecarActionCapabilityRequest request,
+        OutOfProcessActionDescriptorCatalog.Registration registration,
+        OutOfProcessActionDispatchResult outcome)
+    {
+        SidecarSerializedPayload? resultPayload = null;
+        if (outcome.Result is not null
+            && (outcome.Kind is ActionOutcomeKind.Completed or ActionOutcomeKind.Deferred))
+        {
+            resultPayload = CreatePayload(
+                outcome.Result,
+                registration.Identity.ResultTypeIdentity,
+                registration.Identity.ResultSchemaVersion);
+        }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        OutOfProcessProtocolTestFixture.RecordRebindState(
+            "host-action-receipt-before-read",
+            $"call={request.Call.CallId:N}");
+#endif
+        _session.TryGetTerminalReceipt(request.Call.CallId, out var terminalReceipt);
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+        OutOfProcessProtocolTestFixture.RecordRebindState(
+            "host-action-receipt-after-read",
+            $"call={request.Call.CallId:N}");
+#endif
+        SidecarTerminalContinuationResponse? continuation = null;
+        if (request.Continuation is not null)
+        {
+            continuation = new SidecarTerminalContinuationResponse(
+                request.Continuation.ContinuationRequestId,
+                false,
+                null,
+                _session.Binding.SafeFailure);
+        }
+
+        var envelope = new SidecarActionOutcomeEnvelope(
+            outcome.Kind,
+            resultPayload!,
+            outcome.Continuation!,
+            outcome.Error!,
+            outcome.Uncertainty!,
+            terminalReceipt,
+            _session.Binding.SafeFailure,
+            outcome.TerminalCallCount);
+        return new SidecarActionCapabilityResponse(
+            resultPayload is null
+                ? null
+                : new SidecarActionResultIdentity(
+                    Guid.NewGuid(),
+                    request.Call.CallId,
+                    registration.Identity.Key,
+                    registration.Identity.Version,
+                    registration.Identity.ResultTypeIdentity,
+                    resultPayload.ContentHash),
+            envelope,
+            continuation,
+            _session.Binding.SafeFailure,
+            Completed: true);
+    }
+
+    private SidecarActionCapabilityResponse CreateActionFailure(
+        SidecarActionCapabilityRequest request,
+        string? code,
+        string? message) =>
+        new(
+            null,
+            new SidecarActionOutcomeEnvelope(
+                ActionOutcomeKind.Failed,
+                null!,
+                null!,
+                new ExecutionError(
+                    code ?? SidecarCapabilityErrors.HostFailure,
+                    message ?? "The host action request failed."),
+                null!,
+                null!,
+                _session.Binding.SafeFailure,
+                0),
+            request.Continuation is null
+                ? null
+                : new SidecarTerminalContinuationResponse(
+                    request.Continuation.ContinuationRequestId,
+                    false,
+                    null!,
+                    _session.Binding.SafeFailure),
+            _session.Binding.SafeFailure,
+            Completed: true);
+
+    private static T Deserialize<T>(SidecarSerializedPayload? payload)
+    {
+        if (payload is null)
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                $"The payload '{typeof(T).FullName}' is missing.");
+        return JsonSerializer.Deserialize<T>(
+                payload.Value.GetRawText(),
+                SidecarCapabilityTransportCodec.CreateJsonOptions())
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                $"The payload '{typeof(T).FullName}' is empty.");
+    }
+
+    private static SidecarSerializedPayload CreatePayload<T>(
+        T value,
+        string typeIdentity,
+        int schemaVersion)
+    {
+        var bytes = SidecarCapabilityTransportCodec.Serialize(value);
+        using var document = JsonDocument.Parse(bytes);
+        var canonicalBytes = SidecarCapabilityTransportCodec.Serialize(document.RootElement);
+        var hash = SidecarCapabilityTransportCodec.ComputeSha256(canonicalBytes);
+        return new SidecarSerializedPayload(
+            typeIdentity,
+            schemaVersion,
+            hash,
+            document.RootElement.Clone(),
+            canonicalBytes.Length);
+    }
+
+    private static SidecarSerializedPayload EmptyPayload() =>
+        new(
+            "system.empty",
+            1,
+            SidecarCapabilityTransportCodec.ComputeSha256("null"u8),
+            JsonDocument.Parse("null").RootElement.Clone(),
+            4);
+
+    private void CompleteTerminal(SidecarActionTerminalTransportResponse response)
+    {
+        var callId = response.ResultIdentity?.CallId
+            ?? response.Receipt?.CallId
+            ?? throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.MalformedMessage,
+                "The terminal response has no result identity or receipt.");
+        if (!_terminals.TryGetValue(callId, out var completion))
+        {
+            throw new OutOfProcessCapabilityException(
+                SidecarCapabilityErrors.Unauthorized,
+                "The terminal response does not match an active terminal call.");
+        }
+        completion.TrySetResult(response);
+    }
+
+    private static OutOfProcessCapabilityException ReadError(byte[] payload)
+    {
+        var error = OutOfProcessCapabilityWire.Deserialize<SidecarSafeFailureIdentity>(payload);
+        return new OutOfProcessCapabilityException(error.Code, error.Message);
+    }
+
+}
+
+internal sealed record OutOfProcessStorageInvokePayload(
+    string Operation,
+    JsonElement Value);

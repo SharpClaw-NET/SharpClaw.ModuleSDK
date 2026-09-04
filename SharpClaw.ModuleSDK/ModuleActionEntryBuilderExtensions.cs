@@ -1,4 +1,5 @@
-using SharpClaw.Contracts.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -7,20 +8,14 @@ public static class ModuleActionEntryBuilderExtensions
 {
     /// <summary>Registers one typed terminal for an action defined by this module.</summary>
     public static void AddActionEntry<TAction, TResult, TTerminal>(
-        this ISharpClawModuleBuilder builder,
+        this IServiceCollection services,
         ActionDescriptor<TAction, TResult> descriptor,
         Guid terminalId)
         where TTerminal : class, IHostActionEntryTerminal<TAction, TResult>
     {
-        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(descriptor);
-        if (builder is not SharpClawModuleBuilder moduleBuilder)
-        {
-            throw new ArgumentException(
-                "The action-entry extension requires the SharpClaw module builder.",
-                nameof(builder));
-        }
-
-        moduleBuilder.AddActionEntry<TAction, TResult, TTerminal>(descriptor, terminalId);
+        SharpClawServiceCollection.Require(services)
+            .AddActionEntry<TAction, TResult, TTerminal>(descriptor, terminalId);
     }
 }

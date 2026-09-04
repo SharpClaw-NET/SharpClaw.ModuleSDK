@@ -1,5 +1,5 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -36,7 +36,7 @@ public static class SidecarMessageHeaderFactory
             if (next > maximumPayloadBytes)
             {
                 throw new SidecarProtocolException(
-                    SidecarProtocolErrors.ModulePayloadTooLarge,
+                    SidecarProtocolErrors.PayloadTooLarge,
                     "The sidecar message exceeds its payload authority.");
             }
             if (next == measured)
@@ -97,7 +97,7 @@ public static class SidecarDiscoveryFactory
                 var discovery = CreateEnvelope(graph, header);
                 return new SidecarDiscoveryDocument(
                     discovery.Header,
-                    discovery.ModuleId,
+                    discovery.SourceId,
                     discovery.ContractHash,
                     discovery.Protocol,
                     discovery.Actions,
@@ -209,10 +209,8 @@ public static class SidecarDiscoveryFactory
         ModuleContributionGraph graph)
     {
         var protocol = graph.ProtocolVersionRange;
-        var startInput = ModuleSchemaIdentity.ActionInput(
-            new SharpClawActionKey("module.start"),
-            1,
-            typeof(ModuleStartContext));
+        var startInput = ModuleLifecycleActions.Start.InputSchema
+            ?? throw new InvalidOperationException("The module start action has no input schema.");
         return Array.AsReadOnly(new[]
         {
             new SidecarLifecycleHandlerDefinition(
@@ -331,7 +329,7 @@ public static class SidecarAuthorizationFactory
             .Distinct()
             .ToArray();
         return new SidecarHostAuthorization(
-            discovery.ModuleId,
+            discovery.SourceId,
             Array.AsReadOnly(actionGrants),
             Array.AsReadOnly(eventGrants),
             hostCatalog.SensitiveWildcardApproval);

@@ -1,6 +1,6 @@
 using System.Collections.ObjectModel;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
 
@@ -141,8 +141,9 @@ public sealed class ModuleToolDispatchMap
         if (!_tools.TryGetValue(toolName, out var registration))
             throw new KeyNotFoundException($"Tool '{toolName}' is not registered.");
 
+        await using var scope = services.CreateAsyncScope();
         var handler = (IToolHandler)ActivatorUtilities.GetServiceOrCreateInstance(
-            services,
+            scope.ServiceProvider,
             registration.HandlerType);
         return await handler.InvokeAsync(invocation, ct);
     }

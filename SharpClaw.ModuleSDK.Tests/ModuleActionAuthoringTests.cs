@@ -1,6 +1,7 @@
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK.Tests;
 
@@ -109,23 +110,23 @@ public sealed class ModuleActionAuthoringTests
     {
         public ModuleIdentity Identity { get; } = new("fluent_module", "Fluent Module", "fluent");
 
-        public void Configure(ISharpClawModuleBuilder module) =>
-            module.DefineAction(descriptor).UseTerminal<SampleTerminal>(TerminalId);
+        public void ConfigureServices(IServiceCollection services) =>
+            services.DefineAction(descriptor).UseTerminal<SampleTerminal>(TerminalId);
     }
 
     private sealed class DefinitionOnlyModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("definition_module", "Definition Module", "definition");
 
-        public void Configure(ISharpClawModuleBuilder module) =>
-            module.DefineAction(DefaultDescriptor());
+        public void ConfigureServices(IServiceCollection services) =>
+            services.DefineAction(DefaultDescriptor());
     }
 
     private sealed class RawModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("raw_module", "Raw Module", "raw");
 
-        public void Configure(ISharpClawModuleBuilder module)
+        public void ConfigureServices(IServiceCollection services)
         {
             var descriptor = DefaultDescriptor() with
             {
@@ -138,8 +139,8 @@ public sealed class ModuleActionAuthoringTests
                     DefaultDescriptor().Version,
                     typeof(SampleResult)),
             };
-            module.Actions.Add(descriptor);
-            module.AddActionEntry<SampleAction, SampleResult, SampleTerminal>(descriptor, TerminalId);
+            services.AddAction(descriptor);
+            services.AddActionEntry<SampleAction, SampleResult, SampleTerminal>(descriptor, TerminalId);
         }
     }
 }

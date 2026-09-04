@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>true</IsPackable>
+    <PackageId>SharpClaw.SidecarHost.OutOfProcess</PackageId>
+    <Version>0.5.0-beta.34</Version>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
+    <InformationalVersion>0.5.0-beta.34</InformationalVersion>
+    <Authors>mkn8rn</Authors>
+    <Description>Runs SharpClaw .NET modules in the default out-of-process host model over the SharpClaw foreign-module protocol.</Description>
+    <PackageTags>sharpclaw;modulehost;out-of-process;modules;runtime</PackageTags>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.ModuleSDK</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);AddOutOfProcessHostPayloadToPackage</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(OutOfProcessProtocolTestFixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-dev.20260904.5]" />
+    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-dev.20260904.5]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpClaw.SidecarHost.InProcess\SharpClaw.SidecarHost.InProcess.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="ValidateOutOfProcessHostPayload">
+    <PropertyGroup>
+      <_OutOfProcessHostPayloadRoot Condition="'$(OutOfProcessHostPayloadSource)' != ''">$(OutOfProcessHostPayloadSource)</_OutOfProcessHostPayloadRoot>
+      <_OutOfProcessHostPayloadRoot Condition="'$(_OutOfProcessHostPayloadRoot)' == ''">$(TargetDir)</_OutOfProcessHostPayloadRoot>
+      <_OutOfProcessHostPayloadRoot>$([System.String]::Copy('$(_OutOfProcessHostPayloadRoot)').TrimEnd('\'))\</_OutOfProcessHostPayloadRoot>
+    </PropertyGroup>
+    <Error Condition="'$(_OutOfProcessHostPayloadRoot)' == '\'" Text="The OutOfProcess host payload root is empty." />
+    <Error Condition="'$(_OutOfProcessHostPayloadRoot)' == '$(MSBuildProjectDirectory)\'" Text="The OutOfProcess host payload cannot use the project directory." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.exe')" Text="The OutOfProcess host executable is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.dll')" Text="The OutOfProcess host DLL is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.deps.json')" Text="The OutOfProcess host deps file is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.runtimeconfig.json')" Text="The OutOfProcess host runtimeconfig file is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.Contracts.dll')" Text="The accepted Contracts runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.Core.dll')" Text="The accepted Core runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.ModuleSDK.dll')" Text="The accepted ModuleSDK runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.InProcess.dll')" Text="The accepted InProcess runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
+    <ItemGroup>
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.exe" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.dll" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.deps.json" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.runtimeconfig.json" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.Contracts.dll" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.Core.dll" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.ModuleSDK.dll" />
+      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.InProcess.dll" />
+    </ItemGroup>
+    <Message Importance="High" Text="Validated OutOfProcess runtime payload: @(_OutOfProcessHostPayload)" />
+  </Target>
+
+  <Target Name="AddOutOfProcessHostPayloadToPackage" DependsOnTargets="ValidateOutOfProcessHostPayload">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="@(_OutOfProcessHostPayload)"
+                              PackagePath="tools\$(TargetFramework)\any\" />
+    </ItemGroup>
+  </Target>
+</Project>

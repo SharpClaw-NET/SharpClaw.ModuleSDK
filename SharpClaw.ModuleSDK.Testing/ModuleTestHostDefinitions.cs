@@ -1,4 +1,5 @@
-using SharpClaw.Contracts.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK.Testing;
 
@@ -8,7 +9,7 @@ internal sealed record ModuleTestHostAction(
     Type ResultType,
     object TypedDescriptor,
     SidecarHostActionDescriptor SidecarDescriptor,
-    Action<ISharpClawModuleBuilder> Register)
+    Action<IServiceCollection> Register)
 {
     public static ModuleTestHostAction Create<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor)
@@ -45,7 +46,10 @@ internal sealed record ModuleTestHostAction(
                 descriptor.Capabilities,
                 descriptor.ContainsSensitiveData,
                 descriptor.ProtocolVersionRange),
-            module => module.Actions.Add(descriptor));
+            services => services.AddSingleton<IActionDefinitionBinding>(
+                new ActionDefinitionBinding<TAction, TResult>(
+                    ModuleTestHostDefinitionSet.SourceId,
+                    descriptor)));
     }
 }
 
@@ -54,7 +58,7 @@ internal sealed record ModuleTestHostEvent(
     Type EventType,
     object TypedDescriptor,
     SidecarHostEventDescriptor SidecarDescriptor,
-    Action<ISharpClawModuleBuilder> Register)
+    Action<IServiceCollection> Register)
 {
     public static ModuleTestHostEvent Create<TEvent>(EventDescriptor<TEvent> descriptor)
     {
@@ -83,24 +87,25 @@ internal sealed record ModuleTestHostEvent(
                 descriptor.Capabilities,
                 descriptor.ContainsSensitiveData,
                 descriptor.ProtocolVersionRange),
-            module => module.Events.Add(descriptor));
+            services => services.AddSingleton<IEventDefinitionBinding>(
+                new EventDefinitionBinding<TEvent>(
+                    ModuleTestHostDefinitionSet.SourceId,
+                    descriptor)));
     }
 }
 
-internal sealed class ModuleTestHostDefinitionModule(
-    IReadOnlyList<ModuleTestHostAction> actions,
-    IReadOnlyList<ModuleTestHostEvent> events) : ISharpClawModule
+internal static class ModuleTestHostDefinitionSet
 {
-    internal const string ModuleId = "module_sdk_test_host";
+    internal const string SourceId = "module_sdk_test_host";
 
-    public ModuleIdentity Identity { get; } =
-        new(ModuleId, "Module SDK Test Host", "module_sdk_test_host");
-
-    public void Configure(ISharpClawModuleBuilder module)
+    public static void AddTo(
+        IServiceCollection services,
+        IReadOnlyList<ModuleTestHostAction> actions,
+        IReadOnlyList<ModuleTestHostEvent> events)
     {
         foreach (var action in actions)
-            action.Register(module);
+            action.Register(services);
         foreach (var evt in events)
-            evt.Register(module);
+            evt.Register(services);
     }
 }
