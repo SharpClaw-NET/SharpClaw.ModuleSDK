@@ -406,12 +406,27 @@ internal static class OutOfProcessActionSession
         }
 
         var controlSession = new SidecarActionControlSession(protocol);
+        await using var scope = runtime.Services.CreateAsyncScope();
         SidecarActionCompletion completion;
         try
         {
             completion = hook.IsUntyped
-                ? await InvokeUntypedAsync(runtime, hook, start, authorization, controlSession, ct)
-                : await InvokeTypedAsync(runtime, hook, start, authorization, controlSession, ct);
+                ? await InvokeUntypedAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    start,
+                    authorization,
+                    controlSession,
+                    ct)
+                : await InvokeTypedAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    start,
+                    authorization,
+                    controlSession,
+                    ct);
         }
         catch (OutOfProcessProtocolException ex) when (controlSession.HasContinuation)
         {
@@ -459,6 +474,7 @@ internal static class OutOfProcessActionSession
 
     private static async ValueTask<SidecarActionCompletion> InvokeUntypedAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleActionHook hook,
         HookInvokeStart start,
         SidecarHostAuthorization authorization,
@@ -466,7 +482,7 @@ internal static class OutOfProcessActionSession
         CancellationToken ct)
     {
         var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-            runtime.Services,
+            services,
             hook.HandlerType) as IAnyActionInterceptor
             ?? throw new InvalidOperationException(
                 $"Handler '{hook.HandlerType.FullName}' is not an untyped action interceptor.");
@@ -493,6 +509,7 @@ internal static class OutOfProcessActionSession
 
     private static async ValueTask<SidecarActionCompletion> InvokeTypedAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleActionHook hook,
         HookInvokeStart start,
         SidecarHostAuthorization authorization,
@@ -508,6 +525,7 @@ internal static class OutOfProcessActionSession
             ?? throw new InvalidOperationException("The typed action adapter could not be created."));
         return await adapter.InvokeAsync(
             runtime,
+            services,
             hook,
             start,
             authorization,
@@ -590,6 +608,7 @@ internal static class OutOfProcessActionSession
     {
         ValueTask<SidecarActionCompletion> InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleActionHook hook,
             HookInvokeStart start,
             SidecarHostAuthorization authorization,
@@ -601,6 +620,7 @@ internal static class OutOfProcessActionSession
     {
         public async ValueTask<SidecarActionCompletion> InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleActionHook hook,
             HookInvokeStart start,
             SidecarHostAuthorization authorization,
@@ -608,7 +628,7 @@ internal static class OutOfProcessActionSession
             CancellationToken ct)
         {
             var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                runtime.Services,
+                services,
                 hook.HandlerType) as IActionInterceptor<TAction, TResult>
                 ?? throw new InvalidOperationException(
                     $"Handler '{hook.HandlerType.FullName}' has an invalid typed action contract.");

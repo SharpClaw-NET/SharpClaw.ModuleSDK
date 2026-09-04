@@ -129,12 +129,23 @@ internal static class OutOfProcessEventSession
                 $"Event hook '{start.HookId}' is not selected for '{descriptor.Key.Value}'.");
         RequireGrant(hook, descriptor, start.Grant, authorization);
 
+        await using var scope = runtime.Services.CreateAsyncScope();
         SidecarEventCompletion completion;
         try
         {
             completion = hook.IsUntyped
-                ? await InvokeUntypedInterceptorAsync(runtime, hook, start, ct)
-                : await InvokeTypedInterceptorAsync(runtime, hook, start, ct);
+                ? await InvokeUntypedInterceptorAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    start,
+                    ct)
+                : await InvokeTypedInterceptorAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    start,
+                    ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -185,13 +196,28 @@ internal static class OutOfProcessEventSession
                 $"Event listener '{delivery.ListenerId}' is not selected for '{descriptor.Key.Value}'.");
         RequireDescriptor(hook, descriptor);
 
+        await using var scope = runtime.Services.CreateAsyncScope();
         ExecutionError? error = null;
         try
         {
             if (hook.IsUntyped)
-                await InvokeUntypedListenerAsync(runtime, hook, delivery.Envelope, ct);
+            {
+                await InvokeUntypedListenerAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    delivery.Envelope,
+                    ct);
+            }
             else
-                await InvokeTypedListenerAsync(runtime, hook, delivery.Envelope, ct);
+            {
+                await InvokeTypedListenerAsync(
+                    runtime,
+                    scope.ServiceProvider,
+                    hook,
+                    delivery.Envelope,
+                    ct);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -226,12 +252,13 @@ internal static class OutOfProcessEventSession
 
     private static async ValueTask<SidecarEventCompletion> InvokeUntypedInterceptorAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleEventHook hook,
         EventInterceptStart start,
         CancellationToken ct)
     {
         var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-            runtime.Services,
+            services,
             hook.HandlerType) as IAnyEventInterceptor
             ?? throw new InvalidOperationException(
                 $"Handler '{hook.HandlerType.FullName}' is not an untyped event interceptor.");
@@ -244,6 +271,7 @@ internal static class OutOfProcessEventSession
 
     private static async ValueTask<SidecarEventCompletion> InvokeTypedInterceptorAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleEventHook hook,
         EventInterceptStart start,
         CancellationToken ct)
@@ -258,17 +286,18 @@ internal static class OutOfProcessEventSession
             nonPublic: true)
             ?? throw new InvalidOperationException(
                 "The typed event interceptor adapter could not be created."));
-        return await adapter.InvokeAsync(runtime, hook, start, ct);
+        return await adapter.InvokeAsync(runtime, services, hook, start, ct);
     }
 
     private static ValueTask InvokeUntypedListenerAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleEventHook hook,
         UntypedEventEnvelope envelope,
         CancellationToken ct)
     {
         var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-            runtime.Services,
+            services,
             hook.HandlerType) as IAnyEventListener
             ?? throw new InvalidOperationException(
                 $"Handler '{hook.HandlerType.FullName}' is not an untyped event listener.");
@@ -277,6 +306,7 @@ internal static class OutOfProcessEventSession
 
     private static async ValueTask InvokeTypedListenerAsync(
         OutOfProcessModuleRuntime runtime,
+        IServiceProvider services,
         ModuleEventHook hook,
         UntypedEventEnvelope envelope,
         CancellationToken ct)
@@ -291,7 +321,7 @@ internal static class OutOfProcessEventSession
             nonPublic: true)
             ?? throw new InvalidOperationException(
                 "The typed event listener adapter could not be created."));
-        await adapter.InvokeAsync(runtime, hook, envelope, ct);
+        await adapter.InvokeAsync(runtime, services, hook, envelope, ct);
     }
 
     private static SidecarEventCompletion GetCompletion(object outcome)
@@ -343,6 +373,7 @@ internal static class OutOfProcessEventSession
     {
         ValueTask<SidecarEventCompletion> InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleEventHook hook,
             EventInterceptStart start,
             CancellationToken ct);
@@ -352,12 +383,13 @@ internal static class OutOfProcessEventSession
     {
         public async ValueTask<SidecarEventCompletion> InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleEventHook hook,
             EventInterceptStart start,
             CancellationToken ct)
         {
             var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                runtime.Services,
+                services,
                 hook.HandlerType) as IEventInterceptor<TEvent>
                 ?? throw new InvalidOperationException(
                     $"Handler '{hook.HandlerType.FullName}' has an invalid typed event contract.");
@@ -403,6 +435,7 @@ internal static class OutOfProcessEventSession
     {
         ValueTask InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleEventHook hook,
             UntypedEventEnvelope envelope,
             CancellationToken ct);
@@ -412,12 +445,13 @@ internal static class OutOfProcessEventSession
     {
         public async ValueTask InvokeAsync(
             OutOfProcessModuleRuntime runtime,
+            IServiceProvider services,
             ModuleEventHook hook,
             UntypedEventEnvelope envelope,
             CancellationToken ct)
         {
             var handler = ActivatorUtilities.GetServiceOrCreateInstance(
-                runtime.Services,
+                services,
                 hook.HandlerType) as IEventListener<TEvent>
                 ?? throw new InvalidOperationException(
                     $"Handler '{hook.HandlerType.FullName}' has an invalid typed event listener contract.");

@@ -60,9 +60,7 @@ public static class AuthorizationBuilderExtensions
         where TPolicy : class, IAuthorizationPolicy
     {
         ArgumentNullException.ThrowIfNull(services);
-        services.TryAddScoped<TPolicy>();
-        services.TryAddScoped<IAuthorizationPolicy>(provider =>
-            provider.GetRequiredService<TPolicy>());
+        services.TryAddScoped<IAuthorizationPolicy, TPolicy>();
         services.ExportContract<AuthorizationContract>(AuthorizationProtocol.ContractName);
         services.AddAction(AuthorizationProtocol.Evaluate)
             .UseTerminal<AuthorizationPolicyTerminal>(AuthorizationProtocol.TerminalId);

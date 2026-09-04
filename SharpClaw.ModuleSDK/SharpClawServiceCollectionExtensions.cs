@@ -133,8 +133,7 @@ public static class SharpClawServiceCollectionExtensions
         ExclusiveClaim claim)
         where TResolver : class, IConversationResolver
     {
-        services.TryAddScoped<TResolver>();
-        services.AddScoped<IConversationResolver>(provider => provider.GetRequiredService<TResolver>());
+        services.AddScoped<IConversationResolver, TResolver>();
         SharpClawServiceCollection.Require(services).Chat.UseConversationResolver<TResolver>(claim);
     }
 
@@ -143,23 +142,20 @@ public static class SharpClawServiceCollectionExtensions
         ExclusiveClaim claim)
         where TResolver : class, IChatProfileResolver
     {
-        services.TryAddScoped<TResolver>();
-        services.AddScoped<IChatProfileResolver>(provider => provider.GetRequiredService<TResolver>());
+        services.AddScoped<IChatProfileResolver, TResolver>();
         SharpClawServiceCollection.Require(services).Chat.UseChatProfileResolver<TResolver>(claim);
     }
 
     public static void UseConversationStore<TStore>(this IServiceCollection services)
         where TStore : class, IConversationStore
     {
-        services.TryAddScoped<TStore>();
-        services.AddScoped<IConversationStore>(provider => provider.GetRequiredService<TStore>());
+        services.AddScoped<IConversationStore, TStore>();
     }
 
     public static void AddChatContext<TContributor>(this IServiceCollection services)
         where TContributor : class, IChatContextContributor
     {
-        services.TryAddScoped<TContributor>();
-        services.AddScoped<IChatContextContributor>(provider => provider.GetRequiredService<TContributor>());
+        services.AddScoped<IChatContextContributor, TContributor>();
         SharpClawServiceCollection.Require(services).Chat.AddContextContributor<TContributor>();
     }
 

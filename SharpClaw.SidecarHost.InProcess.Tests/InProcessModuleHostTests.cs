@@ -57,6 +57,53 @@ public sealed class InProcessModuleHostTests
     }
 
     [Test]
+    public async Task ScopedContributionsUseDistinctInstancesAndDisposeAfterEachInvocation()
+    {
+        var fixture = CreateToolFixture();
+        await using var services = fixture.Services;
+        var actionHook = fixture.Graph.ActionHooks.Single();
+        var eventHook = fixture.Graph.EventHooks.Single();
+
+        for (var index = 0; index < 2; index++)
+        {
+            await fixture.Invoker.InvokeActionAsync<TestAction, TestResult>(
+                actionHook,
+                Context(),
+                new StubActionControl(),
+                CancellationToken.None);
+            await fixture.Invoker.InvokeEventListenerAsync(
+                eventHook,
+                new EventEnvelope<TestEvent>(
+                    Guid.NewGuid(),
+                    null,
+                    Guid.NewGuid(),
+                    DateTimeOffset.UtcNow,
+                    "in_process_control",
+                    new TestEvent(index)),
+                CancellationToken.None);
+            await fixture.Invoker.InvokeToolAsync(
+                ControlModule.ToolName,
+                CreateToolInvocation(null),
+                CancellationToken.None);
+            var cliContext = CreateCliContext();
+            var cli = await fixture.Invoker.InvokeCliAsync(
+                new CliInvocation(
+                    cliContext.InvocationId,
+                    ControlModule.Cli.Name,
+                    [index.ToString(System.Globalization.CultureInfo.InvariantCulture)],
+                    cliContext),
+                CancellationToken.None);
+            cli.Succeeded.Should().BeTrue();
+        }
+
+        var capture = services.GetRequiredService<ScopedInvocationCapture>();
+        capture.AssertCategory("action", 2);
+        capture.AssertCategory("event", 2);
+        capture.AssertCategory("tool", 2);
+        capture.AssertCategory("cli", 2);
+    }
+
+    [Test]
     public async Task ToolInvokerAcceptsNullConversationIdentity()
     {
         var fixture = CreateToolFixture();
@@ -369,6 +416,10 @@ public sealed class InProcessModuleHostTests
             RequestedHooks:
             [
                 new PackageHookRequest("inprocess.control", ["replaceResult"]),
+            ],
+            RequestedEvents:
+            [
+                new PackageEventRequest("inprocess.control.event", "Inline", ["observe"]),
             ]);
 
     private static ToolFixture CreateToolFixture()
@@ -468,6 +519,39 @@ public sealed class InProcessModuleHostTests
                     typeof(ToolInvocation).AssemblyQualifiedName!,
                     1,
                     "tool-input-schema-hash",
+                    null,
+                    null)),
+        };
+    }
+
+    private static HostActionEntryRequestContext CreateCliContext()
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        return new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            "cli-capability",
+            HostActionEntryIngress.Cli,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new RequestPrincipal("cli-user"),
+            ExtensionFeatureSet.Empty,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            deadline,
+            deadline)
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(
+                    HostActionEntryIngress.Cli,
+                    ControlModule.Cli.Name),
+                new HostActionEntryLineage(
+                    ControlModule.Action.Key,
+                    ControlModule.Action.Version,
+                    "inprocess-control-descriptor-hash",
+                    typeof(TestAction).AssemblyQualifiedName!,
+                    1,
+                    "inprocess-control-input-schema-hash",
                     null,
                     null)),
         };
@@ -593,6 +677,25 @@ public sealed class InProcessModuleHostTests
         public static ToolDescriptor Tool { get; } =
             new(ToolName, "Captures one tool invocation.", ToolSchemas.EmptyObject);
 
+        public static CliCommandDescriptor Cli { get; } = new(
+            "inprocess.control.cli",
+            ["inprocess-control"],
+            "Captures one CLI invocation.",
+            new JsonSchemaReference("inprocess.control.cli.input", 1, "inprocess-control-cli-input"),
+            new JsonSchemaReference("inprocess.control.cli.result", 1, "inprocess-control-cli-result"));
+
+        public static EventDescriptor<TestEvent> Event { get; } = new(
+            new SharpClawEventKey("inprocess.control.event"),
+            1,
+            "inprocess",
+            EventInterceptionCapabilities.Observe,
+            DurableByDefault: false,
+            ContainsSensitiveData: false)
+        {
+            ProtocolVersionRange = ContractVersionRange.Exact(1),
+            DeliveryClasses = [EventDelivery.Inline],
+        };
+
         public static ActionDescriptor<TestAction, TestResult> Action { get; } =
             new(
                 new SharpClawActionKey("inprocess.control"),
@@ -618,25 +721,34 @@ public sealed class InProcessModuleHostTests
             services.AddSingleton<ToolInvocationCapture>();
             services.AddSingleton<EndpointInvocationCapture>();
             services.AddSingleton<WebSocketInvocationCapture>();
+            services.AddSingleton<ScopedInvocationCapture>();
             services.AddAction(Action);
+            services.AddEvent(Event);
             services.AddTool<CapturingTool>(Tool);
             services.OnAction(Action).Use<CapturingActionHook>(
                 ActionInterceptionCapabilities.ReplaceResult,
                 new HookOrdering("inprocess.control.capture"));
+            services.OnEvent(Event).Listen<CapturingEventListener>(
+                EventDelivery.Inline,
+                new HookOrdering("inprocess.control.event.capture"));
+            services.AddCliCommand<CapturingCliHandler>(Cli);
             services.AddHttpEndpoint<CapturingEndpoint>(EndpointRoute);
             services.AddWebSocketEndpoint<CapturingWebSocketEndpoint>(
                 WebSocketEndpointRoute);
         }
     }
 
-    private sealed class CapturingActionHook(ControlCapture capture)
-        : IActionInterceptor<TestAction, TestResult>
+    private sealed class CapturingActionHook(
+        ControlCapture capture,
+        ScopedInvocationCapture lifetime)
+        : ScopedContribution(lifetime, "action"), IActionInterceptor<TestAction, TestResult>
     {
         public ValueTask<IActionOutcome<TestResult>> InvokeAsync(
             ActionContext<TestAction> context,
             IActionControl<TestAction, TestResult> control,
             CancellationToken ct)
         {
+            RecordInvocation();
             capture.Control = control;
             return ValueTask.FromResult(control.ReplaceResult(new TestResult("captured"), "test"));
         }
@@ -647,23 +759,109 @@ public sealed class InProcessModuleHostTests
         public IActionControl<TestAction, TestResult>? Control { get; set; }
     }
 
-    private sealed class CapturingTool : IToolHandler
+    private sealed class CapturingTool(
+        ToolInvocationCapture capture,
+        ScopedInvocationCapture lifetime)
+        : ScopedContribution(lifetime, "tool"), IToolHandler
     {
-        private readonly ToolInvocationCapture _capture;
-
-        public CapturingTool(ToolInvocationCapture capture)
-        {
-            _capture = capture;
-            _capture.Constructions++;
-        }
+        private readonly ToolInvocationCapture _capture = Register(capture);
 
         public ValueTask<ToolResult> InvokeAsync(
             ToolInvocation invocation,
             CancellationToken ct)
         {
+            RecordInvocation();
             _capture.Invocations++;
             _capture.LastInvocation = invocation;
             return ValueTask.FromResult(ToolResult.Text("captured"));
+        }
+
+        private static ToolInvocationCapture Register(ToolInvocationCapture capture)
+        {
+            capture.Constructions++;
+            return capture;
+        }
+    }
+
+    private sealed class CapturingEventListener(ScopedInvocationCapture lifetime)
+        : ScopedContribution(lifetime, "event"), IEventListener<TestEvent>
+    {
+        public ValueTask OnEventAsync(
+            EventEnvelope<TestEvent> envelope,
+            CancellationToken cancellationToken)
+        {
+            RecordInvocation();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class CapturingCliHandler(ScopedInvocationCapture lifetime)
+        : ScopedContribution(lifetime, "cli"), ICliHandler
+    {
+        public ValueTask<CliResult> ExecuteAsync(
+            CliInvocation invocation,
+            CancellationToken cancellationToken)
+        {
+            RecordInvocation();
+            return ValueTask.FromResult(new CliResult(
+                true,
+                [new CliOutput("stdout", invocation.Command)]));
+        }
+    }
+
+    private abstract class ScopedContribution : IDisposable
+    {
+        private readonly ScopedInvocationCapture _capture;
+        private readonly string _category;
+        private readonly Guid _instanceId = Guid.NewGuid();
+
+        protected ScopedContribution(ScopedInvocationCapture capture, string category)
+        {
+            _capture = capture;
+            _category = category;
+            _capture.RecordConstruction(category, _instanceId);
+        }
+
+        protected void RecordInvocation() =>
+            _capture.RecordInvocation(_category, _instanceId);
+
+        public void Dispose() => _capture.RecordDisposal(_category, _instanceId);
+    }
+
+    private sealed class ScopedInvocationCapture
+    {
+        private readonly Dictionary<string, HashSet<Guid>> _constructed = [];
+        private readonly Dictionary<string, HashSet<Guid>> _invoked = [];
+        private readonly Dictionary<string, HashSet<Guid>> _disposed = [];
+
+        public void RecordConstruction(string category, Guid instanceId) =>
+            Record(_constructed, category, instanceId);
+
+        public void RecordInvocation(string category, Guid instanceId) =>
+            Record(_invoked, category, instanceId);
+
+        public void RecordDisposal(string category, Guid instanceId) =>
+            Record(_disposed, category, instanceId);
+
+        public void AssertCategory(string category, int expected)
+        {
+            _constructed[category].Should().HaveCount(expected);
+            _invoked[category].Should().BeEquivalentTo(_constructed[category]);
+            _disposed[category].Should().BeEquivalentTo(_constructed[category]);
+        }
+
+        private static void Record(
+            IDictionary<string, HashSet<Guid>> values,
+            string category,
+            Guid instanceId)
+        {
+            if (!values.TryGetValue(category, out var items))
+            {
+                items = [];
+                values.Add(category, items);
+            }
+
+            items.Add(instanceId);
         }
     }
 
@@ -871,4 +1069,6 @@ public sealed class InProcessModuleHostTests
     private sealed record TestAction(string Value);
 
     private sealed record TestResult(string Value);
+
+    private sealed record TestEvent(int Value);
 }

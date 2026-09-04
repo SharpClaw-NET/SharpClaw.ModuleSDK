@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.ModuleSDK;
@@ -387,6 +388,7 @@ internal sealed class ModuleActionHookRegistrationBuilder(
         HookOrdering ordering,
         ActionInterceptionCapabilities? requestedCapabilities)
     {
+        state.Services.TryAddScoped(handlerType);
         state.ActionHooks.Add(new PendingActionHook(
             targetKind,
             actionKey,
@@ -553,6 +555,7 @@ internal sealed class ModuleEventHookRegistrationBuilder(
         HookOrdering ordering,
         EventInterceptionCapabilities? requestedCapabilities)
     {
+        state.Services.TryAddScoped(handlerType);
         state.EventHooks.Add(new PendingEventHook(
             targetKind,
             eventKey,

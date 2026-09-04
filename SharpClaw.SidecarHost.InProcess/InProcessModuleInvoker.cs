@@ -10,68 +10,79 @@ public sealed class InProcessModuleInvoker(
     IServiceProvider services)
 {
     /// <summary>Invokes one typed action hook with the host-issued control.</summary>
-    public ValueTask<IActionOutcome<TResult>> InvokeActionAsync<TAction, TResult>(
+    public async ValueTask<IActionOutcome<TResult>> InvokeActionAsync<TAction, TResult>(
         ModuleActionHook hook,
         ActionContext<TAction> context,
         IActionControl<TAction, TResult> control,
         CancellationToken ct)
     {
         RequireHook(hook, isUntyped: false);
-        return Resolve<IActionInterceptor<TAction, TResult>>(hook.HandlerType)
+        await using var scope = services.CreateAsyncScope();
+        return await Resolve<IActionInterceptor<TAction, TResult>>(scope.ServiceProvider, hook.HandlerType)
             .InvokeAsync(context, control, ct);
     }
 
     /// <summary>Invokes one untyped action hook with the host-issued control.</summary>
-    public ValueTask<IUntypedActionOutcome> InvokeAnyActionAsync(
+    public async ValueTask<IUntypedActionOutcome> InvokeAnyActionAsync(
         ModuleActionHook hook,
         UntypedActionContext context,
         IUntypedActionControl control,
         CancellationToken ct)
     {
         RequireHook(hook, isUntyped: true);
-        return Resolve<IAnyActionInterceptor>(hook.HandlerType).InvokeAsync(context, control, ct);
+        await using var scope = services.CreateAsyncScope();
+        return await Resolve<IAnyActionInterceptor>(scope.ServiceProvider, hook.HandlerType)
+            .InvokeAsync(context, control, ct);
     }
 
     /// <summary>Invokes one typed event interceptor with the host-issued control.</summary>
-    public ValueTask<IEventInterception<TEvent>> InvokeEventAsync<TEvent>(
+    public async ValueTask<IEventInterception<TEvent>> InvokeEventAsync<TEvent>(
         ModuleEventHook hook,
         EventContext<TEvent> context,
         IEventControl<TEvent> control,
         CancellationToken ct)
     {
         RequireEventHook(hook, ModuleEventHookKind.Interceptor, isUntyped: false);
-        return Resolve<IEventInterceptor<TEvent>>(hook.HandlerType).InterceptAsync(context, control, ct);
+        await using var scope = services.CreateAsyncScope();
+        return await Resolve<IEventInterceptor<TEvent>>(scope.ServiceProvider, hook.HandlerType)
+            .InterceptAsync(context, control, ct);
     }
 
     /// <summary>Invokes one untyped event interceptor with the host-issued control.</summary>
-    public ValueTask<IUntypedEventInterception> InvokeAnyEventAsync(
+    public async ValueTask<IUntypedEventInterception> InvokeAnyEventAsync(
         ModuleEventHook hook,
         UntypedEventContext context,
         IUntypedEventControl control,
         CancellationToken ct)
     {
         RequireEventHook(hook, ModuleEventHookKind.Interceptor, isUntyped: true);
-        return Resolve<IAnyEventInterceptor>(hook.HandlerType).InterceptAsync(context, control, ct);
+        await using var scope = services.CreateAsyncScope();
+        return await Resolve<IAnyEventInterceptor>(scope.ServiceProvider, hook.HandlerType)
+            .InterceptAsync(context, control, ct);
     }
 
     /// <summary>Invokes one typed event listener.</summary>
-    public ValueTask InvokeEventListenerAsync<TEvent>(
+    public async ValueTask InvokeEventListenerAsync<TEvent>(
         ModuleEventHook hook,
         EventEnvelope<TEvent> evt,
         CancellationToken ct)
     {
         RequireEventHook(hook, ModuleEventHookKind.Listener, isUntyped: false);
-        return Resolve<IEventListener<TEvent>>(hook.HandlerType).OnEventAsync(evt, ct);
+        await using var scope = services.CreateAsyncScope();
+        await Resolve<IEventListener<TEvent>>(scope.ServiceProvider, hook.HandlerType)
+            .OnEventAsync(evt, ct);
     }
 
     /// <summary>Invokes one untyped event listener.</summary>
-    public ValueTask InvokeAnyEventListenerAsync(
+    public async ValueTask InvokeAnyEventListenerAsync(
         ModuleEventHook hook,
         UntypedEventEnvelope evt,
         CancellationToken ct)
     {
         RequireEventHook(hook, ModuleEventHookKind.Listener, isUntyped: true);
-        return Resolve<IAnyEventListener>(hook.HandlerType).OnEventAsync(evt, ct);
+        await using var scope = services.CreateAsyncScope();
+        await Resolve<IAnyEventListener>(scope.ServiceProvider, hook.HandlerType)
+            .OnEventAsync(evt, ct);
     }
 
     /// <summary>Invokes one registered tool.</summary>
@@ -80,6 +91,27 @@ public sealed class InProcessModuleInvoker(
         ToolInvocation invocation,
         CancellationToken ct) =>
         graph.ToolDispatch.InvokeAsync(toolName, services, invocation, ct);
+
+    /// <summary>Invokes one declared CLI command with host-issued action authority.</summary>
+    public async ValueTask<CliResult> InvokeCliAsync(
+        CliInvocation invocation,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(invocation);
+        ct.ThrowIfCancellationRequested();
+        var contribution = graph.Application.CliCommands.SingleOrDefault(item =>
+            string.Equals(item.Descriptor.Name, invocation.Command, StringComparison.OrdinalIgnoreCase)
+            || item.Descriptor.Aliases.Any(alias => string.Equals(
+                alias,
+                invocation.Command,
+                StringComparison.OrdinalIgnoreCase)))
+            ?? throw new InvalidOperationException(
+                $"CLI command '{invocation.Command}' is not declared.");
+
+        await using var scope = services.CreateAsyncScope();
+        var handler = Resolve<ICliHandler>(scope.ServiceProvider, contribution.HandlerType);
+        return await handler.ExecuteAsync(invocation, ct);
+    }
 
     /// <summary>Invokes one declared HTTP endpoint with host-owned action authority.</summary>
     public async ValueTask<HttpEndpointResponse> InvokeHttpEndpointAsync(
@@ -121,9 +153,6 @@ public sealed class InProcessModuleInvoker(
             endpoint.HandlerType);
         await handler.InvokeAsync(request, channel, hostActionEntry, ct);
     }
-
-    private THandler Resolve<THandler>(Type handlerType) where THandler : class =>
-        Resolve<THandler>(services, handlerType);
 
     private static THandler Resolve<THandler>(
         IServiceProvider serviceProvider,
