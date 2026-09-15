@@ -152,6 +152,23 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 TerminalId = request.TerminalId,
             };
         }
+        catch (ActionFailedException ex) when (!ct.IsCancellationRequested)
+        {
+            return new SidecarActionTerminalTransportResponse(
+                null,
+                new SidecarTerminalExecutionResult(
+                    null,
+                    safeFailure,
+                    Completed: true)
+                {
+                    Error = ex.Error,
+                },
+                request.Receipt,
+                safeFailure)
+            {
+                TerminalId = request.TerminalId,
+            };
+        }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
             return new SidecarActionTerminalTransportResponse(
@@ -159,7 +176,13 @@ internal sealed class OutOfProcessActionDispatcher : IActionDispatcher
                 new SidecarTerminalExecutionResult(
                     null,
                     safeFailure,
-                    Completed: true),
+                    Completed: true)
+                {
+                    Error = new ExecutionError(
+                        safeFailure.Code,
+                        safeFailure.Message,
+                        safeFailure.Retryable),
+                },
                 request.Receipt,
                 safeFailure)
             {

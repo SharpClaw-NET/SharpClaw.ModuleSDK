@@ -677,6 +677,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule
                     "cross-sidecar-deny" => "cross-sidecar-deny-root",
                     "cross-sidecar-cancel" => "cross-sidecar-cancel-root",
                     "cross-sidecar-fail-observe" => "cross-sidecar-fail-observe-root",
+                    "cross-sidecar-safe-fail-observe" => "cross-sidecar-safe-fail-observe-root",
                     "cross-sidecar-cancel-observe" => "cross-sidecar-cancel-observe-root",
                     "cross-sidecar-block-observe" => "cross-sidecar-block-observe-root",
                     "rotation" => "rotation-root",
@@ -937,6 +938,8 @@ public sealed class ApplicationSmokeModule : ISharpClawModule
                     $"cross-sidecar-cancel:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-fail-observe-root" => new ApplicationSmokeResult(
                     $"cross-sidecar-fail-observe:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
+                "cross-sidecar-safe-fail-observe-root" => new ApplicationSmokeResult(
+                    $"cross-sidecar-safe-fail-observe:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "cross-sidecar-cancel-observe-root" => new ApplicationSmokeResult(
                     $"cross-sidecar-cancel-observe:{(await InvokeCrossSidecarAsync(context, ct)).Value}"),
                 "rotation-root" => new ApplicationSmokeResult(
@@ -1012,6 +1015,7 @@ public sealed class ApplicationSmokeModule : ISharpClawModule
                         context.Action.Mode switch
                         {
                             "cross-sidecar-fail-root" or "cross-sidecar-fail-observe-root" => "fail",
+                            "cross-sidecar-safe-fail-observe-root" => "safe-fail",
                             "cross-sidecar-deny-root" => "deny",
                             "cross-sidecar-cancel-root" or "cross-sidecar-cancel-observe-root" => "cancel",
                             "cross-sidecar-block-observe-root" => "block",
@@ -1022,12 +1026,16 @@ public sealed class ApplicationSmokeModule : ISharpClawModule
                 ct);
             if (context.Action.Mode is
                 "cross-sidecar-fail-observe-root" or
+                "cross-sidecar-safe-fail-observe-root" or
                 "cross-sidecar-cancel-observe-root" or
                 "cross-sidecar-block-observe-root")
             {
                 return new CrossSidecarResult(
                     $"outcome={outcome.Kind};error={outcome.Error?.Code ?? "none"};"
-                    + $"result={outcome.Result?.Value ?? "none"}");
+                    + $"result={outcome.Result?.Value ?? "none"};"
+                    + $"message={outcome.Error?.Message ?? "none"};"
+                    + $"retryable={outcome.Error?.IsRetryable.ToString() ?? "none"};"
+                    + $"policy={outcome.Error?.Details?["policy"] ?? "none"}");
             }
             if (outcome.Kind is not ActionOutcomeKind.Completed || outcome.Result is null)
             {
@@ -1202,6 +1210,11 @@ public sealed class CrossSidecarModule : ISharpClawModule
             return context.Action.Operation switch
             {
                 "fail" => throw new InvalidOperationException("The target action terminal failed."),
+                "safe-fail" => throw new ActionFailedException(new ExecutionError(
+                    "target_policy_unavailable",
+                    "The target policy is unavailable.",
+                    IsRetryable: true,
+                    new Dictionary<string, string> { ["policy"] = "tenant" })),
                 "deny" => new CrossSidecarResult($"deny:{context.Action.Value}"),
                 _ => new CrossSidecarResult(
                     $"{CrossSidecarModule.Id}|{context.Action.Operation}|{context.Action.Value}|"

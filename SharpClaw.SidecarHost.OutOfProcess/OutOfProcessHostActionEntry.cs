@@ -552,7 +552,15 @@ internal sealed class OutOfProcessHostActionEntry : IHostActionEntry, IModuleCro
                 new SidecarTerminalExecutionResult(
                     null,
                     safeFailure,
-                    Completed: true),
+                    Completed: true)
+                {
+                    Error = ex is ActionFailedException failed
+                        ? failed.Error
+                        : new ExecutionError(
+                            safeFailure.Code,
+                            safeFailure.Message,
+                            safeFailure.Retryable),
+                },
                 request.Receipt,
                 safeFailure)
             {

@@ -277,16 +277,14 @@ public sealed class HostAuthorizationEntry(IHostActionEntry host)
                 "Authorization was cancelled.",
                 cancellationToken),
             ActionOutcomeKind.Deferred => throw new InvalidOperationException("Authorization was deferred."),
-            ActionOutcomeKind.Failed => throw new InvalidOperationException(FormatFailure(outcome.Error)),
+            ActionOutcomeKind.Failed => throw new ActionFailedException(
+                outcome.Error ?? new ExecutionError(
+                    "authorization_failed",
+                    "Authorization failed without an error.")),
             ActionOutcomeKind.Uncertain => throw new InvalidOperationException("Authorization has uncertain execution."),
             _ => throw new InvalidOperationException("Authorization returned an unknown outcome."),
         };
     }
-
-    private static string FormatFailure(ExecutionError? error) =>
-        error is null
-            ? "Authorization failed without an error."
-            : $"Authorization failed: {error.Code}: {error.Message}";
 }
 
 /// <summary>Provides request-scoped authorization without exposing transport details.</summary>

@@ -394,6 +394,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                         terminalCancellation);
                     if (terminalResponse.Execution.Result is null)
                     {
+                        if (terminalResponse.Execution.Error is { } declaredError)
+                            throw new ActionFailedException(declaredError);
+
                         throw new OutOfProcessCapabilityException(
                             terminalResponse.Execution.Failure?.Code
                                 ?? SidecarCapabilityErrors.HostFailure,
@@ -427,6 +430,16 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 ActionOutcomeKind.Cancelled,
                 null,
                 null,
+                null,
+                null,
+                terminalResponse);
+        }
+        catch (ActionFailedException ex)
+        {
+            return new OutOfProcessCrossSidecarDispatchResult(
+                ActionOutcomeKind.Failed,
+                null,
+                ex.Error,
                 null,
                 null,
                 terminalResponse);
@@ -513,7 +526,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var execution = new SidecarTerminalExecutionResult(
             result,
             result is null ? safeFailure : null!,
-            Completed: true);
+            Completed: true)
+        {
+            Error = dispatch.Kind == ActionOutcomeKind.Failed
+                ? dispatch.Error
+                : null,
+        };
         return new SidecarActionTerminalTransportResponse(
             resultIdentity,
             execution,
@@ -748,6 +766,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             else if (!response.Execution.Completed
                 || response.Execution.Result is not null
                 || response.Execution.Failure != binding.SafeFailure
+                || response.Execution.Error != (dispatch.Kind == ActionOutcomeKind.Failed ? dispatch.Error : null)
                 || response.SafeFailure != binding.SafeFailure
                 || response.Receipt != request.Receipt
                 || response.TerminalId != request.TerminalId)

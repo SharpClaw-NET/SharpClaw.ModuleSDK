@@ -2394,7 +2394,7 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
         }
         catch (Exception ex)
         {
-            _ = ex;
+            _transport.RecordTerminalFailure(ex);
 #if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
             OutOfProcessProtocolTestFixture.RecordActionFailure(
                 request.Call,
@@ -2411,9 +2411,11 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                 CreateIncomingActionFailure(
                     request,
                     ActionOutcomeKind.Failed,
-                    new ExecutionError(
-                        SidecarCapabilityErrors.HostFailure,
-                        "The module action entry failed.")),
+                    ex is ActionFailedException failed
+                        ? failed.Error
+                        : new ExecutionError(
+                            SidecarCapabilityErrors.HostFailure,
+                            "The module action entry failed.")),
                     channelCt);
         }
         finally
@@ -2885,12 +2887,28 @@ internal sealed partial class OutOfProcessModuleCapabilityConnection : IAsyncDis
                     _session.Binding.SafeFailure,
                     Completed: true);
             }
+            catch (ActionFailedException ex)
+            {
+                execution = new SidecarTerminalExecutionResult(
+                    null,
+                    _session.Binding.SafeFailure,
+                    Completed: true)
+                {
+                    Error = ex.Error,
+                };
+            }
             catch (Exception)
             {
                 execution = new SidecarTerminalExecutionResult(
                     null,
                     _session.Binding.SafeFailure,
-                    Completed: true);
+                    Completed: true)
+                {
+                    Error = new ExecutionError(
+                        _session.Binding.SafeFailure.Code,
+                        _session.Binding.SafeFailure.Message,
+                        _session.Binding.SafeFailure.Retryable),
+                };
             }
 
             var resultIdentity = execution.Result is null

@@ -3513,6 +3513,9 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
 
             if (!terminalResponse.Execution.Completed || terminalResponse.Execution.Result is null)
             {
+                if (terminalResponse.Execution.Error is { } declaredError)
+                    throw new ActionFailedException(declaredError);
+
                 throw new OutOfProcessCapabilityException(
                     terminalResponse.SafeFailure?.Code ?? SidecarCapabilityErrors.HostFailure,
                     terminalResponse.SafeFailure?.Message ?? "The sidecar terminal callback failed.");

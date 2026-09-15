@@ -393,16 +393,59 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
         await using (client)
         {
 
-        var failed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-fail-observe");
+        SidecarCliExecutionResponse failed;
+        try
+        {
+            failed = await InvokeSourceAsync(client, dispatcher, "cross-sidecar-fail-observe");
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Cross-sidecar failure observation disconnected the session: {ex}; "
+                + $"sourceFailure={client.CapabilitySession.RunFailure}; "
+                + $"targetFailure={_targetClient.CapabilitySession.RunFailure}; "
+                + $"sourceHandledFailure={client.CapabilitySession.LastHandledFailure}; "
+                + $"targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}; "
+                + $"sourceServerFailure={_sourceServer.CapabilityFailure}; "
+                + $"targetServerFailure={_targetServer.CapabilityFailure}; "
+                + $"sourceDispatcher={dispatcher.LastException}; "
+                + $"targetDispatcher={_targetDispatcher.LastException}",
+                ex);
+        }
         failed.Result.Succeeded.Should().BeTrue();
         failed.Result.Output.Single().Text.Should().Contain(
-            "cross-sidecar-fail-observe:outcome=Failed;error=");
+            "cross-sidecar-fail-observe:outcome=Failed;error=sidecar_capability_failed");
         failed.Result.Output.Single().Text.Should().Contain(";result=none");
         _targetDispatcher.RunCalls.Should().Be(1);
 
+        var declared = await InvokeSourceAsync(
+            client,
+            dispatcher,
+            "cross-sidecar-safe-fail-observe");
+        declared.Result.Succeeded.Should().BeTrue(
+            $"CLI error {declared.Result.Error?.Code}: {declared.Result.Error?.Message}; "
+            + string.Join(" | ", declared.Result.Output.Select(item => item.Text))
+            + $"; sourceDispatcher={dispatcher.LastException}"
+            + $"; targetDispatcher={_targetDispatcher.LastException}"
+            + $"; sourceFailure={client.CapabilitySession.RunFailure}"
+            + $"; targetFailure={_targetClient.CapabilitySession.RunFailure}"
+            + $"; sourceHandledFailure={client.CapabilitySession.LastHandledFailure}"
+            + $"; targetHandledFailure={_targetClient.CapabilitySession.LastHandledFailure}"
+            + $"; sourceServerFailure={_sourceServer.CapabilityFailure}"
+            + $"; targetServerFailure={_targetServer.CapabilityFailure}");
+        declared.Result.Output.Single().Text.Should().Contain(
+            "cross-sidecar-safe-fail-observe:outcome=Failed;error=target_policy_unavailable",
+            $"target dispatcher failure={_targetDispatcher.LastException}; "
+            + $"target session failure={_targetClient.CapabilitySession.LastHandledFailure}; "
+            + $"target server failure={_targetServer.CapabilityFailure}");
+        declared.Result.Output.Single().Text.Should().Contain(
+            "message=The target policy is unavailable.;retryable=True;policy=tenant");
+        declared.Result.Output.Single().Text.Should().Contain(";result=none");
+        _targetDispatcher.RunCalls.Should().Be(2);
+
         var succeeded = await InvokeSourceAsync(client, dispatcher, "cross-sidecar");
         succeeded.Result.Succeeded.Should().BeTrue();
-        _targetDispatcher.RunCalls.Should().Be(2);
+        _targetDispatcher.RunCalls.Should().Be(3);
         _targetDispatcher.TerminalCalls.Should().Be(1);
         }
     }
