@@ -490,14 +490,14 @@ internal static class OutOfProcessActionSession
             start.InvocationId,
             start.ParentInvocationId,
             start.TraceId,
-            start.InvocationId,
-            0,
-            1,
+            start.Context.IdempotencyKey,
+            start.Context.Depth,
+            start.Context.Attempt,
             start.Header.Deadline,
-            start.ActionKey.Value,
+            start.Context.OwnerId,
             start.Caller,
             start.Features,
-            runtime.Graph.ContractHash,
+            start.Context.Snapshot.ContractHash,
             start.UntypedDescriptor!,
             start.Input);
         var outcome = await handler.InvokeAsync(
@@ -637,24 +637,20 @@ internal static class OutOfProcessActionSession
                 ?? throw new OutOfProcessProtocolException(
                     SidecarProtocolErrors.UnsupportedSchema,
                     "The typed action input could not be deserialized.");
-            var snapshot = new ActionPipelineSnapshot(
-                runtime.Graph.ContractHash,
-                authorization.ActionGrants,
-                authorization.EventGrants);
             var context = new ActionContext<TAction>(
                 start.InvocationId,
                 start.ParentInvocationId,
                 start.TraceId,
-                start.InvocationId,
-                0,
-                1,
+                start.Context.IdempotencyKey,
+                start.Context.Depth,
+                start.Context.Attempt,
                 start.Header.Deadline,
                 start.ActionKey,
-                start.ActionKey.Value,
+                start.Context.OwnerId,
                 start.Caller,
                 action,
                 start.Features,
-                snapshot);
+                start.Context.Snapshot);
             var outcome = await handler.InvokeAsync(
                 context,
                 new SidecarActionControl<TAction, TResult>(

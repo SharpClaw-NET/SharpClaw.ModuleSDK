@@ -24,6 +24,7 @@ public sealed class OutOfProcessActionProtocolTests
     private ServiceProvider _inProcessServices = null!;
     private ModuleContributionGraph _inProcessGraph = null!;
     private InProcessModuleInvoker _inProcessInvoker = null!;
+    private string _hookScopeProbePath = null!;
 
     [OneTimeSetUp]
     public async Task StartServer()
@@ -33,6 +34,10 @@ public sealed class OutOfProcessActionProtocolTests
                 "SHARPCLAW_MODULESDK_TEST_ROOT must identify the D: test root.");
         _moduleDirectory = Path.Combine(root, "action-protocol-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_moduleDirectory);
+        _hookScopeProbePath = Path.Combine(_moduleDirectory, "action-hook-scope.log");
+        Environment.SetEnvironmentVariable(
+            LifecycleSmokeModule.HookScopeProbeEnvironmentVariable,
+            _hookScopeProbePath);
         var moduleAssemblyName = Path.GetFileName(typeof(LifecycleSmokeModule).Assembly.Location);
         File.Copy(
             typeof(LifecycleSmokeModule).Assembly.Location,
@@ -111,6 +116,9 @@ public sealed class OutOfProcessActionProtocolTests
             await server.DisposeAsync();
         if (_inProcessServices is not null)
             await _inProcessServices.DisposeAsync();
+        Environment.SetEnvironmentVariable(
+            LifecycleSmokeModule.HookScopeProbeEnvironmentVariable,
+            null);
     }
 
     [Test, CancelAfter(15000)]
@@ -343,6 +351,108 @@ public sealed class OutOfProcessActionProtocolTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         await AssertServerReadyAsync();
+    }
+
+    [Test]
+    [Category("ActionProtocolResilience")]
+    [CancelAfter(15000)]
+    public async Task UntypedHookPreservesExecutionContextAndUsesOneScopePerCall()
+    {
+        await using var client = await CreateClientAsync();
+        var traceId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
+        var parentInvocationId = Guid.NewGuid();
+        var caller = new RequestPrincipal(
+            "context-user",
+            "Context User",
+            new HashSet<string>(["context-role"], StringComparer.Ordinal),
+            IsAuthenticated: true);
+        var features = new ExtensionFeatureSet(
+        [
+            new ExtensionFeature(
+                "context.feature",
+                1,
+                "context-owner",
+                128,
+                JsonSerializer.SerializeToElement(new { enabled = true })),
+        ]);
+        var snapshotHash = "context-snapshot-hash";
+
+        var firstStart = CreateStart(
+            client,
+            LifecycleSmokeModule.WildcardHookId,
+            "context",
+            typed: false,
+            caller: caller,
+            features: features,
+            traceId: traceId,
+            idempotencyKey: idempotencyKey,
+            parentInvocationId: parentInvocationId,
+            depth: 4,
+            attempt: 2,
+            ownerId: "context-action-owner",
+            snapshotHash: snapshotHash);
+        var first = await client.InvokeActionAsync(
+            firstStart,
+            (_, _) => throw new AssertionException("The context capture used the continuation."));
+        var firstCapture = JsonSerializer.Deserialize<SmokeExecutionContextCapture>(
+            ReadResult(first.Completion.Result)!,
+            OutOfProcessProtocolCodec.JsonOptions)!;
+
+        firstCapture.InvocationId.Should().Be(firstStart.InvocationId);
+        firstCapture.ParentInvocationId.Should().Be(parentInvocationId);
+        firstCapture.TraceId.Should().Be(traceId);
+        firstCapture.IdempotencyKey.Should().Be(idempotencyKey);
+        firstCapture.Depth.Should().Be(4);
+        firstCapture.Attempt.Should().Be(2);
+        firstCapture.OwnerId.Should().Be("context-action-owner");
+        firstCapture.SubjectId.Should().Be(caller.SubjectId);
+        firstCapture.IsAuthenticated.Should().BeTrue();
+        firstCapture.SnapshotContractHash.Should().Be(snapshotHash);
+        firstCapture.FeatureContracts.Should().Equal("context.feature");
+        firstCapture.ScopeState.Should().Be("active");
+        await WaitForProbeAsync($"disposed:{firstCapture.ScopeId:D}");
+
+        var second = await client.InvokeActionAsync(
+            CreateStart(
+                client,
+                LifecycleSmokeModule.WildcardHookId,
+                "context",
+                typed: false,
+                caller: caller,
+                features: features),
+            (_, _) => throw new AssertionException("The later context capture used the continuation."));
+        var secondCapture = JsonSerializer.Deserialize<SmokeExecutionContextCapture>(
+            ReadResult(second.Completion.Result)!,
+            OutOfProcessProtocolCodec.JsonOptions)!;
+        secondCapture.ScopeId.Should().NotBe(firstCapture.ScopeId);
+        await WaitForProbeAsync($"disposed:{secondCapture.ScopeId:D}");
+    }
+
+    [Test]
+    [Category("ActionProtocolResilience")]
+    [CancelAfter(15000)]
+    public async Task PreCancelledHookDoesNotConstructHandlerAndLaterCallSucceeds()
+    {
+        await using var client = await CreateClientAsync();
+        var before = ReadProbeLines().Length;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var cancelled = async () => await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.WildcardHookId, "context", typed: false),
+            (_, _) => throw new AssertionException("The cancelled hook used the continuation."),
+            cancellation.Token);
+        await cancelled.Should().ThrowAsync<OperationCanceledException>();
+
+        var later = await client.InvokeActionAsync(
+            CreateStart(client, LifecycleSmokeModule.WildcardHookId, "context", typed: false),
+            (_, _) => throw new AssertionException("The later hook used the continuation."));
+        var capture = JsonSerializer.Deserialize<SmokeExecutionContextCapture>(
+            ReadResult(later.Completion.Result)!,
+            OutOfProcessProtocolCodec.JsonOptions)!;
+        await WaitForProbeAsync($"disposed:{capture.ScopeId:D}");
+        ReadProbeLines().Length.Should().Be(before + 2);
     }
 
     [Test]
@@ -628,7 +738,16 @@ public sealed class OutOfProcessActionProtocolTests
         bool typed,
         long sequence = 1,
         DateTimeOffset? deadline = null,
-        string value = "value")
+        string value = "value",
+        RequestPrincipal? caller = null,
+        ExtensionFeatureSet? features = null,
+        Guid? traceId = null,
+        Guid? idempotencyKey = null,
+        Guid? parentInvocationId = null,
+        int depth = 0,
+        int attempt = 1,
+        string? ownerId = null,
+        string? snapshotHash = null)
     {
         var expires = deadline ?? DateTimeOffset.UtcNow.AddSeconds(10);
         var invocationId = Guid.NewGuid();
@@ -650,8 +769,8 @@ public sealed class OutOfProcessActionProtocolTests
             header => new HookInvokeStart(
                 header,
                 invocationId,
-                null,
-                Guid.NewGuid(),
+                parentInvocationId,
+                traceId ?? Guid.NewGuid(),
                 hookId,
                 descriptor.Key,
                 descriptor.Version,
@@ -661,8 +780,17 @@ public sealed class OutOfProcessActionProtocolTests
                     OutOfProcessProtocolCodec.JsonOptions),
                 descriptor,
                 grant,
-                RequestPrincipal.Anonymous,
-                ExtensionFeatureSet.Empty,
+                caller ?? RequestPrincipal.Anonymous,
+                features ?? ExtensionFeatureSet.Empty,
+                new SidecarHookExecutionContext(
+                    idempotencyKey ?? Guid.NewGuid(),
+                    depth,
+                    attempt,
+                    ownerId ?? descriptor.Key.Value,
+                    new ActionPipelineSnapshot(
+                        snapshotHash ?? client.Discovery.ContractHash,
+                        client.Authorization.ActionGrants,
+                        client.Authorization.EventGrants)),
                 new ContinuationHandle(
                     Guid.NewGuid(),
                     invocationId,
@@ -670,6 +798,23 @@ public sealed class OutOfProcessActionProtocolTests
                     expires,
                     sequence)));
     }
+
+    private async Task WaitForProbeAsync(string expected)
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            if (ReadProbeLines().Contains(expected, StringComparer.Ordinal))
+                return;
+            await Task.Delay(20);
+        }
+
+        Assert.Fail($"The action hook scope probe did not record '{expected}'.");
+    }
+
+    private string[] ReadProbeLines() =>
+        File.Exists(_hookScopeProbePath)
+            ? File.ReadAllLines(_hookScopeProbePath)
+            : [];
 
     private Uri ExchangeUri()
     {

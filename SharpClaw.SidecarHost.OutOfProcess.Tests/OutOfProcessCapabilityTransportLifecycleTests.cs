@@ -198,6 +198,15 @@ public sealed class OutOfProcessCapabilityTransportLifecycleTests
                     item.ActionKey == LifecycleSmokeModule.HostAction.Key),
                 RequestPrincipal.Anonymous,
                 ExtensionFeatureSet.Empty,
+                new SidecarHookExecutionContext(
+                    invocationId,
+                    0,
+                    1,
+                    LifecycleSmokeModule.HostAction.Key.Value,
+                    new ActionPipelineSnapshot(
+                        client.Discovery.ContractHash,
+                        client.Authorization.ActionGrants,
+                        client.Authorization.EventGrants)),
                 new ContinuationHandle(
                     handleId,
                     invocationId,

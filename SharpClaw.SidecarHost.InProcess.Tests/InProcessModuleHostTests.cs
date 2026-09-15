@@ -122,6 +122,14 @@ public sealed class InProcessModuleHostTests
         var restrictionGraph = SharpClawModuleCompiler.Compile(
             new ScopedAuthorizationRestrictionModule(),
             ScopedAuthorizationRestrictionManifest());
+        var restrictionHook = restrictionGraph.ActionHooks.Should().ContainSingle().Subject;
+        restrictionHook.IsUntyped.Should().BeTrue();
+        restrictionHook.PayloadMode.Should().Be(SidecarPayloadMode.Untyped);
+        restrictionHook.ActionType.Should().BeNull();
+        restrictionHook.ResultType.Should().BeNull();
+        restrictionHook.RequestedCapabilities.Should().Be(
+            ActionInterceptionCapabilities.Inspect |
+            ActionInterceptionCapabilities.Wrap);
         await using var restrictionServices = BuildValidatedProvider(restrictionGraph);
         for (var index = 0; index < 2; index++)
         {
@@ -129,14 +137,69 @@ public sealed class InProcessModuleHostTests
             var outcome = await scope.ServiceProvider
                 .GetRequiredService<AuthorizationRestrictionHook<ScopedAuthorizationRestriction>>()
                 .InvokeAsync(
-                    CreateAuthorizationContext(),
+                    CreateUntypedAuthorizationContext(),
                     new AuthorizationActionControl(),
                     CancellationToken.None);
             outcome.Kind.Should().Be(ActionOutcomeKind.Completed);
-            outcome.Result!.Allowed.Should().BeTrue();
+            outcome.Result!.Value.Deserialize<AuthorizationDecision>()!.Allowed.Should().BeTrue();
         }
         restrictionServices.GetRequiredService<ScopedInvocationCapture>()
             .AssertCategory("authorization-restriction", 2);
+    }
+
+    [Test]
+    public void CompiledBehaviorAuthorityPreservesExactInProcessGrants()
+    {
+        var restrictionGraph = SharpClawModuleCompiler.Compile(
+            new ScopedAuthorizationRestrictionModule(),
+            ScopedAuthorizationRestrictionManifest());
+        var restrictionDiscovery = CompiledBehaviorAuthority.Describe(
+            restrictionGraph,
+            protocolVersion: 1,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var hostCatalog = new SidecarHostDescriptorCatalog(
+            [HostAuthorizationDescriptor()],
+            [],
+            negotiatedProtocolVersion: 1,
+            new SidecarPayloadLimits());
+
+        var restrictionAuthority = CompiledBehaviorAuthority.Create(
+            restrictionGraph,
+            restrictionDiscovery,
+            hostCatalog);
+
+        restrictionAuthority.SourceId.Should().Be(restrictionGraph.Identity.Id);
+        restrictionAuthority.Authorization.ActionGrants.Should().ContainSingle().Which.Should().Be(
+            new ActionCapabilityGrant(
+                AuthorizationProtocol.Evaluate.Key,
+                AuthorizationProtocol.Evaluate.Version,
+                ActionInterceptionCapabilities.Inspect |
+                ActionInterceptionCapabilities.Wrap,
+                SensitiveApproved: true,
+                AcceptUnknownSchemas: false));
+
+        var policyGraph = SharpClawModuleCompiler.Compile(new ScopedAuthorizationPolicyModule());
+        var policyDiscovery = CompiledBehaviorAuthority.Describe(
+            policyGraph,
+            protocolVersion: 1,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1));
+        var policyAuthority = CompiledBehaviorAuthority.Create(
+            policyGraph,
+            policyDiscovery,
+            new SidecarHostDescriptorCatalog(
+                [],
+                [],
+                negotiatedProtocolVersion: 1,
+                new SidecarPayloadLimits()));
+
+        policyAuthority.Authorization.ActionGrants.Should().ContainSingle(grant =>
+            grant.ActionKey == AuthorizationProtocol.Evaluate.Key
+            && grant.ActionVersion == AuthorizationProtocol.Evaluate.Version
+            && grant.Capabilities == AuthorizationProtocol.Evaluate.Capabilities
+            && grant.SensitiveApproved
+            && !grant.AcceptUnknownSchemas);
     }
 
     [Test]
@@ -475,6 +538,17 @@ public sealed class InProcessModuleHostTests
                     ["inspect", "wrap"]),
             ]);
 
+    private static SidecarHostActionDescriptor HostAuthorizationDescriptor() =>
+        new(
+            AuthorizationProtocol.Evaluate.Key,
+            AuthorizationProtocol.Evaluate.Version,
+            AuthorizationProtocol.Evaluate.Category,
+            AuthorizationProtocol.Evaluate.InputSchema!,
+            AuthorizationProtocol.Evaluate.ResultSchema!,
+            AuthorizationProtocol.Evaluate.Capabilities,
+            AuthorizationProtocol.Evaluate.ContainsSensitiveData,
+            AuthorizationProtocol.Evaluate.ProtocolVersionRange!);
+
     private static ToolFixture CreateToolFixture()
     {
         var graph = SharpClawModuleCompiler.Compile(
@@ -521,6 +595,32 @@ public sealed class InProcessModuleHostTests
                 new AuthorizationResource("scope", "resource")),
             ExtensionFeatureSet.Empty,
             new ActionPipelineSnapshot("scoped-authorization", []));
+
+    private static UntypedActionContext CreateUntypedAuthorizationContext()
+    {
+        var context = CreateAuthorizationContext();
+        return new UntypedActionContext(
+            context.InvocationId,
+            context.ParentInvocationId,
+            context.TraceId,
+            context.IdempotencyKey,
+            context.Depth,
+            context.Attempt,
+            context.Deadline,
+            context.OwnerId,
+            context.Caller,
+            context.Features,
+            context.Snapshot.ContractHash,
+            new UntypedActionDescriptor(
+                AuthorizationProtocol.Evaluate.Key,
+                AuthorizationProtocol.Evaluate.Version,
+                AuthorizationProtocol.Evaluate.Category,
+                AuthorizationProtocol.Evaluate.Capabilities,
+                AuthorizationProtocol.Evaluate.InputSchema!,
+                AuthorizationProtocol.Evaluate.ResultSchema!,
+                AuthorizationProtocol.Evaluate.ContainsSensitiveData),
+            JsonSerializer.SerializeToElement(context.Action));
+    }
 
     private static ToolInvocation CreateToolInvocation(Guid? conversationId)
     {
@@ -993,7 +1093,7 @@ public sealed class InProcessModuleHostTests
         : ScopedContribution(capture, "authorization-restriction"), IAuthorizationRestriction
     {
         public ValueTask<AuthorizationRestriction> EvaluateAsync(
-            ActionContext<AuthorizationRequest> context,
+            AuthorizationRestrictionContext context,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1003,41 +1103,44 @@ public sealed class InProcessModuleHostTests
     }
 
     private sealed class AuthorizationActionControl
-        : IActionControl<AuthorizationRequest, AuthorizationDecision>
+        : IUntypedActionControl
     {
-        public ValueTask<IActionOutcome<AuthorizationDecision>> ProceedAsync(
+        public ValueTask<IUntypedActionOutcome> ProceedAsync(
             CancellationToken cancellationToken) =>
-            ValueTask.FromResult<IActionOutcome<AuthorizationDecision>>(
+            ValueTask.FromResult<IUntypedActionOutcome>(
                 new AuthorizationActionOutcome(AuthorizationDecision.Allow("scope_allowed")));
 
-        public ValueTask<IActionOutcome<AuthorizationDecision>> ProceedWithInputAsync(
-            ActionReplacement<AuthorizationRequest> replacement,
+        public ValueTask<IUntypedActionOutcome> ProceedWithInputAsync(
+            JsonElement replacement,
+            string reason,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public IActionOutcome<AuthorizationDecision> ReplaceResult(
-            AuthorizationDecision result,
+        public IUntypedActionOutcome ReplaceResult(
+            JsonElement result,
             string reason) => throw new NotSupportedException();
 
-        public IActionOutcome<AuthorizationDecision> Cancel(string code, string message) =>
+        public IUntypedActionOutcome Cancel(string code, string message) =>
             throw new NotSupportedException();
 
-        public IActionOutcome<AuthorizationDecision> Fail(ExecutionError error) =>
+        public IUntypedActionOutcome Fail(ExecutionError error) =>
             throw new NotSupportedException();
 
-        public ValueTask<IActionOutcome<AuthorizationDecision>> DeferAsync(
+        public ValueTask<IUntypedActionOutcome> DeferAsync(
             ActionDeferRequest request,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public ValueTask<IActionOutcome<AuthorizationDecision>> RepeatAsync(
-            ActionRepeatRequest<AuthorizationRequest> request,
+        public ValueTask<IUntypedActionOutcome> RepeatAsync(
+            JsonElement replacement,
+            string reason,
+            TimeSpan? backoff,
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed record AuthorizationActionOutcome(AuthorizationDecision Value)
-        : IActionOutcome<AuthorizationDecision>
+        : IUntypedActionOutcome
     {
         public ActionOutcomeKind Kind => ActionOutcomeKind.Completed;
-        public AuthorizationDecision? Result => Value;
+        public JsonElement? Result => JsonSerializer.SerializeToElement(Value);
         public ContinuationToken? Continuation => null;
         public ExecutionError? Error => null;
         public ActionUncertainty? Uncertainty => null;

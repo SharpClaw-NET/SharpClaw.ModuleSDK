@@ -4034,6 +4034,15 @@ public sealed class OutOfProcessApplicationProtocolTests
                 grant,
                 RequestPrincipal.Anonymous,
                 ExtensionFeatureSet.Empty,
+                new SidecarHookExecutionContext(
+                    invocationId,
+                    0,
+                    1,
+                    descriptor.ActionKey.Value,
+                    new ActionPipelineSnapshot(
+                        client.Discovery.ContractHash,
+                        client.Authorization.ActionGrants,
+                        client.Authorization.EventGrants)),
                 new ContinuationHandle(
                     Guid.NewGuid(),
                     invocationId,

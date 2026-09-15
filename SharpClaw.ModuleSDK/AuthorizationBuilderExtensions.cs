@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SharpClaw.Contracts.Kernel;
@@ -86,7 +87,7 @@ public static class AuthorizationBuilderExtensions
         services.TryAddScoped<TRestriction>();
         services.RequireContract<AuthorizationContract>(AuthorizationProtocol.ContractName);
         services.OnAction(AuthorizationProtocol.Evaluate)
-            .Use<AuthorizationRestrictionHook<TRestriction>>(
+            .UseAny<AuthorizationRestrictionHook<TRestriction>>(
                 RestrictionCapabilities,
                 new HookOrdering($"authorization.restriction.{restrictionId}", priority));
         services.TryAddScoped<AuthorizationRestrictionHook<TRestriction>>();
@@ -123,16 +124,44 @@ public sealed class AuthorizationPolicyTerminal(IAuthorizationPolicy policy)
 
 /// <summary>Applies one restriction before the authoritative policy runs.</summary>
 public sealed class AuthorizationRestrictionHook<TRestriction>(TRestriction restriction)
-    : IActionInterceptor<AuthorizationRequest, AuthorizationDecision>
+    : IAnyActionInterceptor
     where TRestriction : class, IAuthorizationRestriction
 {
-    public async ValueTask<IActionOutcome<AuthorizationDecision>> InvokeAsync(
-        ActionContext<AuthorizationRequest> context,
-        IActionControl<AuthorizationRequest, AuthorizationDecision> control,
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async ValueTask<IUntypedActionOutcome> InvokeAsync(
+        UntypedActionContext context,
+        IUntypedActionControl control,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var result = await restriction.EvaluateAsync(context, cancellationToken);
+        AuthorizationRequest request;
+        try
+        {
+            request = context.Input.Deserialize<AuthorizationRequest>(JsonOptions)
+                ?? throw new JsonException("The authorization request is null.");
+            request.Validate();
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException)
+        {
+            return control.Fail(new ExecutionError(
+                "authorization_restriction_invalid_input",
+                "The authorization restriction input is invalid."));
+        }
+
+        var result = await restriction.EvaluateAsync(
+            new AuthorizationRestrictionContext(
+                request,
+                context.Caller,
+                context.Features,
+                context.InvocationId,
+                context.ParentInvocationId,
+                context.TraceId,
+                context.IdempotencyKey,
+                context.Depth,
+                context.Attempt,
+                context.Deadline),
+            cancellationToken);
         if (!result.Denied)
             return await control.ProceedAsync(cancellationToken);
 

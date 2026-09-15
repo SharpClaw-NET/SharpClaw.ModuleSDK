@@ -9,12 +9,28 @@ public sealed record SmokeAction(string Mode, string Value);
 
 public sealed record SmokeResult(string Value);
 
+public sealed record SmokeExecutionContextCapture(
+    Guid InvocationId,
+    Guid? ParentInvocationId,
+    Guid TraceId,
+    Guid IdempotencyKey,
+    int Depth,
+    int Attempt,
+    string OwnerId,
+    string SubjectId,
+    bool IsAuthenticated,
+    string SnapshotContractHash,
+    IReadOnlyList<string> FeatureContracts,
+    Guid ScopeId,
+    string ScopeState);
+
 public sealed class LifecycleSmokeModule : ISharpClawModule
 {
     public const string Id = "lifecycle_smoke_module";
     public const string ExactHookId = "smoke.action.exact";
     public const string CategoryHookId = "smoke.action.category";
     public const string WildcardHookId = "smoke.action.wildcard";
+    public const string HookScopeProbeEnvironmentVariable = "SHARPCLAW_ACTION_HOOK_SCOPE_PROBE";
 
     public const ActionInterceptionCapabilities HostCapabilities =
         ActionInterceptionCapabilities.Inspect
@@ -56,6 +72,7 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
 
     public void ConfigureServices(IServiceCollection services)
     {
+        services.AddScoped<SmokeHookResource>();
         services.OnAction(HostAction).Use<SmokeTypedHook>(
             HostCapabilities,
             new HookOrdering(ExactHookId, Before: [CategoryHookId]));
@@ -136,7 +153,7 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
         }
     }
 
-    public sealed class SmokeUntypedHook : IAnyActionInterceptor
+    public sealed class SmokeUntypedHook(SmokeHookResource resource) : IAnyActionInterceptor
     {
         public async ValueTask<IUntypedActionOutcome> InvokeAsync(
             UntypedActionContext context,
@@ -146,6 +163,25 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
             var mode = context.Input.GetProperty("mode").GetString();
             return mode switch
             {
+                "context" => control.ReplaceResult(
+                    JsonSerializer.SerializeToElement(
+                        new { value = JsonSerializer.Serialize(
+                            new SmokeExecutionContextCapture(
+                                context.InvocationId,
+                                context.ParentInvocationId,
+                                context.TraceId,
+                                context.IdempotencyKey,
+                                context.Depth,
+                                context.Attempt,
+                                context.OwnerId,
+                                context.Caller.SubjectId,
+                                context.Caller.IsAuthenticated,
+                                context.SnapshotContractHash,
+                                context.Features.Items.Select(item => item.ContractName).ToArray(),
+                                resource.InstanceId,
+                                resource.State),
+                            JsonSerializerOptions.Web) }),
+                    "Context capture"),
                 "replace" => control.ReplaceResult(
                     JsonSerializer.SerializeToElement(new { value = "sidecar:untyped" }),
                     "untyped replacement"),
@@ -176,6 +212,36 @@ public sealed class LifecycleSmokeModule : ISharpClawModule
                     ct),
                 _ => await control.ProceedAsync(ct),
             };
+        }
+    }
+
+    public sealed class SmokeHookResource : IDisposable
+    {
+        private static readonly object ProbeSync = new();
+        private int _disposed;
+
+        public SmokeHookResource()
+        {
+            Record("constructed");
+        }
+
+        public Guid InstanceId { get; } = Guid.NewGuid();
+
+        public string State => Volatile.Read(ref _disposed) == 0 ? "active" : "disposed";
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Record("disposed");
+        }
+
+        private void Record(string state)
+        {
+            var path = Environment.GetEnvironmentVariable(HookScopeProbeEnvironmentVariable);
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+            lock (ProbeSync)
+                File.AppendAllText(path, $"{state}:{InstanceId:D}{Environment.NewLine}");
         }
     }
 }

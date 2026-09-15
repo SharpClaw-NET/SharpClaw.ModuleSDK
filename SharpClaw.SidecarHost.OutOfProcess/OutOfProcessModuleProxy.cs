@@ -311,6 +311,15 @@ public sealed class OutOfProcessRegistrationProxy :
                     grant,
                     context.Caller,
                     context.Features,
+                    new SidecarHookExecutionContext(
+                        context.IdempotencyKey,
+                        context.Depth,
+                        context.Attempt,
+                        context.OwnerId,
+                        new ActionPipelineSnapshot(
+                            context.SnapshotContractHash,
+                            client.Authorization.ActionGrants,
+                            client.Authorization.EventGrants)),
                     handle));
 
             IUntypedActionOutcome? continued = null;
