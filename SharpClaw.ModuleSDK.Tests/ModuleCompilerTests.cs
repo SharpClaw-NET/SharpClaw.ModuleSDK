@@ -174,6 +174,7 @@ public sealed class ModuleCompilerTests
     [TestCase("/Models/{id}", "/models/{name}")]
     [TestCase("/models", "/models/")]
     [TestCase("/models/{id:guid}", "/MODELS/{modelId:guid}")]
+    [TestCase("/\u03A3", "/\u03C2")]
     public void CompilationRejectsMatchEquivalentEndpointRoutes(
         string firstPath,
         string secondPath)
@@ -190,6 +191,20 @@ public sealed class ModuleCompilerTests
             .Which.Errors.Should().Contain(error =>
                 error.Code == "invalid_application_contribution"
                 && error.RequestedEffect == "endpoint");
+    }
+
+    [Test]
+    public void CompilationAllowsOrdinallyDistinctUnicodeEndpointRoutes()
+    {
+        var graph = Compile(
+            new EndpointRoutesModule(
+                "/K",
+                HostEndpointTransport.Http,
+                "/\u212A",
+                HostEndpointTransport.Http),
+            ModuleHostingMode.OutOfProcess);
+
+        graph.Application.Endpoints.Should().HaveCount(2);
     }
 
     [Test]
