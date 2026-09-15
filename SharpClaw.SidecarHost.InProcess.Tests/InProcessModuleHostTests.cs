@@ -150,6 +150,8 @@ public sealed class InProcessModuleHostTests
     [Test]
     public void CompiledBehaviorAuthorityPreservesExactInProcessGrants()
     {
+        typeof(CompiledBehaviorAuthority).Assembly.Should().BeSameAs(typeof(InProcessRegistrationHost).Assembly);
+
         var restrictionGraph = SharpClawModuleCompiler.Compile(
             new ScopedAuthorizationRestrictionModule(),
             ScopedAuthorizationRestrictionManifest());
