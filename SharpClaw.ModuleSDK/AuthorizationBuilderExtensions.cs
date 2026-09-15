@@ -54,7 +54,8 @@ public static class AuthorizationBuilderExtensions
 {
     private const ActionInterceptionCapabilities RestrictionCapabilities =
         ActionInterceptionCapabilities.Inspect |
-        ActionInterceptionCapabilities.Wrap;
+        ActionInterceptionCapabilities.Wrap |
+        ActionInterceptionCapabilities.Observe;
 
     /// <summary>Adds the single authoritative policy provider.</summary>
     public static void AddAuthorizationPolicy<TPolicy>(this IServiceCollection services)

@@ -129,7 +129,8 @@ public sealed class InProcessModuleHostTests
         restrictionHook.ResultType.Should().BeNull();
         restrictionHook.RequestedCapabilities.Should().Be(
             ActionInterceptionCapabilities.Inspect |
-            ActionInterceptionCapabilities.Wrap);
+            ActionInterceptionCapabilities.Wrap |
+            ActionInterceptionCapabilities.Observe);
         await using var restrictionServices = BuildValidatedProvider(restrictionGraph);
         for (var index = 0; index < 2; index++)
         {
@@ -177,7 +178,8 @@ public sealed class InProcessModuleHostTests
                 AuthorizationProtocol.Evaluate.Key,
                 AuthorizationProtocol.Evaluate.Version,
                 ActionInterceptionCapabilities.Inspect |
-                ActionInterceptionCapabilities.Wrap,
+                ActionInterceptionCapabilities.Wrap |
+                ActionInterceptionCapabilities.Observe,
                 SensitiveApproved: true,
                 AcceptUnknownSchemas: false));
 
@@ -537,7 +539,7 @@ public sealed class InProcessModuleHostTests
             [
                 new PackageHookRequest(
                     AuthorizationProtocol.Evaluate.Key.Value,
-                    ["inspect", "wrap"]),
+                    ["inspect", "wrap", "observe"]),
             ]);
 
     private static SidecarHostActionDescriptor HostAuthorizationDescriptor() =>
