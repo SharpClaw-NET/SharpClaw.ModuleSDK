@@ -171,6 +171,41 @@ public sealed class ModuleCompilerTests
                 && contract.StorageName == "application-store");
     }
 
+    [TestCase("/Models/{id}", "/models/{name}")]
+    [TestCase("/models", "/models/")]
+    [TestCase("/models/{id:guid}", "/MODELS/{modelId:guid}")]
+    public void CompilationRejectsMatchEquivalentEndpointRoutes(
+        string firstPath,
+        string secondPath)
+    {
+        var act = () => Compile(
+            new EndpointRoutesModule(
+                firstPath,
+                HostEndpointTransport.Http,
+                secondPath,
+                HostEndpointTransport.Http),
+            ModuleHostingMode.OutOfProcess);
+
+        act.Should().Throw<ModuleGraphCompilationException>()
+            .Which.Errors.Should().Contain(error =>
+                error.Code == "invalid_application_contribution"
+                && error.RequestedEffect == "endpoint");
+    }
+
+    [Test]
+    public void CompilationAllowsExactHttpAndWebSocketRoutePair()
+    {
+        var graph = Compile(
+            new EndpointRoutesModule(
+                "/editor/{sessionId}",
+                HostEndpointTransport.Http,
+                "/editor/{sessionId}",
+                HostEndpointTransport.WebSocket),
+            ModuleHostingMode.OutOfProcess);
+
+        graph.Application.Endpoints.Should().HaveCount(2);
+    }
+
     [Test]
     public void OutOfProcessCompilationAcceptsSelfSubscription()
     {
@@ -583,6 +618,35 @@ public sealed class ModuleCompilerTests
         }
     }
 
+    private sealed class EndpointRoutesModule(
+        string firstPath,
+        HostEndpointTransport firstTransport,
+        string secondPath,
+        HostEndpointTransport secondTransport) : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } =
+            new("endpoint_routes", "Endpoint Routes", "routes");
+
+        public void ConfigureServices(IServiceCollection services)
+        {
+            AddEndpoint(services, "first", firstPath, firstTransport);
+            AddEndpoint(services, "second", secondPath, secondTransport);
+        }
+
+        private static void AddEndpoint(
+            IServiceCollection services,
+            string id,
+            string path,
+            HostEndpointTransport transport)
+        {
+            var descriptor = new EndpointRouteDescriptor(id, path, "GET", transport);
+            if (transport == HostEndpointTransport.Http)
+                services.AddHttpEndpoint<SampleEndpoints>(descriptor);
+            else
+                services.AddWebSocketEndpoint<SampleWebSocketEndpoints>(descriptor);
+        }
+    }
+
     private sealed class UiApplicationModule : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new("ui_application", "UI Application", "ui");
@@ -657,6 +721,16 @@ public sealed class ModuleCompilerTests
             IHostActionEntry hostActionEntry,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(HttpEndpointResponse.Empty(204));
+    }
+
+    private sealed class SampleWebSocketEndpoints : IWebSocketEndpointHandler
+    {
+        public ValueTask InvokeAsync(
+            HostEndpointRouteRequest request,
+            IWebSocketChannel channel,
+            IHostActionEntry hostActionEntry,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
     }
 
     private sealed class SampleUi;

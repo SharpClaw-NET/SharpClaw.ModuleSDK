@@ -423,18 +423,25 @@ public static class SharpClawModuleCompiler
                 $"Endpoint id '{duplicate.Key}' is registered more than once."));
         }
 
-        foreach (var duplicate in state.Endpoints
-                     .GroupBy(
-                         endpoint => endpoint.Descriptor.ToRouteIdentity(),
-                         EqualityComparer<HostEndpointRouteIdentity>.Default)
-                     .Where(group => group.Count() > 1))
+        var validEndpoints = state.Endpoints
+            .Where(endpoint => endpoint.Descriptor is not null && endpoint.Descriptor.IsWellFormed)
+            .ToArray();
+        for (var firstIndex = 0; firstIndex < validEndpoints.Length; firstIndex++)
         {
-            errors.Add(Error(
-                ModuleGraphErrorCodes.InvalidApplication,
-                state.Identity.Id,
-                duplicate.Key.Path,
-                "endpoint",
-                $"Endpoint route '{duplicate.Key.Method} {duplicate.Key.Path}' is registered more than once."));
+            for (var secondIndex = firstIndex + 1; secondIndex < validEndpoints.Length; secondIndex++)
+            {
+                var first = validEndpoints[firstIndex].Descriptor;
+                var second = validEndpoints[secondIndex].Descriptor;
+                if (!EndpointRouteCollisionPolicy.Conflicts(first, second))
+                    continue;
+                errors.Add(Error(
+                    ModuleGraphErrorCodes.InvalidApplication,
+                    state.Identity.Id,
+                    first.Path,
+                    "endpoint",
+                    $"Endpoint routes '{first.Method} {first.Path}' and "
+                    + $"'{second.Method} {second.Path}' have the same host route match."));
+            }
         }
 
         foreach (var duplicate in state.CliCommands
