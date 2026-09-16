@@ -113,14 +113,17 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 ct);
             return;
         }
+        var targetSession = target.Client.CapabilitySession;
+        using var targetAdmission = await targetSession
+            .AcquireCrossSidecarTargetAdmissionAsync(ct);
         var issuance = Session.IssueCrossSidecarActionEntryRelay(
             request.Call,
             crossRequest,
-            target.Client.CapabilitySession.Session,
+            targetSession.Session,
             targetEntry,
-            target.Client.CapabilitySession._options.ActionSnapshot,
+            targetSession._options.ActionSnapshot,
             DateTimeOffset.UtcNow,
-            target.Client.CapabilitySession.IssueCrossSidecarProof,
+            targetSession.IssueCrossSidecarProof,
             out var relay);
         if (!issuance.Accepted || relay is null)
         {
@@ -147,11 +150,12 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         var relayRevoked = false;
         try
         {
-            var targetExecution = await target.Client.CapabilitySession
+            var targetExecution = await targetSession
                 .ExecuteCrossSidecarCarrierAsync(
                     relay.Carrier,
                     targetTerminal,
                     targetRegistration,
+                    targetAdmission,
                     ct);
             var targetResponse = targetExecution.Response;
             var revocation = Session.RevokeCrossSidecarActionEntry(
@@ -176,7 +180,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 targetResponse,
                 null,
                 ct,
-                target.Client.CapabilitySession,
+                targetSession,
                 targetExecution.OutcomeBinding);
         }
         finally
@@ -542,17 +546,24 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         };
     }
 
-    internal async ValueTask<(
+    private async ValueTask<(
         SidecarActionTerminalTransportResponse Response,
         SidecarCapabilitySessionBinding OutcomeBinding)> ExecuteCrossSidecarCarrierAsync(
         SidecarCrossSidecarActionEntryCarrier carrier,
         SidecarActionTerminalRegistration terminal,
         OutOfProcessActionDescriptorCatalog.Registration registration,
+        CrossSidecarTargetAdmission targetAdmission,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(carrier);
         ArgumentNullException.ThrowIfNull(terminal);
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(targetAdmission);
+        if (!targetAdmission.IsActiveFor(this))
+        {
+            throw new InvalidOperationException(
+                "The cross-sidecar target admission is not active for this session.");
+        }
         var now = DateTimeOffset.UtcNow;
         var begin = await WithCrossSidecarRelayAdmissionAsync(
             () =>
@@ -828,7 +839,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession
             SignalCallChange();
             Volatile.Write(ref _lastCrossSidecarOutcome, completed);
             if (!receivedTerminalResponse)
-                await RotateAfterPreTerminalCrossSidecarAsync();
+                await RotateAfterPreTerminalCrossSidecarAsync(targetAdmission);
 
             return (response with { CrossSidecarOutcome = completed }, binding);
         }
@@ -840,7 +851,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
         }
     }
 
-    private async Task RotateAfterPreTerminalCrossSidecarAsync()
+    private async Task RotateAfterPreTerminalCrossSidecarAsync(
+        CrossSidecarTargetAdmission targetAdmission)
     {
         Task rotationReady;
         await _rotationGate.WaitAsync(_disconnect.Token);
@@ -851,6 +863,8 @@ internal sealed partial class OutOfProcessCapabilityHostSession
                 _rotationReady ??= CreateSignal();
                 rotationReady = _rotationReady.Task;
             }
+
+            targetAdmission.Dispose();
         }
         finally
         {

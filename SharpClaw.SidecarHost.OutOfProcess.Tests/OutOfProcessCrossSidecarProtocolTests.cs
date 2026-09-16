@@ -724,6 +724,89 @@ public sealed class OutOfProcessCrossSidecarProtocolTests
     }
 
     [Test, CancelAfter(30000)]
+    public async Task CrossSidecarReservationWaitsForBlockedTargetRotation()
+    {
+        var (targetServer, targetAddress, targetToken) =
+            await StartStandaloneServerAsync(
+                "cross-target-admission",
+                CrossSidecarModule.Id,
+                typeof(CrossSidecarModule));
+        await using var server = targetServer;
+        await using var targetClient = await OutOfProcessRegistrationClient.CreateAuthorizedAsync(
+            targetAddress,
+            targetToken,
+            new SidecarHostDescriptorCatalog(
+                [],
+                [],
+                OutOfProcessSidecarHostProtocol.Version,
+                new SidecarPayloadLimits()));
+
+        var rotationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rotationRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var targetDispatcher = new CountingActionDispatcher();
+        var targetDescriptors = new OutOfProcessActionDescriptorCatalog();
+        targetDescriptors.Add(CrossSidecarModule.OwnedAction);
+        var options = CreateOptions(
+            targetClient,
+            targetDispatcher,
+            descriptors: targetDescriptors);
+        options.BeforeRotationStartAsync = async () =>
+        {
+            rotationStarted.TrySetResult();
+            await rotationRelease.Task;
+        };
+        await targetClient.ConnectCapabilitiesAsync(options);
+
+        var (sourceClient, sourceDispatcher) = await CreateSourceClientAsync(targetClient);
+        await using (sourceClient)
+        {
+            var generationBefore = targetClient.CapabilitySession.BindingGeneration;
+            targetClient.CapabilitySession.ForceBindingRotationForTest();
+            await rotationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var invocation = InvokeSourceAsync(
+                sourceClient,
+                sourceDispatcher,
+                "cross-sidecar");
+            try
+            {
+                await Task.Delay(250);
+
+                invocation.IsCompleted.Should().BeFalse();
+                targetDispatcher.RunCalls.Should().Be(0);
+                targetClient.CapabilitySession.RunFailure.Should().BeNull();
+            }
+            finally
+            {
+                rotationRelease.TrySetResult();
+            }
+
+            var result = await invocation.WaitAsync(TimeSpan.FromSeconds(5));
+            result.Result.Succeeded.Should().BeTrue(
+                $"Target relay failed with {result.Result.Error?.Code}: "
+                + result.Result.Error?.Message);
+            targetClient.CapabilitySession.BindingGeneration.Should().BeGreaterThan(
+                generationBefore);
+            targetClient.CapabilitySession.RunFailure.Should().BeNull();
+            targetDispatcher.RunCalls.Should().Be(1);
+            targetDispatcher.TerminalCalls.Should().Be(1);
+
+            var later = await InvokeSourceAsync(
+                sourceClient,
+                sourceDispatcher,
+                "cross-sidecar").WaitAsync(TimeSpan.FromSeconds(5));
+            later.Result.Succeeded.Should().BeTrue(
+                $"Later relay failed with {later.Result.Error?.Code}: "
+                + later.Result.Error?.Message);
+            targetClient.CapabilitySession.RunFailure.Should().BeNull();
+            targetDispatcher.RunCalls.Should().Be(2);
+            targetDispatcher.TerminalCalls.Should().Be(2);
+        }
+    }
+
+    [Test, CancelAfter(30000)]
     public async Task CrossSidecarOutcomeMutationIsRejectedAndSessionRemainsUsable()
     {
         _targetDispatcher.Reset();

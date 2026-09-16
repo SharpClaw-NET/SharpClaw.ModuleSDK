@@ -35,6 +35,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
     private Task? _rotationRetryTask;
     private TaskCompletionSource _rotationRetryWake = CreateSignal();
     private int _completedCallsForBinding;
+    private int _activeCrossSidecarTargetAdmissions;
     private long _sequence;
     private readonly SemaphoreSlim _rotationGate = new(1, 1);
     private ExternalAuthorityRegistration? _externalAuthorityRegistration;
@@ -65,6 +66,21 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public SidecarActionCapabilityRequest? Request { get; set; }
+    }
+
+    private sealed class CrossSidecarTargetAdmission(
+        OutOfProcessCapabilityHostSession owner) : IDisposable
+    {
+        private OutOfProcessCapabilityHostSession? _owner = owner;
+
+        internal bool IsActiveFor(OutOfProcessCapabilityHostSession candidate) =>
+            ReferenceEquals(Volatile.Read(ref _owner), candidate);
+
+        public void Dispose()
+        {
+            var current = Interlocked.Exchange(ref _owner, null);
+            current?.ReleaseCrossSidecarTargetAdmission();
+        }
     }
 
     private sealed class ExternalAuthorityRegistration(
@@ -1643,6 +1659,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             + $"pendingStorage={_pendingStorageRequests.Count};"
             + $"calls={_calls.Count};"
             + $"outgoing={_outgoingCapabilityCalls.Count};"
+            + $"crossSidecarAdmissions={Volatile.Read(ref _activeCrossSidecarTargetAdmissions)};"
             + $"terminals={_terminals.Count};"
             + $"contexts={_options.HostActionEntryContexts.HasPendingContexts}";
 #endif
@@ -1830,6 +1847,65 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
             ? active.HostContext?.CapabilityId
             : null;
 
+    private async ValueTask<CrossSidecarTargetAdmission>
+        AcquireCrossSidecarTargetAdmissionAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task? rotation;
+            await _rotationGate.WaitAsync(ct);
+            try
+            {
+                lock (_rotationSync)
+                    rotation = _rotationTask ?? _rotationReady?.Task;
+
+                if (rotation is null)
+                {
+                    Interlocked.Increment(ref _activeCrossSidecarTargetAdmissions);
+                    return new CrossSidecarTargetAdmission(this);
+                }
+            }
+            finally
+            {
+                _rotationGate.Release();
+            }
+
+            RequestRotationRetry();
+            await rotation.WaitAsync(ct);
+        }
+    }
+
+    private void ReleaseCrossSidecarTargetAdmission()
+    {
+        if (Interlocked.Decrement(ref _activeCrossSidecarTargetAdmissions) < 0)
+        {
+            Interlocked.Exchange(ref _activeCrossSidecarTargetAdmissions, 0);
+            throw new InvalidOperationException(
+                "The cross-sidecar target admission was released more than once.");
+        }
+
+        SignalCallChange();
+        RequestRotationRetry();
+    }
+
+#if OUT_OF_PROCESS_PROTOCOL_TEST_FIXTURE
+    internal void ForceBindingRotationForTest()
+    {
+        _rotationGate.Wait(_disconnect.Token);
+        try
+        {
+            lock (_rotationSync)
+                _rotationReady ??= CreateSignal();
+        }
+        finally
+        {
+            _rotationGate.Release();
+        }
+
+        RequestRotationRetry();
+    }
+#endif
+
     private async ValueTask<DateTimeOffset?> StartRotationIfReadyAsync(CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
@@ -1853,6 +1929,7 @@ internal sealed partial class OutOfProcessCapabilityHostSession : IAsyncDisposab
                         || !_pendingStorageRequests.IsEmpty
                         || !_calls.IsEmpty
                         || !_outgoingCapabilityCalls.IsEmpty
+                        || Volatile.Read(ref _activeCrossSidecarTargetAdmissions) != 0
                         || !_terminals.IsEmpty
                         || HasPendingEndpointTypedActionChildWork)
                     {
