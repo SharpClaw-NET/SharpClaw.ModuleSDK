@@ -16,4 +16,12 @@
     <ProjectReference Include="..\SharpClaw.ModuleSDK\SharpClaw.ModuleSDK.csproj" />
     <ProjectReference Include="..\SharpClaw.ModuleSDK.HostOperations\SharpClaw.ModuleSDK.HostOperations.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Link="Documentation\Repository-README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.ModuleSDK\README.md" Link="Documentation\ModuleSDK-README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.ModuleSDK.Testing\README.md" Link="Documentation\Testing-README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.SidecarHost.InProcess\README.md" Link="Documentation\InProcess-README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.SidecarHost.OutOfProcess\README.md" Link="Documentation\OutOfProcess-README.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

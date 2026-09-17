@@ -1,15 +1,46 @@
 # SharpClaw.ModuleSDK.Testing
 
-`SharpClaw.ModuleSDK.Testing` compiles a module with the ModuleSDK and executes
-its actions and events through the production `SharpClaw.Core` dispatcher.
+`SharpClaw.ModuleSDK.Testing` compiles real package registrations and runs their behavior through the production `SharpClaw.Core` graph. It keeps scope validation, effect grants, sensitive approvals, outcome rules, cancellation, and handler disposal active.
 
-Use `SharpClawModuleTestBuilder` to add modules and their manifests. The built
-test host exposes fluent action and event builders. These builders keep Core's
-outcome authority, continuation rules, effect checks, and wildcard dispatch.
+## Build a Test Host
 
-Use `AddHostAction` and `AddHostEvent` for contracts that the host owns. Call
-`ApproveSensitiveContributions` only when the test intentionally grants the
-module access to each sensitive contract that its compiled hooks select. The
-test host creates exact Core approvals and does not disable sensitive checks.
+Pass the real `package.json` path when package metadata is part of the test. The builder uses `PackageManifestLoader` and compiles the manifest host mode. The builder rejects an absent or unsupported `hostMode`.
 
-This package is for module tests. A production module host does not need it.
+```csharp
+await using var host = new SharpClawModuleTestBuilder()
+    .ConfigureServices(services => services.AddSingleton(testCapture))
+    .AddRegistration(new SampleAuthorizationModule(), manifestPath)
+    .ApproveSensitiveContributions("sample_authorization")
+    .UseExecutionContext(caller, features)
+    .Build();
+```
+
+## Execution Methods
+
+| Method | Use |
+| --- | --- |
+| `Action(...).WithTerminal(...)` | Test a package hook around a host-owned terminal. |
+| `ActionEntry(...)` | Test the package-owned registered terminal. |
+| `Event(...)` | Dispatch an event through the compiled Core graph. |
+| `StartAsync` and `StopAsync` | Test lifecycle behavior through Core lifecycle actions. |
+
+`ActionEntry` requires one matching action definition and one matching terminal registration. It resolves the terminal from a new asynchronous scope for each execution. Scoped handlers do not become hidden singletons.
+
+## Sensitive Behavior
+
+Call `ApproveSensitiveContributions` only for each package identity that production explicitly approves. The test host creates exact schema-bound approvals. It does not disable sensitive checks or grant wildcard authority.
+
+## Authorization Example
+
+The following call executes the registered authorization terminal and all approved restrictions. A restriction denial returns the declared failed outcome before the policy terminal runs.
+
+```csharp
+var outcome = await host.ActionEntry(
+        AuthorizationProtocol.Evaluate,
+        new AuthorizationRequest(
+            "documents.read",
+            new AuthorizationResource("document", documentId)))
+    .RunAsync(cancellationToken);
+```
+
+This package is test-only. Production hosts do not reference it.

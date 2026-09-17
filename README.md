@@ -1,41 +1,95 @@
-# SharpClaw Module Host Packages
+# SharpClaw Module Development
 
-SharpClaw .NET modules run as a compiled module DLL plus a `package.json`
-manifest. For normal module execution, SharpClaw launches the module outside the
-parent process through `SharpClaw.SidecarHost.OutOfProcess`. That package
-provides the host executable and payload used to load the module assembly,
-validate the manifest, expose lifecycle and tool endpoints, and proxy host
-capabilities back to SharpClaw over the foreign-module protocol.
+SharpClaw loads optional behavior from manifest-backed .NET packages. A package supplies one `ISharpClawModule`, normal dependency-injection services, and explicit contribution descriptors. The host compiles these declarations into one immutable graph before any contributed behavior starts.
 
-`SharpClaw.SidecarHost.InProcess` is for the limited opt-in path where a host
-loads a module DLL directly inside its own process. It provides
-`RegistrationLoadContext`, a collectible assembly load context that resolves the
-module's private dependencies while keeping SharpClaw contract assemblies shared
-with the host. Use it only when the host deliberately supports in-process module
-loading and can accept the tighter coupling that comes with it.
+## Package Map
 
-For module developers, the practical shape is the same in either case: build a
-.NET assembly that implements the SharpClaw module contracts, place it in the
-module directory, and describe it with `package.json`. Unless a host explicitly
-opts into in-process loading, expect the module to be run by the out-of-process
-host.
+| Package | Purpose |
+| --- | --- |
+| `SharpClaw.ModuleSDK` | Defines the authoring API and compiles one contribution graph. |
+| `SharpClaw.ModuleSDK.Testing` | Runs a compiled graph through the production Core dispatchers. |
+| `SharpClaw.SidecarHost.InProcess` | Loads an explicitly trusted package in the host process. |
+| `SharpClaw.SidecarHost.OutOfProcess` | Runs one package in the default authenticated sidecar process. |
 
-Modules can declare typed endpoint and CLI contributions through
-`IApplicationRegistrationSource`. The out-of-process host carries those declarations
-through sidecar discovery and invokes CLI handlers through the same module graph.
+## One Authoring Surface
 
-## Typed actions
-
-Use `DefineAction` when a module owns both an action contract and its terminal.
-The SDK supplies deterministic schema identities when the descriptor does not
-contain them. The descriptor still controls capabilities, safe points, repeat
-policy, continuation policy, timeout, and sensitive-data classification.
+`ISharpClawModule.ConfigureServices` is the only registration entry. Add normal services and SharpClaw contributions to the supplied `IServiceCollection`. The compiler rejects duplicate identities, invalid descriptors, undeclared effects, route collisions, and incompatible contracts.
 
 ```csharp
-module.DefineAction(PermissionActions.Check)
-    .UseTerminal<PermissionCheckTerminal>(PermissionTerminals.Check);
+using Microsoft.Extensions.DependencyInjection;
+using SharpClaw.ModuleSDK;
+
+public sealed class DocumentsModule : ISharpClawModule
+{
+    public ModuleIdentity Identity { get; } = new(
+        "documents",
+        "Documents",
+        "documents");
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddScoped<DocumentReader>();
+        services.AddTool<ReadDocumentTool>(DocumentTools.Read);
+    }
+}
 ```
 
-Use `module.Actions.Add` and `module.AddActionEntry` when the module must control
-the two registrations separately. Both APIs use the same compiler validation and
-produce the same contribution graph.
+## Manifest
+
+`package.json` is the package authority. It identifies the entry assembly, entry type, host mode, contracts, features, and requested hook effects. `PackageManifestLoader` applies the same bounded, case-sensitive JSON rules as both production hosts.
+
+```json
+{
+  "id": "documents",
+  "displayName": "Documents",
+  "version": "1.0.0",
+  "toolPrefix": "documents",
+  "runtime": "dotnet",
+  "hostMode": "sidecar",
+  "entryAssembly": "Example.Documents.dll",
+  "entryType": "Example.Documents.DocumentsModule",
+  "minHostVersion": "0.5.0"
+}
+```
+
+## Contribution Types
+
+| Need | Registration | Handler or contract |
+| --- | --- | --- |
+| Tool | `AddTool<THandler>` | `IToolHandler` |
+| Typed action | `AddAction(...).UseTerminal<TTerminal>` | `IHostActionEntryTerminal<TAction,TResult>` |
+| Action hook | `OnAction`, `OnActionCategory`, or `OnAnyAction` | Typed or untyped action interceptor |
+| Event | `AddEvent` | Typed event descriptor and event hooks |
+| HTTP route | `AddHttpEndpoint<THandler>` | `IHttpEndpointHandler` |
+| WebSocket route | `AddWebSocketEndpoint<THandler>` | `IWebSocketEndpointHandler` |
+| CLI command | `AddCliCommand<THandler>` | `ICliHandler` |
+| Shared service | `ExportContract<T>` or `RequireContract<T>` | Public shared contract type |
+| Storage | `AddStorage` | `IScopedStorageGateway` or `ScopedDocumentStore<T>` |
+| Chat behavior | Chat resolver and contributor extensions | Neutral chat contracts |
+
+## Authorization
+
+One package can supply the authoritative `sharpclaw.authorization` policy. Other packages can require it or add restriction-only hooks. `AddAuthorizationPolicy<TPolicy>` supplies the provider, while `AddAuthorizationRestriction<TRestriction>` can only preserve or deny its result.
+
+## Test the Production Shape
+
+`SharpClawModuleTestBuilder` compiles the real package and manifest. `ActionEntry` resolves the registered terminal in a fresh scope and runs it through the production Core dispatcher. Sensitive contributions remain denied until the test grants each exact package identity.
+
+```csharp
+await using var host = new SharpClawModuleTestBuilder()
+    .AddRegistration(new DocumentsAuthorizationModule(), "package.json")
+    .ApproveSensitiveContributions("documents_authorization")
+    .UseExecutionContext(caller, features)
+    .Build();
+
+var decision = await host.ActionEntry(
+        AuthorizationProtocol.Evaluate,
+        request)
+    .RunRequiredAsync();
+```
+
+## Hosting
+
+Out-of-process hosting is the default boundary. It gives each package one authenticated capability session and transport-backed host services. In-process hosting is an explicit trust decision and uses a collectible load context. Both modes compile the same contribution graph.
+
+The full authoring guide is in the SharpClaw repository at `docs/guides/Module-Creation-Guide.md`.

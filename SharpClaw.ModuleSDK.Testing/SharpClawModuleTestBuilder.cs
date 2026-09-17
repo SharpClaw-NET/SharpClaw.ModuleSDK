@@ -7,7 +7,7 @@ namespace SharpClaw.ModuleSDK.Testing;
 /// <summary>Builds one Core-backed module test host.</summary>
 public sealed class SharpClawModuleTestBuilder
 {
-    private readonly List<(ISharpClawModule Module, PackageManifest Manifest)> _registrations = [];
+    private readonly List<ModuleTestRegistration> _registrations = [];
     private readonly List<ModuleTestHostAction> _hostActions = [];
     private readonly List<ModuleTestHostEvent> _hostEvents = [];
     private readonly HashSet<string> _sensitiveApprovals = new(StringComparer.Ordinal);
@@ -20,11 +20,36 @@ public sealed class SharpClawModuleTestBuilder
     public SharpClawModuleTestBuilder AddRegistration(
         ISharpClawModule module,
         PackageManifest manifest)
+        => AddRegistration(module, manifest, ModuleHostingMode.InProcess);
+
+    /// <summary>Adds one module for an explicit production hosting mode.</summary>
+    public SharpClawModuleTestBuilder AddRegistration(
+        ISharpClawModule module,
+        PackageManifest manifest,
+        ModuleHostingMode hostingMode)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(manifest);
-        _registrations.Add((module, manifest));
+        _registrations.Add(new ModuleTestRegistration(module, manifest, hostingMode));
         return this;
+    }
+
+    /// <summary>Adds one module and loads its authoritative manifest from disk.</summary>
+    public SharpClawModuleTestBuilder AddRegistration(
+        ISharpClawModule module,
+        string manifestPath)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        var document = PackageManifestLoader.Load(manifestPath);
+        document.Runtime.EnsureDotNetEntryAssembly(document.Manifest);
+        var hostingMode = document.Runtime.HostMode switch
+        {
+            PackageRuntimeInfo.HostModeInProcess => ModuleHostingMode.InProcess,
+            PackageRuntimeInfo.HostModeSidecar => ModuleHostingMode.OutOfProcess,
+            _ => throw new InvalidDataException(
+                $"Package manifest '{document.Source}' must select one supported hostMode."),
+        };
+        return AddRegistration(module, document.Manifest, hostingMode);
     }
 
     /// <summary>Adds one host-owned action definition for module hook tests.</summary>
@@ -45,10 +70,10 @@ public sealed class SharpClawModuleTestBuilder
     }
 
     /// <summary>Approves exact sensitive contributions selected by one module.</summary>
-    public SharpClawModuleTestBuilder ApproveSensitiveContributions(string SourceId)
+    public SharpClawModuleTestBuilder ApproveSensitiveContributions(string sourceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(SourceId);
-        _sensitiveApprovals.Add(SourceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
+        _sensitiveApprovals.Add(sourceId);
         return this;
     }
 
@@ -89,7 +114,7 @@ public sealed class SharpClawModuleTestBuilder
                 item.Manifest,
                 new ModuleCompilationOptions
                 {
-                    HostingMode = ModuleHostingMode.InProcess,
+                    HostingMode = item.HostingMode,
                     HostActions = _hostActions.Select(action => action.SidecarDescriptor).ToArray(),
                     HostEvents = _hostEvents.Select(evt => evt.SidecarDescriptor).ToArray(),
                 }))
@@ -144,4 +169,9 @@ public sealed class SharpClawModuleTestBuilder
             execution,
             Array.AsReadOnly(moduleGraphs));
     }
+
+    private sealed record ModuleTestRegistration(
+        ISharpClawModule Module,
+        PackageManifest Manifest,
+        ModuleHostingMode HostingMode);
 }

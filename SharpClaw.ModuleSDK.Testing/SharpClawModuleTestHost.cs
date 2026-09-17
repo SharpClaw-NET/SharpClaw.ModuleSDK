@@ -42,6 +42,12 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
         TAction action) =>
         new(this, descriptor, action);
 
+    /// <summary>Creates a test for one module-owned registered action terminal.</summary>
+    public ModuleTestActionEntryBuilder<TAction, TResult> ActionEntry<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action) =>
+        new(this, descriptor, action);
+
     /// <summary>Creates a fluent event test.</summary>
     public ModuleTestEventBuilder<TEvent> Event<TEvent>(
         EventDescriptor<TEvent> descriptor,
@@ -121,6 +127,34 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
         CancellationToken ct) =>
         _actions.RunRequiredAsync(descriptor, action, terminal, CoreGraph.ActionSnapshot, ct);
 
+    internal ValueTask<IActionOutcome<TResult>> RunActionEntryAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        CancellationToken ct)
+    {
+        var resolved = ResolveActionEntry(descriptor);
+        return _actions.RunAsync(
+            resolved.Descriptor,
+            action,
+            CreateActionEntryTerminal<TAction, TResult>(resolved.Entry),
+            CoreGraph.ActionSnapshot,
+            ct);
+    }
+
+    internal ValueTask<TResult> RunRequiredActionEntryAsync<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        CancellationToken ct)
+    {
+        var resolved = ResolveActionEntry(descriptor);
+        return _actions.RunRequiredAsync(
+            resolved.Descriptor,
+            action,
+            CreateActionEntryTerminal<TAction, TResult>(resolved.Entry),
+            CoreGraph.ActionSnapshot,
+            ct);
+    }
+
     internal ValueTask<IEventInterception<TEvent>> DispatchEventAsync<TEvent>(
         EventDescriptor<TEvent> descriptor,
         TEvent payload,
@@ -132,6 +166,63 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
             _execution.Caller,
             _execution.Features,
             ct);
+
+    private (
+        ActionDescriptor<TAction, TResult> Descriptor,
+        ModuleActionEntryRegistration Entry) ResolveActionEntry<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        var definitions = ModuleGraphs
+            .SelectMany(graph => graph.Actions)
+            .Where(definition =>
+                definition.Descriptor.Key == descriptor.Key
+                && definition.Descriptor.Version == descriptor.Version
+                && definition.ActionType == typeof(TAction)
+                && definition.ResultType == typeof(TResult))
+            .ToArray();
+        if (definitions.Length != 1
+            || definitions[0].TypedDescriptor is not ActionDescriptor<TAction, TResult> compiledDescriptor)
+        {
+            throw new InvalidOperationException(
+                $"Action '{descriptor.Key.Value}' has no unique typed definition in the module test graph.");
+        }
+
+        var definition = definitions[0];
+        var descriptorHash = HostActionEntryAuthorityValidator.ComputeDescriptorHash(compiledDescriptor);
+        var entries = ModuleGraphs
+            .SelectMany(graph => graph.ActionEntries)
+            .Where(entry =>
+                string.Equals(entry.OwnerId, definition.OwnerId, StringComparison.Ordinal)
+                && entry.Descriptor.Key == descriptor.Key
+                && entry.Descriptor.Version == descriptor.Version
+                && string.Equals(entry.Descriptor.DescriptorHash, descriptorHash, StringComparison.Ordinal)
+                && entry.ActionType == typeof(TAction)
+                && entry.ResultType == typeof(TResult))
+            .ToArray();
+        if (entries.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Action '{descriptor.Key.Value}' has no unique registered terminal in the module test graph.");
+        }
+
+        return (compiledDescriptor, entries[0]);
+    }
+
+    private Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>>
+        CreateActionEntryTerminal<TAction, TResult>(ModuleActionEntryRegistration entry) =>
+        async (context, cancellationToken) =>
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var terminal = scope.ServiceProvider.GetRequiredService(entry.TerminalType);
+            if (terminal is not IHostActionEntryTerminal<TAction, TResult> typedTerminal)
+            {
+                throw new InvalidOperationException(
+                    $"Registered terminal '{entry.TerminalType.FullName}' does not match action '{context.ActionKey.Value}'.");
+            }
+
+            return await typedTerminal.InvokeAsync(context, cancellationToken);
+        };
 
     private async ValueTask StopStartedAsync(int count, CancellationToken ct)
     {
@@ -226,4 +317,19 @@ public sealed class ModuleTestEventBuilder<TEvent>(
     /// <summary>Dispatches the event through the compiled Core graph.</summary>
     public ValueTask<IEventInterception<TEvent>> DispatchAsync(CancellationToken ct = default) =>
         host.DispatchEventAsync(descriptor, payload, ct);
+}
+
+/// <summary>Builds one module-owned action-entry execution.</summary>
+public sealed class ModuleTestActionEntryBuilder<TAction, TResult>(
+    SharpClawModuleTestHost host,
+    ActionDescriptor<TAction, TResult> descriptor,
+    TAction action)
+{
+    /// <summary>Runs the registered terminal and returns every outcome kind.</summary>
+    public ValueTask<IActionOutcome<TResult>> RunAsync(CancellationToken ct = default) =>
+        host.RunActionEntryAsync(descriptor, action, ct);
+
+    /// <summary>Runs the registered terminal and requires a completed result.</summary>
+    public ValueTask<TResult> RunRequiredAsync(CancellationToken ct = default) =>
+        host.RunRequiredActionEntryAsync(descriptor, action, ct);
 }

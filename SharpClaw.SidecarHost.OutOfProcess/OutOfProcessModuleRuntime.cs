@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Kernel;
 using SharpClaw.SidecarHost.InProcess;
@@ -74,13 +73,9 @@ internal sealed class OutOfProcessModuleRuntime : IAsyncDisposable
         var manifestPath = OutOfProcessPathGuard.EnsureContainedIn(
             Path.Combine(root, "package.json"),
             root);
-        var manifestJson = await File.ReadAllTextAsync(manifestPath, ct);
-        var manifest = JsonSerializer.Deserialize<PackageManifest>(
-            manifestJson,
-            OutOfProcessJsonOptions.Manifest)
-            ?? throw new InvalidOperationException(
-                $"Module manifest '{manifestPath}' is invalid.");
-        var runtime = PackageRuntimeInfo.FromJson(manifestJson);
+        var document = await PackageManifestLoader.LoadAsync(manifestPath, ct);
+        var manifest = document.Manifest;
+        var runtime = document.Runtime;
         runtime.EnsureDotNetEntryAssembly(manifest);
         if (!runtime.IsSidecarHostMode)
         {

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Kernel;
 using SharpClaw.ModuleSDK;
@@ -49,10 +48,9 @@ public sealed class InProcessRegistrationHost : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(registrationDirectory);
         var root = Path.GetFullPath(registrationDirectory);
         var manifestPath = EnsureContained(Path.Combine(root, "package.json"), root);
-        var manifestJson = await File.ReadAllTextAsync(manifestPath, ct);
-        var manifest = JsonSerializer.Deserialize<PackageManifest>(manifestJson, ManifestJsonOptions)
-            ?? throw new InvalidOperationException($"Module manifest '{manifestPath}' is invalid.");
-        var runtime = PackageRuntimeInfo.FromJson(manifestJson);
+        var document = await PackageManifestLoader.LoadAsync(manifestPath, ct);
+        var manifest = document.Manifest;
+        var runtime = document.Runtime;
         runtime.EnsureDotNetEntryAssembly(manifest);
         if (!runtime.IsInProcessHostMode)
         {
@@ -155,9 +153,4 @@ public sealed class InProcessRegistrationHost : IAsyncDisposable
         return fullPath;
     }
 
-    private static readonly JsonSerializerOptions ManifestJsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        MaxDepth = 8,
-        PropertyNameCaseInsensitive = false,
-    };
 }

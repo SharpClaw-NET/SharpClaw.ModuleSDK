@@ -1,44 +1,37 @@
 # SharpClaw.SidecarHost.OutOfProcess
 
-`SharpClaw.SidecarHost.OutOfProcess` is the default .NET module host path for
-SharpClaw. SharpClaw starts the host executable in a separate process for one
-module directory, passes the module directory and private control endpoint
-through protocol environment variables, and communicates with the module over
-the SharpClaw foreign-module protocol. The host loads the module entry assembly,
-validates the module identity declared in `package.json`, exposes lifecycle and
-tool endpoints, and proxies host capabilities such as providers, module
-storage, and agent operations back to the parent SharpClaw runtime.
+`SharpClaw.SidecarHost.OutOfProcess` is the default .NET package host. It loads one package directory in a separate process and connects it to the parent host through an authenticated capability session.
 
-A practical .NET module package is a module DLL plus `package.json` in the module
-directory. The manifest names the module, declares its tool prefix, points at
-the entry assembly, and selects the out-of-process .NET host mode. SharpClaw
-then runs the module through this host process. In-process hosting exists only
-as an opt-in, limited mode for hosts that explicitly enable it; module authors
-should expect out-of-process hosting to be the normal execution model.
+## Package Shape
 
-Modules that implement `IApplicationRegistrationSource` can declare typed endpoint
-and CLI contributions. Sidecar discovery carries the endpoint type identities
-and CLI descriptors, and the host invokes CLI handlers through the same loaded
-module instance and contribution graph. A module can also declare an action and
-subscribe to that exact action key, so its authorization hook protects the
-module-owned action without changing the action protocol.
+The directory contains `package.json`, the entry assembly, and its private dependencies. The manifest uses flat runtime metadata. `hostMode` must be `sidecar`.
 
 ```json
 {
-  "id": "sample_registration",
-  "displayName": "Sample Module",
+  "id": "sample",
+  "displayName": "Sample",
   "version": "1.0.0",
   "toolPrefix": "sample",
+  "runtime": "dotnet",
+  "hostMode": "sidecar",
   "entryAssembly": "Sample.Module.dll",
-  "runtime": {
-    "name": "dotnet",
-    "hostMode": "sidecar"
-  }
+  "entryType": "Sample.Module.SampleModule",
+  "minHostVersion": "0.5.0"
 }
 ```
 
-The current manifest value for the out-of-process .NET host is `sidecar` because
-that is the protocol value already understood by SharpClaw. The package name
-uses `OutOfProcess` to describe the host role developers interact with: the
-module runs outside the parent SharpClaw process, receives a private control
-token, and stops when the parent host sends the shutdown protocol request.
+## Execution Boundary
+
+The process validates the manifest, creates the package, and compiles one contribution graph. Each invocation resolves scoped handlers from the package service provider. The process receives host storage and action services only through authenticated transport-backed proxies.
+
+## Application Contributions
+
+`AddHttpEndpoint`, `AddWebSocketEndpoint`, and `AddCliCommand` publish typed descriptors through discovery. The parent host admits each request and issues the exact caller, feature, route, deadline, and cancellation authority. The sidecar invokes the selected handler through the same graph.
+
+## Cross-Package Calls
+
+Use `IHostActionEntry` from an active action, chat, tool, endpoint, or CLI context. Do not create a second root request for nested work. The host preserves the active parent authority and validates the target descriptor.
+
+## Shutdown
+
+The parent host sends the lifecycle stop request and closes the capability session. The sidecar disposes its service provider and unloads its package context before process exit.

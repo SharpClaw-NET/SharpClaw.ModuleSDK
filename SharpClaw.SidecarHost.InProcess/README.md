@@ -1,25 +1,34 @@
 # SharpClaw.SidecarHost.InProcess
 
-`SharpClaw.SidecarHost.InProcess` supports the opt-in in-process .NET module
-host path for SharpClaw. It loads one `IKernelRegistrationSource` from `package.json`,
-compiles its ModuleSDK contribution graph, and starts it in a collectible
-assembly load context.
+`SharpClaw.SidecarHost.InProcess` loads one explicitly trusted .NET package into a collectible assembly context. It parses `package.json`, validates `hostMode: in-process`, creates the package instance, and compiles the same ModuleSDK graph used by sidecar hosting.
 
-Out-of-process hosting is the normal SharpClaw module execution model.
-In-process hosting is a limited mode for hosts that deliberately enable it and
-can accept its tighter coupling to the host process.
+## Host Composition
 
-`InProcessRegistrationHost.LoadAsync` validates the manifest, loads the module, and
-builds its local dependency-injection provider. `InProcessModuleInvoker` then
-passes host-issued action and event controls directly to the selected handler.
-The adapter does not create substitute outcomes or another dispatch path.
+`InProcessRegistrationHost.LoadAsync` returns validated service descriptors and the compiled graph. The application host adds those descriptors to its service collection, builds its provider, and calls `Bind`. `InProcessModuleInvoker` resolves scoped handlers from that provider for each invocation.
 
 ```csharp
-using SharpClaw.SidecarHost.InProcess;
+await using var package = await InProcessRegistrationHost.LoadAsync(packageDirectory);
 
-await using var host = await InProcessRegistrationHost.LoadAsync(registrationDirectory);
-await host.StartAsync("0.5.0-beta.3");
+var services = new ServiceCollection();
+foreach (var descriptor in package.ServiceDescriptors)
+    ((ICollection<ServiceDescriptor>)services).Add(descriptor);
+
+await using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+{
+    ValidateOnBuild = true,
+    ValidateScopes = true,
+});
+
+package.Bind(provider);
+await package.StartAsync(hostVersion, features, cancellationToken);
 ```
 
-Use one host instance for each loaded module. Dispose the host after the module
-stops so the runtime can collect its load context.
+## Authority
+
+The host issues action, endpoint, CLI, tool, and storage authority. The invoker does not create caller identity or substitute an outcome. It resolves only the handler selected by the compiled graph.
+
+## Lifetime
+
+Create one registration host for each loaded package. Stop package lifecycle behavior before disposal. Disposal unloads the collectible context after the package has released its references.
+
+Out-of-process hosting remains the default for optional packages. Use this package only for an explicit in-process trust decision.

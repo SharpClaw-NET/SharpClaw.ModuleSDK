@@ -1,21 +1,51 @@
 # SharpClaw.ModuleSDK
 
-`SharpClaw.ModuleSDK` gives .NET module authors one builder surface for module
-services, contracts, storage, actions, events, hooks, tools, and application
-contributions. The compiler validates the complete module graph before a host
-starts the module.
+`SharpClaw.ModuleSDK` gives package authors one dependency-injection surface for services, actions, events, tools, storage, chat behavior, contracts, endpoints, and CLI commands. `SharpClawModuleCompiler` validates the complete contribution graph before the host starts package code.
 
-Reference this package when a module implements `IKernelRegistrationSource`. Use the SDK
-hook extensions to declare exact, category, or wildcard interception. The
-compiler checks these registrations against `package.json` effect requests and
-the selected host capabilities.
+## Minimal Package
 
-The compiled graph contains immutable discovery data and dispatch maps. A host
-uses those maps to select typed or untyped handlers without a tool-name switch
-or a second dispatch path.
+Implement `ISharpClawModule`. Keep the identity stable, and register all behavior through the supplied `IServiceCollection`. Normal constructor injection remains available to every handler.
 
-Sidecar discovery also carries typed endpoint identities and CLI command
-descriptors from `IApplicationRegistrationSource`. The out-of-process host invokes
-CLI handlers through the same module service provider and contribution graph.
-Use application contributions for host-owned API and CLI integration, and keep
-UI contributions for a host mode that explicitly supports them.
+```csharp
+public sealed class AuditModule : ISharpClawModule
+{
+    public ModuleIdentity Identity { get; } = new(
+        "audit",
+        "Audit",
+        "audit");
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddScoped<AuditStore>();
+        services.AddTool<AuditLookupTool>(AuditTools.Lookup);
+    }
+}
+```
+
+## Registration Map
+
+| API | Result |
+| --- | --- |
+| `AddAction(...).UseTerminal<T>` | One typed action and one stable terminal identity. |
+| `OnAction`, `OnActionCategory`, `OnAnyAction` | Exact, category, or wildcard action interception. |
+| `AddEvent` and event hook extensions | Typed event definitions and ordered event behavior. |
+| `AddTool<T>` | One scoped `IToolHandler`. |
+| `AddHttpEndpoint<T>` | One scoped authenticated HTTP handler. |
+| `AddWebSocketEndpoint<T>` | One scoped authenticated WebSocket handler. |
+| `AddCliCommand<T>` | One scoped CLI handler. |
+| `ExportContract<T>` and `RequireContract<T>` | One exact shared service boundary. |
+| `AddStorage` | One declared storage contract through the host gateway. |
+
+## Manifest Authority
+
+Use `PackageManifestLoader` to read `package.json` in tools and tests. It uses the same bounded parser as both production hosts. `SharpClawModuleCompiler.Compile` compares the manifest identity and requested effects with the code declarations.
+
+## Low-Level Control
+
+Action descriptors retain capability, timeout, safe-point, repeat, continuation, schema, and sensitive-data controls. Hook ordering remains explicit through `HookOrdering`. Host-issued `ActionContext`, `ToolInvocation`, endpoint requests, and CLI invocations expose the authenticated caller, features, trace, deadline, and cancellation authority.
+
+## Authorization
+
+`AddAuthorizationPolicy<TPolicy>` exports the neutral authorization contract and registers its typed action terminal. `RequireAuthorization` consumes the active provider. `AddAuthorizationRestriction<TRestriction>` adds an ordered restriction that can preserve or deny access but cannot grant it.
+
+Use `SharpClaw.ModuleSDK.Testing` to compile the real manifest and run registered terminals through the production dispatcher.
