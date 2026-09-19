@@ -22,9 +22,16 @@ await using var host = new SharpClawModuleTestBuilder()
 | `Action(...).WithTerminal(...)` | Test a package hook around a host-owned terminal. |
 | `ActionEntry(...)` | Test the package-owned registered terminal. |
 | `Event(...)` | Dispatch an event through the compiled Core graph. |
+| `InvokeToolAsync(...)` | Invoke a tool with caller, feature, and conversation authority. |
+| `InvokeCliAsync(...)` | Resolve and invoke one scoped CLI handler. |
+| `InvokeHttpAsync(...)` | Resolve and invoke one scoped HTTP handler. |
+| `InvokeWebSocketAsync(...)` | Resolve and invoke one scoped WebSocket handler. |
+| `InScopeAsync(...)` | Resolve package services in a bounded asynchronous scope. |
 | `StartAsync` and `StopAsync` | Test lifecycle behavior through Core lifecycle actions. |
 
-`ActionEntry` requires one matching action definition and one matching terminal registration. It resolves the terminal from a new asynchronous scope for each execution. Scoped handlers do not become hidden singletons.
+`ActionEntry` requires one matching action definition and one matching terminal registration. Each application method also requires one exact contribution identity. The host resolves each handler in a new asynchronous scope. Scoped handlers do not become hidden singletons.
+
+Call `UseHostActionEntry` when application behavior enters a host-owned action. The test host gives that instance priority over package service registrations. Without this call, host action entry requests fail closed.
 
 ## Sensitive Behavior
 

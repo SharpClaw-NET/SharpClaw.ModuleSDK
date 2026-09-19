@@ -15,6 +15,7 @@ public sealed class SharpClawModuleTestBuilder
     private KernelGraphCompileOptions _coreOptions = new();
     private RequestPrincipal _caller = RequestPrincipal.Anonymous;
     private ExtensionFeatureSet _features = ExtensionFeatureSet.Empty;
+    private IHostActionEntry _hostActionEntry = RejectingModuleTestHostActionEntry.Instance;
 
     /// <summary>Adds one module and its authoritative manifest.</summary>
     public SharpClawModuleTestBuilder AddRegistration(
@@ -102,6 +103,14 @@ public sealed class SharpClawModuleTestBuilder
         return this;
     }
 
+    /// <summary>Sets the host action entry used by tool, CLI, and endpoint tests.</summary>
+    public SharpClawModuleTestBuilder UseHostActionEntry(IHostActionEntry hostActionEntry)
+    {
+        _hostActionEntry = hostActionEntry
+            ?? throw new ArgumentNullException(nameof(hostActionEntry));
+        return this;
+    }
+
     /// <summary>Compiles all modules and creates the test host.</summary>
     public SharpClawModuleTestHost Build()
     {
@@ -142,6 +151,7 @@ public sealed class SharpClawModuleTestBuilder
             foreach (var descriptor in graph.Services)
                 ((ICollection<ServiceDescriptor>)services).Add(descriptor);
         }
+        services.AddSingleton(_hostActionEntry);
         var serviceProvider = services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateOnBuild = true,
@@ -167,11 +177,45 @@ public sealed class SharpClawModuleTestBuilder
             serviceProvider,
             coreGraph,
             execution,
-            Array.AsReadOnly(moduleGraphs));
+            Array.AsReadOnly(moduleGraphs),
+            _hostActionEntry);
     }
 
     private sealed record ModuleTestRegistration(
         ISharpClawModule Module,
         PackageManifest Manifest,
         ModuleHostingMode HostingMode);
+}
+
+internal sealed class RejectingModuleTestHostActionEntry : IHostActionEntry
+{
+    public static RejectingModuleTestHostActionEntry Instance { get; } = new();
+
+    private RejectingModuleTestHostActionEntry()
+    {
+    }
+
+    public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+        HostActionEntryRequest<TAction, TResult> request,
+        IHostActionEntryTerminal<TAction, TResult> terminal,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult<IActionOutcome<TResult>>(
+            KernelActionOutcome<TResult>.Failed(
+                "module_test_host_action_unconfigured",
+                "The module test host action entry is not configured."));
+    }
+
+    public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+        HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+        IHostActionEntryTerminal<TAction, TResult> terminal,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult<IActionOutcome<TResult>>(
+            KernelActionOutcome<TResult>.Failed(
+                "module_test_host_action_unconfigured",
+                "The module test host action entry is not configured."));
+    }
 }

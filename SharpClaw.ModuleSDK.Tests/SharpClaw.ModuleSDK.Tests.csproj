@@ -20,6 +20,7 @@
   <ItemGroup>
     <None Include="..\README.md" Link="Documentation\Repository-README.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SharpClaw.ModuleSDK\README.md" Link="Documentation\ModuleSDK-README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.ModuleSDK\buildTransitive\SharpClaw.ModuleSDK.targets" Link="BuildTransitive\SharpClaw.ModuleSDK.targets" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SharpClaw.ModuleSDK.Testing\README.md" Link="Documentation\Testing-README.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SharpClaw.SidecarHost.InProcess\README.md" Link="Documentation\InProcess-README.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SharpClaw.SidecarHost.OutOfProcess\README.md" Link="Documentation\OutOfProcess-README.md" CopyToOutputDirectory="PreserveNewest" />

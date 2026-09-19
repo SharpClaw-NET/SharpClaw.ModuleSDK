@@ -1,0 +1,33 @@
+<Project>
+  <PropertyGroup Condition="'$(IsSharpClawModulePackage)' == 'true'">
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <IncludeContentInPack>false</IncludeContentInPack>
+    <NoWarn>$(NoWarn);NU5100;NU5128</NoWarn>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);AddSharpClawModulePayloadToPackage</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsSharpClawModulePackage)' == 'true' and Exists('$(MSBuildProjectDirectory)\package.json')">
+    <Content Update="package.json" Pack="false" />
+    <None Update="package.json" Pack="false" />
+  </ItemGroup>
+
+  <Target Name="AddSharpClawModulePayloadToPackage"
+          Condition="'$(IsSharpClawModulePackage)' == 'true' and Exists('$(MSBuildProjectDirectory)\package.json')">
+    <ItemGroup>
+      <_SharpClawModulePayload Include="$(TargetDir)**\*"
+                               Exclude="$(TargetDir)package.json;$(TargetDir)modules\**\*;$(TargetDir)**\*.pdb;$(TargetDir)**\*.xml;$(TargetDir)**\*.nupkg;@(SharpClawModulePayloadExclude)" />
+      <TfmSpecificPackageFile Include="@(_SharpClawModulePayload)"
+                              PackagePath="sharpclaw\" />
+      <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\package.json"
+                              PackagePath="sharpclaw\" />
+      <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\README.md"
+                              PackagePath="\"
+                              Condition="Exists('$(MSBuildProjectDirectory)\README.md')" />
+      <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\LICENSE.md"
+                              PackagePath="\"
+                              Condition="Exists('$(MSBuildProjectDirectory)\LICENSE.md')" />
+    </ItemGroup>
+  </Target>
+</Project>

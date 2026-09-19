@@ -48,4 +48,4 @@ Action descriptors retain capability, timeout, safe-point, repeat, continuation,
 
 `AddAuthorizationPolicy<TPolicy>` exports the neutral authorization contract and registers its typed action terminal. `RequireAuthorization` consumes the active provider. `AddAuthorizationRestriction<TRestriction>` adds an ordered restriction that can preserve or deny access but cannot grant it.
 
-Use `SharpClaw.ModuleSDK.Testing` to compile the real manifest and run registered terminals through the production dispatcher.
+Use `SharpClaw.ModuleSDK.Testing` to compile the real manifest. The test host invokes actions, events, tools, commands, and endpoints through production dispatch maps.

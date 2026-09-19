@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Kernel;
 using SharpClaw.Core.Kernel;
@@ -10,6 +11,7 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
     private readonly IReadOnlyList<ISharpClawModule> _modules;
     private readonly ServiceProvider _services;
     private readonly KernelActionExecutionContext _execution;
+    private readonly IHostActionEntry _hostActionEntry;
     private readonly KernelActionDispatcher _actions;
     private readonly KernelEventDispatcher _events;
     private bool _started;
@@ -19,11 +21,13 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
         ServiceProvider services,
         KernelGraph coreGraph,
         KernelActionExecutionContext execution,
-        IReadOnlyList<ModuleContributionGraph> moduleGraphs)
+        IReadOnlyList<ModuleContributionGraph> moduleGraphs,
+        IHostActionEntry hostActionEntry)
     {
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _services = services ?? throw new ArgumentNullException(nameof(services));
         _execution = execution;
+        _hostActionEntry = hostActionEntry ?? throw new ArgumentNullException(nameof(hostActionEntry));
         CoreGraph = coreGraph;
         ModuleGraphs = moduleGraphs;
         _actions = new KernelActionDispatcher(coreGraph, execution);
@@ -35,6 +39,197 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
 
     /// <summary>Gets the matching ModuleSDK graphs.</summary>
     public IReadOnlyList<ModuleContributionGraph> ModuleGraphs { get; }
+
+    /// <summary>Runs one operation in a new asynchronous dependency-injection scope.</summary>
+    public async ValueTask<TResult> InScopeAsync<TResult>(
+        Func<IServiceProvider, CancellationToken, ValueTask<TResult>> operation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ct.ThrowIfCancellationRequested();
+        await using var scope = _services.CreateAsyncScope();
+        return await operation(scope.ServiceProvider, ct);
+    }
+
+    /// <summary>Invokes one registered tool through its compiled dispatch map.</summary>
+    public ValueTask<ToolResult> InvokeToolAsync(
+        string toolName,
+        JsonElement arguments,
+        Guid? conversationId = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        if (conversationId == Guid.Empty)
+            throw new ArgumentException(
+                "The tool conversation identity must be null or nonempty.",
+                nameof(conversationId));
+
+        var matches = ModuleGraphs
+            .Where(graph => graph.ToolDispatch.TryGet(toolName, out _))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Tool '{toolName}' has no unique registration in the module test graph.");
+        }
+
+        var invocationId = Guid.NewGuid();
+        var invocation = new ToolInvocation(
+            invocationId,
+            conversationId,
+            $"test-{invocationId:N}",
+            toolName,
+            arguments,
+            CreateHostActionContext(
+                HostActionEntryIngress.Tool,
+                toolName,
+                invocationId,
+                conversationId?.ToString("D")));
+        return matches[0].ToolDispatch.InvokeAsync(
+            toolName,
+            _services,
+            invocation,
+            ct);
+    }
+
+    /// <summary>Invokes one registered CLI command through a scoped handler.</summary>
+    public async ValueTask<CliResult> InvokeCliAsync(
+        string command,
+        IReadOnlyList<string>? arguments = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(command);
+        ct.ThrowIfCancellationRequested();
+        var matches = ModuleGraphs
+            .SelectMany(graph => graph.Application.CliCommands)
+            .Where(item =>
+                string.Equals(item.Descriptor.Name, command, StringComparison.OrdinalIgnoreCase)
+                || item.Descriptor.Aliases.Any(alias => string.Equals(
+                    alias,
+                    command,
+                    StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"CLI command '{command}' has no unique registration in the module test graph.");
+        }
+
+        var invocationId = Guid.NewGuid();
+        var invocation = new CliInvocation(
+            invocationId,
+            command,
+            arguments ?? [],
+            CreateHostActionContext(
+                HostActionEntryIngress.Cli,
+                command,
+                invocationId));
+        await using var scope = _services.CreateAsyncScope();
+        var handler = (ICliHandler)ActivatorUtilities.GetServiceOrCreateInstance(
+            scope.ServiceProvider,
+            matches[0].HandlerType);
+        return await handler.ExecuteAsync(invocation, ct);
+    }
+
+    /// <summary>Invokes one registered HTTP endpoint through a scoped handler.</summary>
+    public async ValueTask<HttpEndpointResponse> InvokeHttpAsync(
+        string endpointId,
+        byte[]? body = null,
+        IReadOnlyDictionary<string, string[]>? headers = null,
+        IReadOnlyDictionary<string, string[]>? query = null,
+        IReadOnlyDictionary<string, string[]>? routeValues = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpointId);
+        ct.ThrowIfCancellationRequested();
+        var matches = ModuleGraphs
+            .SelectMany(graph => graph.Application.Endpoints)
+            .Where(item =>
+                item.Descriptor.Transport == HostEndpointTransport.Http
+                && string.Equals(item.Descriptor.Id, endpointId, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"HTTP endpoint '{endpointId}' has no unique registration in the module test graph.");
+        }
+
+        var contribution = matches[0];
+        var invocationId = Guid.NewGuid();
+        var request = new HostEndpointRouteRequest(
+            new HostEndpointInvocation(
+                invocationId,
+                endpointId,
+                CreateHostActionContext(
+                    HostActionEntryIngress.Endpoint,
+                    endpointId,
+                    invocationId)),
+            contribution.Descriptor.ToRouteIdentity(),
+            headers ?? EmptyMetadata,
+            query ?? EmptyMetadata,
+            body ?? [])
+        {
+            RouteValues = routeValues ?? EmptyMetadata,
+        };
+
+        await using var scope = _services.CreateAsyncScope();
+        var handler = (IHttpEndpointHandler)ActivatorUtilities.GetServiceOrCreateInstance(
+            scope.ServiceProvider,
+            contribution.HandlerType);
+        var response = await handler.InvokeAsync(request, _hostActionEntry, ct);
+        if (!response.IsWellFormed)
+            throw new InvalidOperationException("The endpoint handler returned an invalid response.");
+        return response;
+    }
+
+    /// <summary>Invokes one registered WebSocket endpoint through a scoped handler.</summary>
+    public async ValueTask InvokeWebSocketAsync(
+        string endpointId,
+        IWebSocketChannel channel,
+        IReadOnlyDictionary<string, string[]>? headers = null,
+        IReadOnlyDictionary<string, string[]>? query = null,
+        IReadOnlyDictionary<string, string[]>? routeValues = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpointId);
+        ArgumentNullException.ThrowIfNull(channel);
+        ct.ThrowIfCancellationRequested();
+        var matches = ModuleGraphs
+            .SelectMany(graph => graph.Application.Endpoints)
+            .Where(item =>
+                item.Descriptor.Transport == HostEndpointTransport.WebSocket
+                && string.Equals(item.Descriptor.Id, endpointId, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"WebSocket endpoint '{endpointId}' has no unique registration in the module test graph.");
+        }
+
+        var contribution = matches[0];
+        var invocationId = Guid.NewGuid();
+        var request = new HostEndpointRouteRequest(
+            new HostEndpointInvocation(
+                invocationId,
+                endpointId,
+                CreateHostActionContext(
+                    HostActionEntryIngress.Endpoint,
+                    endpointId,
+                    invocationId)),
+            contribution.Descriptor.ToRouteIdentity(),
+            headers ?? EmptyMetadata,
+            query ?? EmptyMetadata,
+            [])
+        {
+            RouteValues = routeValues ?? EmptyMetadata,
+        };
+
+        await using var scope = _services.CreateAsyncScope();
+        var handler = (IWebSocketEndpointHandler)ActivatorUtilities.GetServiceOrCreateInstance(
+            scope.ServiceProvider,
+            contribution.HandlerType);
+        await handler.InvokeAsync(request, channel, _hostActionEntry, ct);
+    }
 
     /// <summary>Creates a fluent action test.</summary>
     public ModuleTestActionBuilder<TAction, TResult> Action<TAction, TResult>(
@@ -258,6 +453,47 @@ public sealed class SharpClawModuleTestHost : IAsyncDisposable
         if (firstFailure is not null)
             throw firstFailure;
     }
+
+    private HostActionEntryRequestContext CreateHostActionContext(
+        HostActionEntryIngress ingress,
+        string primaryIdentity,
+        Guid invocationId,
+        string? secondaryIdentity = null)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        return new HostActionEntryRequestContext(
+            Guid.NewGuid(),
+            $"module-test-{Guid.NewGuid():N}",
+            ingress,
+            invocationId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            _execution.Caller,
+            _execution.Features,
+            _execution.TraceId,
+            Guid.NewGuid(),
+            deadline,
+            deadline.AddMinutes(1))
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(
+                    ingress,
+                    primaryIdentity,
+                    secondaryIdentity),
+                new HostActionEntryLineage(
+                    new SharpClawActionKey("module.test.ingress"),
+                    1,
+                    "module-test-descriptor",
+                    "module-test-input",
+                    1,
+                    "module-test-schema",
+                    null,
+                    null)),
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string[]> EmptyMetadata { get; } =
+        new Dictionary<string, string[]>();
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()

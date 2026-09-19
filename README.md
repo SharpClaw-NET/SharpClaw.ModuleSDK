@@ -73,7 +73,7 @@ One package can supply the authoritative `sharpclaw.authorization` policy. Other
 
 ## Test the Production Shape
 
-`SharpClawModuleTestBuilder` compiles the real package and manifest. `ActionEntry` resolves the registered terminal in a fresh scope and runs it through the production Core dispatcher. Sensitive contributions remain denied until the test grants each exact package identity.
+`SharpClawModuleTestBuilder` compiles the real package and manifest. It can invoke actions, events, tools, commands, HTTP routes, and WebSocket routes. Each handler runs in a new scope. `UseHostActionEntry` supplies the host-issued action authority for application tests. Sensitive contributions remain denied until the test grants each exact package identity.
 
 ```csharp
 await using var host = new SharpClawModuleTestBuilder()
