@@ -23,6 +23,7 @@ public sealed class ModulePackagingTargetsTests
             "$(IsSharpClawModulePackage)");
         propertyGroup.Element("SuppressDependenciesWhenPacking")!.Value.Should().Be("true");
         propertyGroup.Element("GenerateDependencyFile")!.Value.Should().Be("true");
+        propertyGroup.Element("IncludeContentInPack").Should().BeNull();
         propertyGroup.Element("NoWarn")!.Value.Should().Contain("NU5100").And.Contain("NU5128");
         propertyGroup.Element("TargetsForTfmSpecificContentInPackage")!.Value.Should().Contain(
             "AddSharpClawModulePayloadToPackage");
