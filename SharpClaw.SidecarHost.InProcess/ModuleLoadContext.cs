@@ -27,15 +27,17 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
     {
         "SharpClaw.Contracts",
         "SharpClaw.ModuleSDK",
+        "SharpClaw.Persistence",
         "SharpClaw.SidecarHost.InProcess",
+        "Microsoft.EntityFrameworkCore",
+        "Microsoft.EntityFrameworkCore.Abstractions",
+        "Microsoft.EntityFrameworkCore.Relational",
     };
 
     private static readonly string[] HostSharedPrefixes =
     {
         "Microsoft.Extensions.",
         "Microsoft.AspNetCore.",
-        "Microsoft.EntityFrameworkCore",
-        "System.",
         "netstandard",
         "mscorlib",
     };
@@ -59,18 +61,8 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
         // module ships next to itself, causing type identity mismatches.
         if (name.Name is { Length: > 0 } shortName)
         {
-            if (HostSharedAssemblyNames.Contains(shortName))
+            if (IsHostSharedAssembly(shortName))
                 return null;
-
-            for (var i = 0; i < HostSharedPrefixes.Length; i++)
-            {
-                var prefix = HostSharedPrefixes[i];
-                if (shortName.Equals(prefix, StringComparison.Ordinal)
-                    || shortName.StartsWith(prefix, StringComparison.Ordinal))
-                {
-                    return null;
-                }
-            }
         }
 
         var path = _resolver.ResolveAssemblyToPath(name);
@@ -78,6 +70,24 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
             return LoadFromAssemblyPath(path);
 
         return null;
+    }
+
+    private static bool IsHostSharedAssembly(string shortName)
+    {
+        if (HostSharedAssemblyNames.Contains(shortName))
+            return true;
+
+        for (var i = 0; i < HostSharedPrefixes.Length; i++)
+        {
+            var prefix = HostSharedPrefixes[i];
+            if (shortName.Equals(prefix, StringComparison.Ordinal)
+                || shortName.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <inheritdoc />
