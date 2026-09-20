@@ -43,6 +43,7 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
     };
 
     private readonly AssemblyDependencyResolver _resolver;
+    private readonly string _moduleDirectory;
 
     /// <summary>
     /// Creates a new collectible load context anchored at the module's main DLL path.
@@ -50,6 +51,10 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
     public RegistrationLoadContext(string mainDllPath)
         : base(name: Path.GetFileNameWithoutExtension(mainDllPath), isCollectible: true)
     {
+        _moduleDirectory = Path.GetDirectoryName(Path.GetFullPath(mainDllPath))
+            ?? throw new ArgumentException(
+                "The module assembly path must have a parent directory.",
+                nameof(mainDllPath));
         _resolver = new AssemblyDependencyResolver(mainDllPath);
     }
 
@@ -69,7 +74,25 @@ public sealed class RegistrationLoadContext : AssemblyLoadContext
         if (path is not null)
             return LoadFromAssemblyPath(path);
 
+        var moduleLocalPath = ResolveModuleLocalAssemblyPath(name.Name);
+        if (moduleLocalPath is not null)
+            return LoadFromAssemblyPath(moduleLocalPath);
+
         return null;
+    }
+
+    private string? ResolveModuleLocalAssemblyPath(string? shortName)
+    {
+        if (string.IsNullOrWhiteSpace(shortName) ||
+            shortName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            shortName.Contains(Path.DirectorySeparatorChar) ||
+            shortName.Contains(Path.AltDirectorySeparatorChar))
+        {
+            return null;
+        }
+
+        var path = Path.Combine(_moduleDirectory, $"{shortName}.dll");
+        return File.Exists(path) ? path : null;
     }
 
     private static bool IsHostSharedAssembly(string shortName)
