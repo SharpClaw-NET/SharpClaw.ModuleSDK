@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="THIRD-PARTY-NOTICES.txt" Pack="true" PackagePath="tools/net10.0/any/" />
   </ItemGroup>
 
   <Target Name="ValidateOutOfProcessHostPayload">
