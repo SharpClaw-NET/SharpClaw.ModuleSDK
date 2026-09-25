@@ -94,6 +94,26 @@ public sealed class ModuleCompilerTests
         tool.ParametersSchema.GetProperty("required")[0].GetString().Should().Be("text");
     }
 
+    [TestCase(true)]
+    [TestCase(false)]
+    public void OutOfProcessDiscoveryPreservesBooleanToolSchemas(bool allowed)
+    {
+        var graph = Compile(new BooleanToolSchemaModule(allowed), ModuleHostingMode.OutOfProcess);
+        var discovery = graph.CreateSidecarDiscovery(
+            protocolVersion: 1,
+            sequence: 1,
+            deadline: DateTimeOffset.UtcNow.AddMinutes(1));
+        var catalog = new SidecarHostDescriptorCatalog(
+            [], [], negotiatedProtocolVersion: 1, graph.PayloadLimits);
+
+        var result = SidecarDiscoveryValidator.Validate(discovery, catalog);
+
+        result.Accepted.Should().BeTrue(result.ErrorMessage);
+        discovery.ToolHandlers.Should().ContainSingle();
+        discovery.ToolHandlers.Single().ParametersSchema.ValueKind.Should().Be(
+            allowed ? JsonValueKind.True : JsonValueKind.False);
+    }
+
     [Test]
     public void OutOfProcessCompilationRetainsTypedDescriptorBeforeHostAuthorization()
     {
@@ -433,6 +453,18 @@ public sealed class ModuleCompilerTests
                     null,
                     null)),
         };
+    }
+
+    private sealed class BooleanToolSchemaModule(bool allowed) : ISharpClawModule
+    {
+        public ModuleIdentity Identity { get; } =
+            new("boolean_tool_schema", "Boolean Tool Schema", "boolean");
+
+        public void ConfigureServices(IServiceCollection services) =>
+            services.AddTool<EchoTool>(new ToolDescriptor(
+                "boolean.echo",
+                "Boolean schema compatibility test.",
+                JsonSerializer.SerializeToElement(allowed)));
     }
 
     private sealed class CompleteModule : ISharpClawModule

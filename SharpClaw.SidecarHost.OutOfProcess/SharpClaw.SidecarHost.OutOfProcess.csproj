@@ -24,7 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-dev.20260920.1]" />
-    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-dev.20260925.2]" />
+    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-dev.20260925.3]" />
     <PackageReference Include="SharpClaw.SidecarHost.InProcess" Version="[0.5.0-dev.20260920.1]" />
   </ItemGroup>
 
