@@ -24,7 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="SharpClaw.Contracts" Version="[0.5.0-dev.20260920.1]" />
-    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-dev.20260925.1]" />
+    <PackageReference Include="SharpClaw.Core" Version="[0.5.0-dev.20260925.2]" />
     <PackageReference Include="SharpClaw.SidecarHost.InProcess" Version="[0.5.0-dev.20260920.1]" />
   </ItemGroup>
 
@@ -48,7 +48,6 @@
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.Core.dll')" Text="The accepted Core runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)JsonSchema.Net.dll')" Text="The Core JSON Schema validator is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)JsonPointer.Net.dll')" Text="The Core JSON pointer dependency is missing from '$(_OutOfProcessHostPayloadRoot)'." />
-    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)Json.More.dll')" Text="The Core JSON dependency is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.ModuleSDK.dll')" Text="The accepted ModuleSDK runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.InProcess.dll')" Text="The accepted InProcess runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <ItemGroup>
@@ -60,7 +59,6 @@
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.Core.dll" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)JsonSchema.Net.dll" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)JsonPointer.Net.dll" />
-      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)Json.More.dll" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.ModuleSDK.dll" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.InProcess.dll" />
     </ItemGroup>
