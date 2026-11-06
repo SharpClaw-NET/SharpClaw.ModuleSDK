@@ -18,9 +18,9 @@
       <_SharpClawModulePayload Include="$(TargetDir)**\*"
                                Exclude="$(TargetDir)package.json;$(TargetDir)modules\**\*;$(TargetDir)**\*.pdb;$(TargetDir)**\*.xml;$(TargetDir)**\*.nupkg;@(SharpClawModulePayloadExclude)" />
       <TfmSpecificPackageFile Include="@(_SharpClawModulePayload)"
-                              PackagePath="sharpclaw\" />
+                              PackagePath="sharpclaw/" />
       <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\package.json"
-                              PackagePath="sharpclaw\" />
+                              PackagePath="sharpclaw/" />
       <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\README.md"
                               PackagePath="\"
                               Condition="Exists('$(MSBuildProjectDirectory)\README.md')" />

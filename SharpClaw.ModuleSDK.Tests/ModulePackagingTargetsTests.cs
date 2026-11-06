@@ -32,10 +32,10 @@ public sealed class ModulePackagingTargetsTests
         var files = target.Descendants("TfmSpecificPackageFile").ToArray();
         files.Should().ContainSingle(file =>
             file.Attribute("Include")!.Value == "@(_SharpClawModulePayload)"
-            && file.Attribute("PackagePath")!.Value == "sharpclaw\\");
+            && file.Attribute("PackagePath")!.Value == "sharpclaw/");
         files.Should().ContainSingle(file =>
             file.Attribute("Include")!.Value.EndsWith("package.json", StringComparison.Ordinal)
-            && file.Attribute("PackagePath")!.Value == "sharpclaw\\");
+            && file.Attribute("PackagePath")!.Value == "sharpclaw/");
         target.Descendants("_SharpClawModulePayload").Single()
             .Attribute("Exclude")!.Value.Should().Contain("$(TargetDir)package.json");
     }
