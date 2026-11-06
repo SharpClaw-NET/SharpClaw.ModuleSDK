@@ -41,7 +41,6 @@
     </PropertyGroup>
     <Error Condition="'$(_OutOfProcessHostPayloadRoot)' == '\'" Text="The OutOfProcess host payload root is empty." />
     <Error Condition="'$(_OutOfProcessHostPayloadRoot)' == '$(MSBuildProjectDirectory)\'" Text="The OutOfProcess host payload cannot use the project directory." />
-    <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.exe')" Text="The OutOfProcess host executable is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.dll')" Text="The OutOfProcess host DLL is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.deps.json')" Text="The OutOfProcess host deps file is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.runtimeconfig.json')" Text="The OutOfProcess host runtimeconfig file is missing from '$(_OutOfProcessHostPayloadRoot)'." />
@@ -53,7 +52,6 @@
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.ModuleSDK.dll')" Text="The accepted ModuleSDK runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <Error Condition="!Exists('$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.InProcess.dll')" Text="The accepted InProcess runtime is missing from '$(_OutOfProcessHostPayloadRoot)'." />
     <ItemGroup>
-      <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.exe" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.dll" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.deps.json" />
       <_OutOfProcessHostPayload Include="$(_OutOfProcessHostPayloadRoot)SharpClaw.SidecarHost.OutOfProcess.runtimeconfig.json" />
